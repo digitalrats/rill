@@ -1902,6 +1902,41 @@ impl<'a> Lowerer<'a> {
                 {
                     return out;
                 }
+                // PARTIAL application of a builtin-signature function. A
+                // `builtin_sigs` entry is an ordinary curried function type
+                // (Haskell 2010 §4.3.3), so `w = write (Just "x")` is a
+                // function value — the lowering of each such builtin below is
+                // written for its FULL argument list. Rewriting the under-applied
+                // call into `\ $pK -> … f supplied… $pK` reuses the closure
+                // machinery for arity, partial application and re-application;
+                // `$`-prefixed names cannot collide with a source identifier.
+                if let Some(sig) = self.env.builtin_sigs.get(name) {
+                    let declared = sig.arg_types().len();
+                    if !call_args.is_empty() && call_args.len() < declared {
+                        let names: Vec<String> = (call_args.len()..declared)
+                            .map(|i| format!("$builtin_p{i}"))
+                            .collect();
+                        let mut args = call_args.clone();
+                        args.extend(names.iter().map(|p| Expr::Ref(p.clone(), *span)));
+                        let mut lam = Expr::Apply {
+                            name: name.to_string(),
+                            args,
+                            span: *span,
+                        };
+                        for p in names.into_iter().rev() {
+                            lam = Expr::Lambda {
+                                params: vec![Param {
+                                    name: p,
+                                    span: *span,
+                                    bang: false,
+                                }],
+                                body: Box::new(lam),
+                                span: *span,
+                            };
+                        }
+                        return self.lower_value(&lam);
+                    }
+                }
                 // `runST (fn s -> body)`: `runST` is a built-in function whose
                 // signature `(forall s. ST s a) -> a` carries a type-level-only
                 // phantom — inference (the rank-2 application in `infer_apply`)
@@ -6147,6 +6182,31 @@ impl<'a> Lowerer<'a> {
                 });
                 return Ok((dst, ValueTy::Con(sum_name, vec![])));
             }
+            // A non-nullary constructor in value position is an ordinary CURRIED
+            // function (Haskell 2010 §4.2.1): `Just :: a -> Maybe a`, so `g =
+            // Just` and `map Just xs` are values. Build the equivalent
+            // `\p0 -> … -> C p0 …` and let the closure machinery handle it —
+            // arity, partial application and dispatch already live there. The
+            // `$`-prefixed parameters cannot collide with a source identifier.
+            let names: Vec<String> = (0..payload.len()).map(|i| format!("$ctor_p{i}")).collect();
+            let construct = Expr::Apply {
+                name: name.to_string(),
+                args: names.iter().map(|p| Expr::Ref(p.clone(), span)).collect(),
+                span,
+            };
+            let mut lam = construct;
+            for p in names.into_iter().rev() {
+                lam = Expr::Lambda {
+                    params: vec![Param {
+                        name: p,
+                        span,
+                        bang: false,
+                    }],
+                    body: Box::new(lam),
+                    span,
+                };
+            }
+            return self.lower_value(&lam);
         }
         let def = self
             .defs

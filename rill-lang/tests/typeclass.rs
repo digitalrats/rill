@@ -429,3 +429,54 @@ fn a_forall_signature_reports_its_real_arity() {
         "`f 1` at `Int -> Int` must type as the curried remainder"
     );
 }
+
+#[test]
+fn a_nullary_method_inside_a_buffer_operand_still_resolves() {
+    // The shared application rule ran a bare inference with `?` first, so a
+    // nullary argument that only types under the parameter's EXPECTED type
+    // (`zero` — a result-directed method with nothing of its own to solve the
+    // class variable) aborted the application before the fallback could run.
+    // The defect was a COMPILE ERROR, so compilation succeeding is the
+    // requirement here; the operator's own result type is checked too.
+    let mut ffi = ForeignRegistry::<f32>::new();
+    rill_lang::register::register_foreign_generators(&mut ffi);
+    let src = "typeclass Zero a where { zero: a; }\n\
+               instance Zero (FixedBuffer Double) where { zero = sine 440.0 0.5 0.0; }\n\
+               x :: Buffer = sine 440.0 0.5 0.0 + zero;\n\
+               main = 0.0;";
+    let ir = rill_lang::compile_eval::<f32, 256>(src, "x", Mode::Complete)
+        .expect("a nullary method in a Buffer operand must resolve by the expected type");
+    assert!(
+        ir.dicts
+            .iter()
+            .any(|d| d.class == "Zero" && d.ty_key == "FixedBuffer Double"),
+        "`zero` must select `Zero (FixedBuffer Double)`; table = {:?}",
+        ir.dicts
+            .iter()
+            .map(|d| (d.class.clone(), d.ty_key.clone()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_literal_does_not_widen_into_a_buffer_parameter() {
+    // GHC 9.10.3: `((\b -> b) 1.0) :: Buffer` is a type error (`No instance for
+    // Fractional (FixedBuffer Double)`). The shared rule used the operator path's
+    // `unify_method_arg` carve-out — a literal in a `Buffer` parameter position
+    // is that buffer's constant — for EVERY application, so this compiled.
+    match infer_err("main = ((\\b -> b) 1.0) :: Buffer;")
+        .expect("a literal must not widen into a Buffer parameter")
+    {
+        rill_lang::CompileError::Type { msg, .. } => assert!(
+            msg.contains("cannot unify"),
+            "the rejection must be a unification failure, got: {msg}"
+        ),
+        other => panic!("expected a type error, got {other:?}"),
+    }
+    // The operator path's carve-out stays: a literal operand of a Buffer
+    // operator IS that buffer's constant.
+    assert!(
+        infer_err("main = sine 440.0 0.5 0.0 * 0.5;").is_none(),
+        "a literal operand of a Buffer operator must still be accepted"
+    );
+}

@@ -514,7 +514,26 @@ fn infer_method_under_given(
     let (param_tys, ret) =
         signature_param_and_result_tys_conv(&env, class_var, &cv_subst, sig, || ctx.fresh_vty());
     let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
-    apply_args_curried(ctx, &param_tys, &ret, args, span, "method")
+    apply_args_curried(ctx, &param_tys, &ret, args, span, "method", ArgUnify::Exact)
+}
+
+/// How [`apply_args_curried`] unifies one argument against its parameter.
+///
+/// The distinction is a property of the CALL, not of the application rule: an
+/// operator/method operand is allowed the `Buffer`-constant reading that
+/// lowering's `buffer_operand` emits (`sine 440.0 0.5 0.0 * 0.5` — `0.5` is
+/// the buffer's constant), while an ordinary application demands the argument
+/// inhabit the parameter exactly. Carrying it as a parameter keeps the shared
+/// rule's arity/currying judgement in ONE place without widening every
+/// application (`((\b -> b) 1.0) :: Buffer` is rejected, as GHC rejects it).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArgUnify {
+    /// The argument's type must be the parameter's type, exactly
+    /// ([`unify_value`]).
+    Exact,
+    /// A numeric literal in a `Buffer` parameter position is that buffer's
+    /// constant ([`unify_method_arg`]).
+    MethodOperand,
 }
 
 /// THE application rule's ARITY judgement, split out so a caller can reject a
@@ -547,9 +566,10 @@ fn check_application_arity(
 ///
 /// This is the application half of every SIGNATURE-driven call site in this
 /// module: the primitive-method paths, the source-instance dispatch, a method
-/// used as a first-class value, the runtime closure application, and a
-/// constrained definition's call. `what` is the subject the arity diagnostic
-/// names (`"expression"`, ``"`f`"``, ``"method `fromInteger` of `Num`"``),
+/// or constructor used as a first-class value, the builtin signature catalog,
+/// the runtime closure application, and a constrained definition's call.
+/// `what` is the subject the arity diagnostic names (`"expression"`,
+/// ``"`f`"``, ``"method `fromInteger` of `Num`"``, ``"constructor `Just`"``),
 /// which is what keeps each site's existing wording byte-identical.
 ///
 /// Callers keep their own signature conversion and substitution work: the
@@ -558,7 +578,7 @@ fn check_application_arity(
 ///
 /// Two families stay outside it, because their arity is not a signature's:
 /// user definitions and closure values count λ-parameters (`check_def_call_args`
-/// / `applied_result`), and the builtin and collection catalogs carry their own
+/// / `applied_result`), and the collection catalog carries its own
 /// per-operation arities.
 ///
 /// The result type is returned RESOLVED through the substitution, so a caller
@@ -572,6 +592,7 @@ fn apply_args_curried(
     args: &[Expr],
     span: Span,
     what: &str,
+    rule: ArgUnify,
 ) -> Result<ArrowTy, CompileError> {
     check_application_arity(params.len(), args.len(), span, what)?;
     // Every supplied argument is unified against its parameter, so the call
@@ -581,20 +602,36 @@ fn apply_args_curried(
     // (`fp i1` where `fp : Buffer -> Buffer` and `i1` is the program's Buffer
     // input) as well as a Buffer value, so that one case is checked through the
     // expression's own type instead of being re-inferred at the parameter type.
-    // The final unification is [`unify_method_arg`], whose one extra rule — a
-    // numeric literal in a `Buffer` parameter position is that buffer's
-    // constant, exactly what lowering's `buffer_operand` emits — is the rule
-    // every call site must apply identically.
+    //
+    // The bare inference is ATTEMPTED, never propagated: a result-directed
+    // argument with no argument of its own to solve the class variable (`zero`,
+    // `mempty` — `sine 440.0 0.5 0.0 + zero`) only types under the expected
+    // type the parameter supplies, so a failed bare inference must fall through
+    // to the expected-type path instead of aborting the application.
     for (a, pt) in args.iter().zip(params.iter()) {
         if matches!(ctx.subst.resolve_value(pt), ValueTy::Buffer(_)) {
-            let at = infer_expr(ctx, a)?;
-            if at.arity_out() == 1 && matches!(at.vty, ValueTy::Buffer(_)) {
-                unify_value(&at.vty, pt, &mut ctx.subst, a.span())?;
-                continue;
+            if let Ok(at) = infer_expr(ctx, a) {
+                if at.arity_out() == 1 && matches!(at.vty, ValueTy::Buffer(_)) {
+                    unify_value(&at.vty, pt, &mut ctx.subst, a.span())?;
+                    continue;
+                }
             }
         }
         let at = infer_method_value_vty_expected(ctx, a, "argument", Some(pt.clone()))?;
-        unify_method_arg(ctx, pt, &at, a)?;
+        match rule {
+            // An ordinary application: the argument must inhabit the parameter,
+            // exactly. In particular a numeric literal does NOT widen into a
+            // `Buffer` parameter here (`((\b -> b) 1.0) :: Buffer` is rejected,
+            // as GHC rejects it). The argument's own type is the LEFT operand so
+            // the diagnostic reads "cannot unify value type Double with Int" —
+            // the mismatch's subject first, as every routed site reported it.
+            ArgUnify::Exact => unify_value(&at, pt, &mut ctx.subst, a.span())?,
+            // An OPERATOR/METHOD operand: [`unify_method_arg`]'s extra rule — a
+            // numeric literal in a `Buffer` parameter position is that buffer's
+            // constant, exactly what lowering's `buffer_operand` emits
+            // (`sine 440.0 0.5 0.0 * 0.5`).
+            ArgUnify::MethodOperand => unify_method_arg(ctx, pt, &at, a)?,
+        }
     }
     // A partial application keeps the remaining parameters as a function value
     // (Haskell 2010 §4.3.3); a full application yields the result. Both are
@@ -753,6 +790,36 @@ fn sum_ctor_payload(ctx: &Ctx, sum_name: &str, ctor: &str) -> Option<Vec<ValueTy
     }
 }
 
+/// A sum constructor's CURRIED TYPE, the way Haskell 2010 §4.2.1 gives it:
+/// `C :: t1 -> … -> tn -> T a1 … am`. Returned as the application rule's
+/// `(params, ret)` pair.
+///
+/// - `params` are the constructor's PAYLOAD types, with the sum's type
+///   parameters bound to those fresh immediately below;
+/// - `ret` is the sum applied to FRESH type parameters (`Maybe a`, not the bare
+///   `Maybe`), so a constructor used as a value keeps its result's type
+///   parameter free.
+///
+/// A NULLARY constructor has empty `params` and is therefore a plain value
+/// (`Nothing :: Maybe a`), by [`apply_args_curried`]'s own rule.
+///
+/// The sum's declared shapes carry PLACEHOLDER vars (`Var(1)`, `Var(2)` in the
+/// builtin `Maybe`/`Either`, and the same ids for a declared `data Opt a`) that
+/// are NOT live unification vars. Each is mapped to the positionally
+/// corresponding fresh var of `ret`, which is what keeps the payload and the
+/// result LINKED: `Cons 1.0 xs` is `t -> List t -> List t`, never two unrelated
+/// types.
+fn sum_ctor_scheme(ctx: &mut Ctx, sum_name: &str, ctor: &str) -> (Vec<ValueTy>, ValueTy) {
+    let payload = sum_ctor_payload(ctx, sum_name, ctor).unwrap_or_default();
+    let arity = ctx.env.type_ctor_arity(sum_name).unwrap_or(0);
+    let result_args: Vec<ValueTy> = (0..arity).map(|_| ctx.fresh_vty()).collect();
+    let params: Vec<ValueTy> = payload
+        .iter()
+        .map(|p| substitute_field_params(p, &result_args))
+        .collect();
+    (params, ValueTy::Con(sum_name.into(), result_args))
+}
+
 /// Convert a data-declaration field/payload type expression into a value type,
 /// substituting type-variable names with placeholder positions (`data Box a` →
 /// field `value: a` becomes `Var(1)`, mirroring the builtin `Maybe`/`Pair`
@@ -843,21 +910,6 @@ pub(crate) fn data_field_vty_with_free(
         crate::ast::TypeExpr::TConstrained(_, inner) => {
             data_field_vty_with_free(env, tyvars, inner, free)
         }
-    }
-}
-
-/// The value type of a value of sum type `sum_name`: a parameterized sum
-/// (`Maybe a`, `Either a b`, a user `data Opt a`) is a constructor application
-/// with one fresh live value variable per type parameter (the builtin shape's
-/// `Var(1)`/`Var(2)` placeholders are NOT live unification vars — see
-/// [`TypeEnv::with_builtins`]); a monomorphic one has none.
-fn fresh_sum_vty(ctx: &mut Ctx, sum_name: &str) -> ValueTy {
-    match ctx.env.type_ctor_arity(sum_name) {
-        Some(arity) => {
-            let args = (0..arity).map(|_| ctx.fresh_vty()).collect();
-            ValueTy::Con(sum_name.into(), args)
-        }
-        None => ValueTy::Con(sum_name.into(), vec![]),
     }
 }
 
@@ -4742,7 +4794,15 @@ fn infer_ref_expected(
                     );
                     let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
                     let what = format!("method `{name}` of `{class_name}`");
-                    return apply_args_curried(ctx, &param_tys, &ret, &[], span, &what);
+                    return apply_args_curried(
+                        ctx,
+                        &param_tys,
+                        &ret,
+                        &[],
+                        span,
+                        &what,
+                        ArgUnify::Exact,
+                    );
                 }
                 let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                     Some(r) => r,
@@ -4816,7 +4876,15 @@ fn infer_ref_expected(
                         );
                         let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
                         let what = format!("method `{name}` of `{class_name}`");
-                        return apply_args_curried(ctx, &param_tys, &ret, &[], span, &what);
+                        return apply_args_curried(
+                            ctx,
+                            &param_tys,
+                            &ret,
+                            &[],
+                            span,
+                            &what,
+                            ArgUnify::Exact,
+                        );
                     }
                     let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                         Some(r) => r,
@@ -4867,7 +4935,15 @@ fn infer_ref_expected(
                     // function-shaped one is the unapplied arrow.
                     if let Some(ret) = ret_ty {
                         let what = format!("method `{name}` of `{class_name}`");
-                        return apply_args_curried(ctx, &arg_tys, &ret, &[], span, &what);
+                        return apply_args_curried(
+                            ctx,
+                            &arg_tys,
+                            &ret,
+                            &[],
+                            span,
+                            &what,
+                            ArgUnify::Exact,
+                        );
                     }
                     return Ok(ArrowTy::value_channel(
                         arg_tys.first().cloned().unwrap_or(ValueTy::Double),
@@ -4969,28 +5045,24 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
     }
     let ctor_sums = sum_types_with_ctor(ctx, name);
     if !ctor_sums.is_empty() {
-        // A bare constructor is normally an error ("requires arguments"), but a
-        // NULLARY constructor (`Nothing`, `Red`) needs no payload: the bare
-        // reference is a complete value of its sum type.
-        if ctor_sums.len() == 1 {
-            let sum_name = &ctor_sums[0];
-            if let Some(payload) = sum_ctor_payload(ctx, sum_name, name) {
-                if payload.is_empty() {
-                    return Ok(ArrowTy::value_channel(fresh_sum_vty(ctx, sum_name)));
-                }
-            }
-        }
-        // A bare constructor must be applied to its payload. If the ctor name
-        // is shared, the ambiguity is reported rather than resolved by map order.
-        let msg = if ctor_sums.len() == 1 {
-            format!(
-                "constructor `{name}` for `{}` requires arguments",
-                ctor_sums[0]
-            )
+        // A constructor is an ordinary curried VALUE (Haskell 2010 §4.2.1):
+        // `Just :: a -> Maybe a`, `Nothing :: Maybe a`. Its type is built from
+        // its sum, so an UNAPPLIED reference is the whole arrow (or, for a
+        // nullary constructor, the plain sum value) — exactly what the shared
+        // rule returns for zero arguments.
+        let sum_name = if ctor_sums.len() == 1 {
+            ctor_sums[0].clone()
         } else {
-            format!("constructor `{name}` requires arguments")
+            // If the ctor name is shared, the ambiguity is reported rather than
+            // resolved by map order.
+            return Err(CompileError::Type {
+                msg: format!("ambiguous constructor `{name}` (declared in multiple sum types)"),
+                span,
+            });
         };
-        return Err(CompileError::Type { msg, span });
+        let (params, ret) = sum_ctor_scheme(ctx, &sum_name, name);
+        let what = format!("constructor `{name}`");
+        return apply_args_curried(ctx, &params, &ret, &[], span, &what, ArgUnify::Exact);
     }
     // A bare typeclass method reference is an unapplied method call: `show`
     // needs an argument to select the instance. User definitions shadow class
@@ -5029,7 +5101,15 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
                 );
                 let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
                 let what = format!("method `{name}` of `{class_name}`");
-                return apply_args_curried(ctx, &param_tys, &ret, &[], span, &what);
+                return apply_args_curried(
+                    ctx,
+                    &param_tys,
+                    &ret,
+                    &[],
+                    span,
+                    &what,
+                    ArgUnify::Exact,
+                );
             }
             return Err(CompileError::Type {
                 msg: format!("method `{name}` of `{class_name}` requires an argument"),
@@ -5493,7 +5573,15 @@ fn infer_apply_expr(
         }
     };
     let ret = ret_tys.first().cloned().unwrap_or(ValueTy::Double);
-    apply_args_curried(ctx, &arg_tys, &ret, args, span, "expression")
+    apply_args_curried(
+        ctx,
+        &arg_tys,
+        &ret,
+        args,
+        span,
+        "expression",
+        ArgUnify::Exact,
+    )
 }
 
 /// Unify an application's RESULT type with the caller's expected type before the
@@ -5598,7 +5686,7 @@ fn infer_constrained_apply(
         });
     }
     let ret = ctx.subst.resolve_value(&ret_ty);
-    let at = apply_args_curried(ctx, &param_tys, &ret, args, span, &what)?;
+    let at = apply_args_curried(ctx, &param_tys, &ret, args, span, &what, ArgUnify::Exact)?;
     let bindings: HashMap<String, ValueTy> = vars
         .iter()
         .map(|(k, v)| (k.clone(), ctx.subst.resolve_value(v)))
@@ -5866,16 +5954,6 @@ fn infer_apply_impl(
         (inner, binders)
     });
     if let Some((crate::ast::TypeExpr::TFunc(params, ret), binders)) = builtin_sig {
-        if params.len() != args.len() {
-            return Err(CompileError::Type {
-                msg: format!(
-                    "`{name}` expects {} argument(s), got {}",
-                    params.len(),
-                    args.len()
-                ),
-                span,
-            });
-        }
         // Instantiate the signature's type variables ONCE for the whole call,
         // so the arguments and the result share them (a `forall`-bound region
         // variable in the STRef signatures, plus the free element variable).
@@ -5893,72 +5971,15 @@ fn infer_apply_impl(
             .map(|p| instantiate_builtin_sig_vty(ctx, p, &mut sig_vars))
             .collect::<Result<_, _>>()?;
         let ret_ty = instantiate_builtin_sig_vty(ctx, &ret, &mut sig_vars)?;
-        for (pt, a) in param_tys.into_iter().zip(args.iter()) {
-            // Every argument is inferred AT its declared parameter type. Haskell
-            // 2010 types an application by unifying each argument against the
-            // function's declared argument type, and that is the only way a
-            // result-directed method inside the argument (`show_int
-            // (fromInteger 2)`) learns its instance: `fromInteger : Int -> a`
-            // has no argument that could solve `a`, so the expected type must
-            // come from the parameter. Threading it only for `IO`/`Thunk`
-            // parameters or integer literals left every other parameter's
-            // argument untyped.
-            //
-            // A `Buffer` parameter is carved out: its slot accepts a buffer
-            // computation, a Buffer value, or a numeric signal constant, so its
-            // argument is inferred plainly and a numeric constant is
-            // RE-inferred at `Buffer` below. The carve-out is kept so the
-            // `Buffer` parameter's behaviour stays byte-identical across this
-            // change — it is not a claim that threading would be unsound there.
-            let buffer_param = matches!(pt, ValueTy::Buffer(_));
-            let at0 = if buffer_param {
-                infer_expr(ctx, a)?
-            } else {
-                infer_expr_expected(ctx, a, Some(pt.clone()))?
-            };
-            // A Buffer param (a foreign builtin's signal slot) accepts a signal
-            // computation (a `Buffer -> … -> Buffer` arrow applied to the
-            // program's buffers), a Buffer value, OR a numeric signal constant
-            // (a literal or a reference to a compile-time constant — `c = 440.0`
-            // used as `lowpass 1000.0 0.7 1.0`). Re-infer a numeric constant with
-            // `Buffer` expected so it unifies as a buffer channel.
-            let numeric_const = at0.arity_out() == 1
-                && matches!(at0.vty, ValueTy::Double | ValueTy::Int)
-                && (matches!(a, Expr::Int(_, _) | Expr::Double(_, _))
-                    || is_const_value_ref(ctx, a));
-            let at = if buffer_param && numeric_const {
-                infer_expr_expected(ctx, a, Some(pt.clone()))?
-            } else {
-                at0
-            };
-            // A Buffer param (a foreign builtin's signal slot) accepts a signal
-            // computation (a `Buffer -> … -> Buffer` arrow) OR a plain Buffer
-            // value — either way its first
-            // output is a Buffer. Non-Buffer params must be 0→1 values.
-            if !buffer_param && (at.arity_in() != 0 || at.arity_out() != 1) {
-                return Err(CompileError::Type {
-                    msg: format!(
-                        "argument of `{name}` must be a value expression, got arity {}→{}",
-                        at.arity_in(),
-                        at.arity_out()
-                    ),
-                    span: a.span(),
-                });
-            }
-            if at.arity_out() != 1 {
-                return Err(CompileError::Type {
-                    msg: format!(
-                        "argument of `{name}` must produce exactly one channel, got {}",
-                        at.arity_out()
-                    ),
-                    span: a.span(),
-                });
-            }
-            unify_value(&at.vty, &pt, &mut ctx.subst, a.span())?;
-        }
-        // A builtin-sig result is a VALUE channel (`IO Buffer` is a
-        // record value; `IO ()` a Void value).
-        return Ok(ArrowTy::value_channel(ret_ty));
+        // A builtin signature is an ordinary curried function type, so its
+        // arity is the shared rule's judgement: `write (Just 1.0)` is a partial
+        // application (GHC accepts it) and yields `OutputStream a -> IO ()`.
+        // Every argument is inferred AT its declared parameter type, which is
+        // what teaches a result-directed method inside the argument (`show_int
+        // (fromInteger 2)`) its instance: `fromInteger : Int -> a` has nothing
+        // in its own arguments to solve `a`.
+        let what = format!("`{name}`");
+        return apply_args_curried(ctx, &param_tys, &ret_ty, args, span, &what, ArgUnify::Exact);
     }
     if name == "not" {
         if args.len() != 1 {
@@ -6304,60 +6325,18 @@ fn infer_apply_impl(
                 span,
             });
         };
-        let payload = sum_ctor_payload(ctx, &sum_name, name).expect("ctor belongs to its sum");
-        if args.len() != payload.len() {
-            return Err(CompileError::Type {
-                msg: format!(
-                    "constructor `{name}` expects {} argument(s), got {}",
-                    payload.len(),
-                    args.len()
-                ),
-                span,
-            });
-        }
-        // Builtin sums (`Maybe`, `Either`) carry PLACEHOLDER type parameters
-        // (`Var(1)`, `Var(2)`) that are NOT live unification vars. Instantiate
-        // each payload placeholder with a fresh live var, unify the argument
-        // against it, and build the parameterized result `App(sum_name, ...)`
-        // with the FULL `arity` type args: each payload type lands at its
-        // placeholder position (`Var(k)` → arg k-1), the rest stay fresh
-        // (`Left 5.0` is `App("Either", [Double, ?])`). The match pin pads the
-        // scrutinee to `arity`, so the arities must agree.
-        if let Some(arity) = ctx.env.type_ctor_arity(&sum_name) {
-            let mut slots: Vec<Option<ValueTy>> = Vec::with_capacity(arity);
-            for _ in 0..arity {
-                slots.push(None);
-            }
-            for (i, pt) in payload.iter().enumerate() {
-                let pty = match pt {
-                    ValueTy::Var(_) => ctx.fresh_vty(),
-                    t => t.clone(),
-                };
-                let e = &args[i];
-                let vt = infer_const_value(ctx, e)?;
-                unify_value(&vt, &pty, &mut ctx.subst, e.span())?;
-                let idx = match pt {
-                    ValueTy::Var(k) => k.saturating_sub(1) as usize,
-                    _ => i,
-                };
-                if let Some(slot) = slots.get_mut(idx) {
-                    *slot = Some(ctx.subst.resolve_value(&pty));
-                }
-            }
-            let mut arg_tys: Vec<ValueTy> = Vec::with_capacity(arity);
-            for s in slots {
-                match s {
-                    Some(t) => arg_tys.push(t),
-                    None => arg_tys.push(ctx.fresh_vty()),
-                }
-            }
-            return Ok(ArrowTy::value_channel(ValueTy::Con(sum_name, arg_tys)));
-        }
-        for (e, pty) in args.iter().zip(payload.iter()) {
-            let vt = infer_const_value(ctx, e)?;
-            unify_value(&vt, pty, &mut ctx.subst, e.span())?;
-        }
-        return Ok(ArrowTy::value_channel(ValueTy::Con(sum_name, vec![])));
+        // A constructor IS an ordinary curried function (Haskell 2010 §4.2.1):
+        // `Just :: a -> Maybe a`, so the ARITY judgement belongs to the shared
+        // application rule. Fewer arguments than the payload is a PARTIAL
+        // application and yields the curried remainder (`g = Just`, `map Just`);
+        // exactly the payload is the sum value; more is an error. The scheme's
+        // payload placeholders are instantiated together with the result's type
+        // parameters, so the argument binds the sum's parameter (`Just 5.0` is
+        // `Maybe Double`, `Left 5.0` is `Either Double ?` — the match pin pads
+        // the scrutinee to `arity`, so the arities must agree).
+        let (params, ret) = sum_ctor_scheme(ctx, &sum_name, name);
+        let what = format!("constructor `{name}`");
+        return apply_args_curried(ctx, &params, &ret, args, span, &what, ArgUnify::Exact);
     }
     // Typeclass method call: `show x` resolves at compile time to the instance
     // of the class declaring `show` for the concrete type of `x` (v1 requires
@@ -6483,7 +6462,15 @@ fn infer_apply_impl(
                     );
                     let ret_ty = ret.unwrap_or_else(|| ctx.fresh_vty());
                     let what = format!("method `{name}` of `{class_name}`");
-                    return apply_args_curried(ctx, &sig_param_tys, &ret_ty, args, span, &what);
+                    return apply_args_curried(
+                        ctx,
+                        &sig_param_tys,
+                        &ret_ty,
+                        args,
+                        span,
+                        &what,
+                        ArgUnify::Exact,
+                    );
                 }
                 let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                     Some(r) => r,
@@ -6578,7 +6565,15 @@ fn infer_apply_impl(
                     );
                     let ret_ty = ret.unwrap_or_else(|| ctx.fresh_vty());
                     let what = format!("method `{name}` of `{class_name}`");
-                    return apply_args_curried(ctx, &param_tys, &ret_ty, args, span, &what);
+                    return apply_args_curried(
+                        ctx,
+                        &param_tys,
+                        &ret_ty,
+                        args,
+                        span,
+                        &what,
+                        ArgUnify::Exact,
+                    );
                 }
                 let _ = primitive;
                 if args.len() > n_sig_args {
@@ -6768,7 +6763,15 @@ fn infer_apply_impl(
                     // whole remaining signature).
                     let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
                     let what = format!("method `{name}` of `{class_name}`");
-                    return apply_args_curried(ctx, &param_tys, &ret, args, span, &what);
+                    return apply_args_curried(
+                        ctx,
+                        &param_tys,
+                        &ret,
+                        args,
+                        span,
+                        &what,
+                        ArgUnify::MethodOperand,
+                    );
                 }
                 let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                     Some(r) => r,
@@ -7327,26 +7330,26 @@ fn infer_apply_impl(
                     true,
                 ),
             };
-            if args.len() != arg_tys.len() {
-                return Err(CompileError::Type {
-                    msg: format!(
-                        "`{name}` expects {} argument(s), got {}",
-                        arg_tys.len(),
-                        args.len()
-                    ),
-                    span,
-                });
-            }
             if unresolved {
+                // An UNRESOLVED parameter has no signature to count, so the
+                // call defines the arity: bind the local to a fresh nest of the
+                // applied arity and unify the arguments against it.
                 let func_ty = nest_thunk(&arg_tys, ret_tys.clone());
                 unify_value(lty, &func_ty, &mut ctx.subst, span)?;
+                for (a, pty) in args.iter().zip(arg_tys.iter()) {
+                    let vt = infer_method_value_vty(ctx, a, "argument")?;
+                    unify_value(&vt, pty, &mut ctx.subst, a.span())?;
+                }
+                let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Double);
+                return Ok(ArrowTy::value_channel(ret_ty));
             }
-            for (a, pty) in args.iter().zip(arg_tys.iter()) {
-                let vt = infer_method_value_vty(ctx, a, "argument")?;
-                unify_value(&vt, pty, &mut ctx.subst, a.span())?;
-            }
-            let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Double);
-            return Ok(ArrowTy::value_channel(ret_ty));
+            // A RESOLVED function value has a real curried type: `arg_tys` are
+            // its parameters and `ret_tys` its result, so the shared rule
+            // decides the call (`f 1.0` of a two-parameter local is the curried
+            // remainder).
+            let ret = ret_tys.first().cloned().unwrap_or(ValueTy::Double);
+            let what = format!("`{name}`");
+            return apply_args_curried(ctx, &arg_tys, &ret, args, span, &what, ArgUnify::Exact);
         }
     }
     // Class-constrained definition (`mk :: Ix i => Pair i i -> …`): the scheme
@@ -7420,14 +7423,8 @@ fn infer_apply_impl(
                     )));
                 }
                 if args.len() > arg_tys.len() {
-                    return Err(CompileError::Type {
-                        msg: format!(
-                            "`{name}` expects {} argument(s), got {}",
-                            arg_tys.len(),
-                            args.len()
-                        ),
-                        span,
-                    });
+                    let what = format!("`{name}`");
+                    check_application_arity(arg_tys.len(), args.len(), span, &what)?;
                 }
                 // Pin the application's RESULT type to the caller's expected
                 // type BEFORE the arguments infer: a chain whose container is
@@ -7487,16 +7484,16 @@ fn infer_apply_impl(
                 return Ok(ArrowTy::value_channel(ret_ty));
             }
             if let Some(ref_scheme) = target {
-                if args.len() != ref_scheme.lam_count {
-                    return Err(CompileError::Type {
-                            msg: format!(
-                                "`{name}` references `{ref_name}`, which expects {} argument(s), got {}",
-                                ref_scheme.lam_count,
-                                args.len()
-                            ),
-                            span,
-                        });
-                }
+                // The referenced definition's type IS a curried function type
+                // (`ref_scheme` is a `Thunk`), so a call with fewer arguments is
+                // a PARTIAL application and yields the curried remainder
+                // (Haskell 2010 §4.3.3 — `f 1.0` of a two-λ target is
+                // GHC-valid). The arity judgement is the shared one; the
+                // argument CHECKING stays here, because a signature-less
+                // definition's formal types are recovered from its body and get
+                // this site's own diagnostic (PARK M10).
+                let what = format!("`{name}` references `{ref_name}`, which");
+                check_application_arity(ref_scheme.lam_count, args.len(), span, &what)?;
                 let ty = ctx.instantiate(&ref_scheme);
                 // A named definition applied to its full argument list: the
                 // arguments still must match the formal parameter types
@@ -7504,10 +7501,7 @@ fn infer_apply_impl(
                 // polymorphic definition (a generalized `a -> a`) defers instead
                 // of being pinned by this call.
                 check_def_call_args(ctx, name, args, &ty.vty)?;
-                return Ok(ArrowTy::value(applied_result(
-                    &ty.vty,
-                    ref_scheme.lam_count,
-                )));
+                return Ok(ArrowTy::value(applied_result(&ty.vty, args.len())));
             }
         }
         if args.len() != scheme.lam_count {
