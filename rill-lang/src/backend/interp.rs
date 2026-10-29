@@ -1,6 +1,6 @@
 //! IR evaluator: the block-only executor.
 
-use num_bigint::BigInt;
+use num_bigint::{BigInt, BigUint};
 use rill_core::buffer::FixedBuffer;
 use rill_core::math::vector::ScalarVector4;
 use rill_core::math::Transcendental;
@@ -2582,6 +2582,83 @@ fn alloc_int_bounds<T: Transcendental, const BUF: usize>(
     }
 }
 
+/// Read a value register as an `Integer` operand for a pure `Integer` kernel
+/// (`gcd`, `%`). The declared signatures are `Integer -> Integer -> …`, so a
+/// non-`Integer` operand is a lowering bug or a rejected mixed-track call —
+/// a FAULT naming the kernel, never a silent rounding into `f64`.
+fn integer_operand<T: Transcendental, const BUF: usize>(
+    ir: &Ir,
+    world: &mut WorldState<T, BUF>,
+    reg: usize,
+    what: &'static str,
+    drops: &mut Vec<ArenaRef>,
+) -> Result<BigInt, &'static str> {
+    match arithmetic_operand(ir, world, reg, drops) {
+        ArithmeticOperand::Integer(v) => Ok(v),
+        ArithmeticOperand::Bottom => Err(what),
+        ArithmeticOperand::Absent => Err(what),
+        ArithmeticOperand::Int(_) | ArithmeticOperand::Double(_) => Err(what),
+    }
+}
+
+/// The greatest common divisor of two `Integer`s, as `gcd` (Haskell 2010
+/// Prelude §6.4.2) computes it: BINARY (Stein) GCD over the operands'
+/// MAGNITUDES, so the result is always non-negative (`gcd (-4) 6` is `2`) and
+/// exact at any width.
+///
+/// `num-bigint`'s `Integer::gcd` is the same algorithm, but reaching it needs
+/// `num_integer` as a direct dependency; `BigUint::trailing_zeros` and the
+/// shift/mask primitives are already here, so the loop is written out rather
+/// than adding a crate for five lines.
+fn integer_gcd(a: &BigInt, b: &BigInt) -> BigInt {
+    let mut m = a.magnitude().clone();
+    let mut n = b.magnitude().clone();
+    if m == BigUint::ZERO {
+        return BigInt::from(n);
+    }
+    if n == BigUint::ZERO {
+        return BigInt::from(m);
+    }
+    let shift = std::cmp::min(
+        m.trailing_zeros().unwrap_or(0),
+        n.trailing_zeros().unwrap_or(0),
+    );
+    // Strip the common factor of two from `n` and from `m` before the loop:
+    // both are odd afterwards, so every subtraction stays odd and only `m`
+    // needs re-stripping.
+    n >>= n.trailing_zeros().unwrap_or(0);
+    loop {
+        m >>= m.trailing_zeros().unwrap_or(0);
+        if n > m {
+            std::mem::swap(&mut n, &mut m);
+        }
+        m -= &n;
+        if m == BigUint::ZERO {
+            break;
+        }
+    }
+    BigInt::from(n << shift)
+}
+
+/// Normalise a ratio's fields the way `Data.Ratio`'s `%` does: reduce by the
+/// gcd of the two fields and move any sign onto the numerator, so the
+/// denominator is positive. `Err` carries the H2010 fault message for a zero
+/// denominator (`Ratio`'s `%` is partial).
+fn ratio_normalized(num: BigInt, den: BigInt) -> Result<(BigInt, BigInt), &'static str> {
+    if den.sign() == num_bigint::Sign::NoSign {
+        return Err("Ratio has zero denominator");
+    }
+    let g = integer_gcd(&num, &den);
+    // `den` is non-zero, so `g` is too: the division is total, and it is exact
+    // by construction.
+    let (mut n, mut d) = (num / &g, den / &g);
+    if d.sign() == num_bigint::Sign::Minus {
+        n = -n;
+        d = -d;
+    }
+    Ok((n, d))
+}
+
 /// Dispatch a collection operation (`ValueCallBuiltin`).
 ///
 /// Container reads copy (RC++) any child refs the result claims so both the
@@ -4069,6 +4146,94 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 }
             });
             world.value_regs[dst] = alloc_owned(ir, world, Value::Buffer(di));
+        }
+        Gcd => {
+            // `gcd n d`: a pure `Integer` kernel, read through the shared
+            // integer-operand path so a non-`Integer` operand FAULTS rather
+            // than rounding (`gcd :: Integer -> Integer -> Integer`).
+            let a = integer_operand(
+                ir,
+                world,
+                base + args[0],
+                "gcd: operand is not an Integer",
+                drops,
+            );
+            let b = integer_operand(
+                ir,
+                world,
+                base + args[1],
+                "gcd: operand is not an Integer",
+                drops,
+            );
+            world.value_regs[dst] = match (a, b) {
+                (Ok(a), Ok(b)) => alloc_owned(ir, world, Value::Integer(integer_gcd(&a, &b))),
+                (Err(why), _) | (_, Err(why)) => {
+                    latch_fault(ir, world, why);
+                    None
+                }
+            };
+        }
+        RatioPercent => {
+            // `(%) :: Integer -> Integer -> Ratio Integer` — Data.Ratio's smart
+            // constructor, and the ONE normalisation site (`numerator` and
+            // `denominator` are field projections, so a value built here is
+            // already in lowest terms with `den > 0`).
+            let n = integer_operand(
+                ir,
+                world,
+                base + args[0],
+                "Ratio: operand is not an Integer",
+                drops,
+            );
+            let d = integer_operand(
+                ir,
+                world,
+                base + args[1],
+                "Ratio: operand is not an Integer",
+                drops,
+            );
+            let (n, d) = match (n, d) {
+                (Ok(n), Ok(d)) => match ratio_normalized(n, d) {
+                    Ok(pair) => pair,
+                    Err(why) => {
+                        // A zero denominator is H2010's `Ratio has zero
+                        // denominator`. The fault is latched here (cited, not
+                        // routed through a source name) so a user `error`
+                        // cannot answer this branch — the defect Task 3's fix
+                        // closed for the arithmetic bottoms.
+                        latch_fault(ir, world, why);
+                        world.value_regs[dst] = None;
+                        return;
+                    }
+                },
+                (Err(why), _) | (_, Err(why)) => {
+                    latch_fault(ir, world, why);
+                    world.value_regs[dst] = None;
+                    return;
+                }
+            };
+            let Some(num_ref) = alloc_owned(ir, world, Value::Integer(n)) else {
+                world.value_regs[dst] = None;
+                return;
+            };
+            let Some(den_ref) = alloc_owned(ir, world, Value::Integer(d)) else {
+                world.arena.drop_ref(num_ref);
+                world.value_regs[dst] = None;
+                return;
+            };
+            let mut fields = match world.arena.take_buf(2) {
+                Ok(b) => b,
+                Err(_) => {
+                    latch_exhaustion(ir, world, "value buffer pool");
+                    world.arena.drop_ref(num_ref);
+                    world.arena.drop_ref(den_ref);
+                    world.value_regs[dst] = None;
+                    return;
+                }
+            };
+            fields.push(num_ref);
+            fields.push(den_ref);
+            world.value_regs[dst] = alloc_owned(ir, world, Value::Record(fields));
         }
     }
 }

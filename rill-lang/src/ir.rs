@@ -169,6 +169,20 @@ pub enum ValueBuiltinOp {
     /// Build an immutable array whose every position is the given seed value:
     /// `arraySeed bounds init`.
     ArraySeed,
+    /// Greatest common divisor of two `Integer`s (`gcd`, Haskell 2010 Prelude
+    /// §6.4.2): binary GCD on the operands' magnitudes, so the result is
+    /// non-negative (`gcd (-4) 6` is `2`) and exact at any width.
+    ///
+    /// The signature is `Integer -> Integer -> Integer`, NOT
+    /// `Integral a => a -> a -> a`: rill has no `Integral` class (design A6 /
+    /// OD-24), so the kernel is honestly narrower than the Report's.
+    Gcd,
+    /// `Data.Ratio`'s smart constructor `(%)`: build a `Ratio Integer` from a
+    /// numerator and a denominator, in LOWEST TERMS with the sign on the
+    /// numerator, faulting on a zero denominator (H2010's `%` is partial). One
+    /// normalisation site, used by `%` itself and by every `Ratio` arithmetic
+    /// body.
+    RatioPercent,
 }
 
 /// A value-track effect operation (the ST/region and IO-stream primitives).
@@ -329,6 +343,34 @@ pub enum ValueTerm {
 /// The spelling is internal to the PRELUDE and is not part of the language's
 /// surface.
 pub const VALUE_FAULT_PRIMITIVE: &str = "__fault";
+
+/// The Prelude-internal spelling of the ratio normalisation kernel
+/// ([`ValueBuiltinOp::RatioPercent`]).
+///
+/// `(%)` is `Data.Ratio`'s surface constructor and, like every H2010 Prelude
+/// binding, it is SHADOWABLE — a program may define `(%) a b = …`. The
+/// `Ratio` instance bodies are inlined BY NAME, so if they spelled their
+/// normalisation `%` a program's own `%` would answer `a / b`, and the
+/// language's arithmetic would silently become the program's function. That is
+/// exactly the defect [`VALUE_FAULT_PRIMITIVE`] exists to prevent.
+///
+/// `__ratio_percent` is therefore a single RESERVED SPELLING compared
+/// literally in both `infer` and `lower`, ahead of every definition-site arm —
+/// the same technique as `__fault`, and for the same reason. It is internal to
+/// the PRELUDE and is not part of the language's surface.
+pub const RATIO_PERCENT_PRIMITIVE: &str = "__ratio_percent";
+
+/// The Prelude-internal spelling of the integer gcd kernel
+/// ([`ValueBuiltinOp::Gcd`]).
+///
+/// `gcd` is an ordinary, SHADOWABLE Haskell 2010 Prelude binding (Report
+/// §6.4.2), so the public `gcd` is a PRELUDE DEFINITION (`gcd a b = __gcd a
+/// b`) that a program may replace. The kernel underneath it is spelled
+/// `__gcd` and resolved by RESERVED SPELLING, the same technique as
+/// [`VALUE_FAULT_PRIMITIVE`] — a spelling a program cannot intercept, so
+/// nothing the language itself does can be reached through a redefinable name.
+/// It is internal to the PRELUDE and is not part of the language's surface.
+pub const GCD_PRIMITIVE: &str = "__gcd";
 
 /// A value instruction. Runs in the value-track phase of the program's single
 /// execution (the entry fragment body), operating on value registers and the
@@ -1160,7 +1202,9 @@ mod value_builtin_tests {
             ValueBuiltinOp::ArrayFromListChecked,
             ValueBuiltinOp::ArrayFromAssocs,
             ValueBuiltinOp::ArraySeed,
+            ValueBuiltinOp::Gcd,
+            ValueBuiltinOp::RatioPercent,
         ];
-        assert_eq!(ops.len(), 35);
+        assert_eq!(ops.len(), 37);
     }
 }

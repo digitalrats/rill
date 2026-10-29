@@ -6126,6 +6126,41 @@ fn infer_apply_impl(
         let ret = ctx.fresh_vty();
         return Ok(ArrowTy::value_channel(ret));
     }
+    // `__ratio_percent` and `__gcd` — the PRELUDE's internal INTEGER kernels
+    // (`ir::RATIO_PERCENT_PRIMITIVE`, `ir::GCD_PRIMITIVE`). Like `__fault` they
+    // are single RESERVED SPELLINGS, resolved here ahead of every
+    // definition-site arm, because the `Ratio` instance bodies are inlined BY
+    // NAME: a program's own `(%)` must not answer `a / b`, and a program's own
+    // `__gcd` must not answer the Prelude's `gcd` definition. Both signatures
+    // are `Integer -> Integer -> …` — there is no `Integral` class to generalise
+    // over (design A6 / OD-24).
+    if name == crate::ir::RATIO_PERCENT_PRIMITIVE || name == crate::ir::GCD_PRIMITIVE {
+        if args.len() != 2 {
+            return Err(CompileError::Type {
+                msg: format!("`{name}` expects 2 argument(s), got {}", args.len()),
+                span,
+            });
+        }
+        for (i, a) in args.iter().enumerate() {
+            let t = infer_method_value_vty(ctx, a, "argument")?;
+            if let Err(e) = unify_value(&t, &ValueTy::Integer, &mut ctx.subst, a.span()) {
+                return Err(CompileError::Type {
+                    msg: format!(
+                        "`{name}` expects Integer argument {}, got {t:?}: {e} (no `Integral` \
+                         class exists, so this kernel is Integer-only — OD-24)",
+                        i + 1
+                    ),
+                    span: a.span(),
+                });
+            }
+        }
+        let ret = if name == crate::ir::RATIO_PERCENT_PRIMITIVE {
+            ValueTy::Con("Ratio".into(), vec![ValueTy::Integer])
+        } else {
+            ValueTy::Integer
+        };
+        return Ok(ArrowTy::value_channel(ret));
+    }
     if name == "error" && !ctx.locals.contains_key(name) && !ctx.defs.contains_key(name) {
         if args.len() != 1 {
             return Err(CompileError::Type {

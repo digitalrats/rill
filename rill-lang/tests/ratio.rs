@@ -182,8 +182,10 @@ fn min_and_max_compare_by_value() {
 
 #[test]
 fn ratio_arithmetic_combines_the_fields() {
-    // 1/2 + 1/3 = 5/6, 1/2 - 1/3 = 1/6, 1/2 * 1/3 = 1/6. Nothing normalises
-    // yet (`%`/`gcd` are a later task), so the denominator is the product.
+    // 1/2 + 1/3 = 5/6, 1/2 - 1/3 = 1/6, 1/2 * 1/3 = 1/6 — each already in
+    // lowest terms, so GHC's answer and the unreduced cross-product agree here
+    // (the reduction is pinned where it DIFFERS, in
+    // `arithmetic_results_are_in_lowest_terms`).
     assert_eq!(
         run(&format!(
             "{HALF}{THIRD}main = do {{ write (Just (show_integer ((r + s).num))) stdout; write (Just \"/\") stdout; write (Just (show_integer ((r + s).den))) stdout; return () }};"
@@ -225,24 +227,22 @@ fn ratio_division_and_recip_are_fractional() {
 fn every_arithmetic_method_keeps_the_denominator_positive() {
     // Sign normalisation is required of `+ - * /` (and `recip`), not just `/`:
     // each can produce a negative denominator when an INPUT is negative, and a
-    // negative denominator is exactly what makes `Ord`/`signum` wrong. GHC's
-    // answers, measured: `1/2 + (-1)/2` is `0%1`; `1/2 - 3/(-2)` is `2%1`;
-    // `1/2 * ((-1)/2)` is `(-1)%4`; `1/2 / ((-3)/4)` is `(-2)%3`. Ours are
-    // unreduced (no `gcd` yet), so each is asserted as its sign-normalised
-    // unreduced pair — the invariant `den > 0` is what is being pinned, and it
-    // is the pair-with-the-same-VALUE that GHC prints. The `+` case is `0/4`,
-    // not GHC's `0%1`: GHC reduces, this task does not.
+    // negative denominator is exactly what makes `Ord`/`signum` wrong. Each
+    // body now also REDUCES through the `ratio_percent` kernel, so these are
+    // GHC's own answers, measured: `1/2 + (-1)/2` is `0%1`;
+    // `1/2 - 3/(-2)` is `2%1`; `1/2 * ((-1)/2)` is `(-1)%4`.
     assert_eq!(
         run("a = Ratio { num: (1 :: Integer), den: (2 :: Integer) };\nb = Ratio { num: (-1 :: Integer), den: (2 :: Integer) };\nmain = do { write (Just (show_integer ((a + b).num))) stdout; write (Just \"/\") stdout; write (Just (show_integer ((a + b).den))) stdout; return () };"),
-        "0/4"
+        "0/1"
     );
     assert_eq!(
         run("a = Ratio { num: (1 :: Integer), den: (2 :: Integer) };\nb = Ratio { num: (3 :: Integer), den: (-2 :: Integer) };\nmain = do { write (Just (show_integer ((a - b).den))) stdout; return () };"),
-        "4"
+        "1"
     );
-    // `1/2 * ((-1)/2)` = `-1/4`: the product's denominator is `-4` without
-    // normalisation, and `q > 0` would then answer `True` where the value is
-    // negative.
+    // `1/2 * ((-1)/2)` = `(-1) % 4`: without normalisation the product's
+    // denominator is `-4` and `q > 0` answers `True` where the value is
+    // negative. (This case happens to be irreducible, so it pins the SIGN half
+    // on its own.)
     assert_eq!(
         run("a = Ratio { num: (1 :: Integer), den: (2 :: Integer) };\nb = Ratio { num: (-1 :: Integer), den: (2 :: Integer) };\nq = a * b;\nzero = Ratio { num: (0 :: Integer), den: (1 :: Integer) };\nmain = do { write (Just (show_integer q.num)) stdout; write (Just \"/\") stdout; write (Just (show_integer q.den)) stdout; write (Just (show_bool (q > zero))) stdout; return () };"),
         "-1/4False"
@@ -327,35 +327,32 @@ fn the_polymorphic_head_beats_the_derived_structural_marker() {
 
 #[test]
 fn division_normalises_the_sign() {
-    // GHC: `(1%2) / ((-3)%4)` is `(-2) % 3` — the sign lives on the numerator.
-    //
-    // This task has no `gcd`, so the pair is NOT reduced: what must hold is the
-    // H2010 invariant `den > 0`, which turns `4 / -6` into `-4 / 6`. The
-    // numerator/denominator are therefore GHC's cross-multiplied by 2, the same
-    // value. The reduction gap does NOT close when `%`/`numerator`/
-    // `denominator` are declared: those are plain field projections, and only
-    // `%` would normalise, so an intermediate produced by `(/)` stays `-4/6`.
-    // It closes only when the ARITHMETIC BODIES themselves reduce, which needs
-    // `gcd` (available from Task 4) — i.e. Task 4 must also reduce in
-    // `+ - * /`, not only in `%`. Recorded in the report; do not read `-4/6` as
-    // a new defect.
+    // GHC: `(1%2) / ((-3)%4)` is `(-2) % 3` — the sign lives on the numerator
+    // AND the pair is in lowest terms. Both halves come from the same
+    // `ratio_percent` kernel the bodies call, so this is GHC's own answer.
     assert_eq!(
         run("a = Ratio { num: (1 :: Integer), den: (2 :: Integer) };\nb = Ratio { num: (-3 :: Integer), den: (4 :: Integer) };\nq = a / b;\nmain = do { write (Just (show_integer q.num)) stdout; write (Just (show_integer q.den)) stdout; return () };"),
-        "-46"
+        "-23"
     );
     assert_eq!(
         run("a = Ratio { num: (-1 :: Integer), den: (2 :: Integer) };\nq = recip a;\nmain = do { write (Just (show_integer q.num)) stdout; write (Just (show_integer q.den)) stdout; return () };"),
         "-21"
     );
-    // The normalisation is written against the FIELDS (`d - d`, `d < z`,
-    // `z - n`), not against `Integer` literals, so it serves every field type:
-    // `(-1)/2` at `Ratio Int` gives `-1/2` with the denominator positive, and
-    // the fault branch's `error` types from the method's own result. An
-    // annotated `(0 :: Integer)` anywhere above would fail this assertion with
-    // "cannot unify value type Int with Integer".
+    // `(/)` and `recip` reduce through an `Integer`-only kernel, so they are
+    // available at `Ratio Integer` alone. A `Ratio Int` division is REJECTED
+    // LOUDLY rather than answering an unreduced pair — GHC accepts it, so this
+    // is the recorded open defect A6/OD-24 (no `Integral` class), pinned here
+    // so that adding `Integral` is what removes it, not a silent behaviour
+    // change.
+    rejects_with(
+        "a :: Ratio Int;\na = Ratio { num: 1, den: 2 };\nq = recip a;\nmain = do { write (Just (show_int q.num)) stdout; return () };",
+        "cannot unify value type Int with Integer",
+    );
+    // `negate` does NOT go through the kernel (H2010's `negate` does not
+    // re-normalise), so it stays payload-generic and answers at `Ratio Int`.
     assert_eq!(
-        run("a :: Ratio Int;\na = Ratio { num: -1, den: 2 };\nq = recip a;\nmain = do { write (Just (show_int q.num)) stdout; write (Just \"/\") stdout; write (Just (show_int q.den)) stdout; return () };"),
-        "-2/1"
+        run("a :: Ratio Int;\na = Ratio { num: 1, den: 2 };\nq = negate a;\nmain = do { write (Just (show_int q.num)) stdout; write (Just \"/\") stdout; write (Just (show_int q.den)) stdout; return () };"),
+        "-1/2"
     );
 }
 
@@ -449,6 +446,251 @@ fn a_lambda_parameter_named_error_is_captured() {
     assert_eq!(
         run("f error = \\y -> error y;\ninc x = x + 1.0;\nmain = do { write (Just (show_double ((f inc) 1.0))) stdout; return () };"),
         "2.0"
+    );
+}
+
+// --- `gcd`, `%`, `numerator` and `denominator` (Data.Ratio's surface) ------
+//
+// Task 4. `%` is a real operator now (`infixl 7`, the Report's precedence for
+// `Data.Ratio.%`), `gcd` is a builtin at `Integer`, and `numerator`/
+// `denominator` are ordinary PRELUDE field projections — NOT builtins, because
+// a builtin beside `.num` would be a second mechanism for reading a field.
+
+#[test]
+fn gcd_is_an_arbitrary_precision_integer_gcd() {
+    // GHC: `gcd 12 18` is 6, and `gcd` of a negative pair is NON-NEGATIVE
+    // (`gcd (-4) 6` is 2) — the sign is a property of the algorithm, not of
+    // the inputs.
+    assert_eq!(
+        run("main = do { write (Just (show_integer (gcd (12 :: Integer) (18 :: Integer)))) stdout; return () };"),
+        "6"
+    );
+    assert_eq!(
+        run("main = do { write (Just (show_integer (gcd ((0 :: Integer) - 4) (6 :: Integer)))) stdout; return () };"),
+        "2"
+    );
+    assert_eq!(
+        run("main = do { write (Just (show_integer (gcd (0 :: Integer) (0 :: Integer)))) stdout; return () };"),
+        "0"
+    );
+    // Both-negative and mixed-sign pairs are non-negative too, and the parity
+    // cases are where a hand-rolled binary GCD usually breaks: `gcd 48 18` (both
+    // even, common factor of two), `gcd 17 5` (both odd), `gcd 0 7` / `gcd 7 0`
+    // (one zero), `gcd (-12) (-18)` (both negative).
+    assert_eq!(
+        run("main = do { write (Just (show_integer (gcd (48 :: Integer) (18 :: Integer)))) stdout; write (Just (show_integer (gcd (17 :: Integer) (5 :: Integer)))) stdout; write (Just (show_integer (gcd (0 :: Integer) (7 :: Integer)))) stdout; write (Just (show_integer (gcd (7 :: Integer) (0 :: Integer)))) stdout; write (Just (show_integer (gcd ((0 :: Integer) - 12) ((0 :: Integer) - 18)))) stdout; return () };"),
+        "61776"
+    );
+    // The kernel works on `BigInt`, so a gcd far outside `i64` is exact.
+    // GHC: `gcd 123456789012345678901234567890 98765432109876543210987654321`
+    // is `900000000090000000009`.
+    assert_eq!(
+        run("main = do { write (Just (show_integer (gcd (123456789012345678901234567890 :: Integer) (98765432109876543210987654321 :: Integer)))) stdout; return () };"),
+        "900000000090000000009"
+    );
+}
+
+#[test]
+fn gcd_is_an_ordinary_shadowable_prelude_binding() {
+    // H2010 Prelude §6.4.2: `gcd` is a function, not a keyword, so a program
+    // may define its own — exactly like `error`. The public `gcd` is therefore
+    // a PRELUDE DEFINITION over the reserved `__gcd` kernel, not a builtin (a
+    // builtin would have reserved the spelling, which H2010 does not allow).
+    assert_eq!(
+        run("gcd a b = (99 :: Integer);\nmain = do { write (Just (show_integer (gcd (4 :: Integer) (6 :: Integer)))) stdout; return () };"),
+        "99"
+    );
+    assert_eq!(
+        run("gcd a b = (99 :: Integer);\nf x = gcd x (6 :: Integer);\nmain = do { write (Just (show_integer (f (4 :: Integer)))) stdout; return () };"),
+        "99"
+    );
+    // The kernel is NOT shadowable: it is spelled `__gcd` and resolved by
+    // reserved spelling ahead of every definition-site arm, so the Prelude's
+    // own `gcd` definition still answers 2. (Without that ordering the kernel
+    // was a plain name and MEASURED `gcd 4 6` answered 99.)
+    assert_eq!(
+        run("__gcd a b = (99 :: Integer);\nmain = do { write (Just (show_integer (gcd (4 :: Integer) (6 :: Integer)))) stdout; return () };"),
+        "2"
+    );
+}
+
+#[test]
+fn percent_normalizes() {
+    // GHC: numerator (3 % 6) is 1, denominator is 2.
+    assert_eq!(
+        run("r = 3 % 6;\nmain = do { write (Just (show_integer (numerator r))) stdout; return () };"),
+        "1"
+    );
+    assert_eq!(
+        run("r = 3 % 6;\nmain = do { write (Just (show_integer (denominator r))) stdout; return () };"),
+        "2"
+    );
+}
+
+#[test]
+fn the_sign_lives_on_the_numerator() {
+    // GHC: `1 % (-2)` prints as `(-1) % 2`.
+    assert_eq!(
+        run("r = (1 :: Integer) % (-2);\nmain = do { write (Just (show_integer (numerator r))) stdout; write (Just (show_integer (denominator r))) stdout; return () };"),
+        "-12"
+    );
+}
+
+#[test]
+fn numerator_and_denominator_are_field_projections() {
+    // They read the fields, they do not normalise: a hand-written unreduced
+    // record reports its fields as written. This is what makes them
+    // projections rather than a second construction mechanism, and it is why
+    // the ARITHMETIC bodies must reduce for their answers to match GHC.
+    assert_eq!(
+        run("r = Ratio { num: (6 :: Integer), den: (8 :: Integer) };\nmain = do { write (Just (show_integer (numerator r))) stdout; write (Just \"/\") stdout; write (Just (show_integer (denominator r))) stdout; return () };"),
+        "6/8"
+    );
+}
+
+#[test]
+fn percent_is_a_fixity_table_operator() {
+    // `infixl 7` (Data.Ratio). Precedence is pinned against the COMPARISON
+    // level (4): `%` binds tighter, so this parses as `(1%2) == (2%4)` and
+    // answers True. Were `%` looser, the parse would be `1 % (2 == 2) % 4` — a
+    // type error, not a True.
+    assert_eq!(
+        run("main = do { write (Just (show_bool ((1 :: Integer) % 2 == 2 % 4))) stdout; return () };"),
+        "True"
+    );
+    // ... and against the ADDITIVE level (6): `1 % 2 + 1 % 2` is
+    // `(1%2) + (1%2)` = `1 % 1`. A looser `%` would parse
+    // `1 % (2 + 1) % 2`, a type error — so the value changes with the level.
+    assert_eq!(
+        run("main = do { write (Just (show_integer (numerator ((1 :: Integer) % 2 + 1 % 2)))) stdout; write (Just \"/\") stdout; write (Just (show_integer (denominator ((1 :: Integer) % 2 + 1 % 2)))) stdout; return () };"),
+        "1/1"
+    );
+    // ... and it is NOT looser than `*` either: `2 * 1 % 4` is `(2*1) % 4` =
+    // `2 % 4` = `1 % 2`. Under a `%` TIGHTER than `*` that would be
+    // `2 * (1 % 4)`, a type error.
+    assert_eq!(
+        run("main = do { write (Just (show_integer (numerator (2 * (1 :: Integer) % 4)))) stdout; write (Just \"/\") stdout; write (Just (show_integer (denominator (2 * (1 :: Integer) % 4)))) stdout; return () };"),
+        "1/2"
+    );
+    // Associativity at `%`'s OWN level is not observable: both readings of
+    // `a % b % c` are type errors, because `%`'s operands are `Integral` and a
+    // `Ratio` is not. `infixl 7` is therefore recorded in the fixity table (and
+    // here) rather than pinned by a program.
+    rejects_with(
+        "q :: Ratio Integer;\nq = (12 :: Integer) % 8 % 2;\nmain = do { write (Just (show_integer (numerator q))) stdout; return () };",
+        "cannot unify value type",
+    );
+}
+
+#[test]
+fn a_zero_denominator_percent_faults() {
+    // GHC: `1 % 0` is "Ratio has zero denominator". rill's own partial
+    // operations spell that bottom `__fault`, which a user `error` cannot
+    // hijack — so the message must survive a shadowing `error` as well.
+    let msg = run_faults("q = (1 :: Integer) % 0;\nmain = do { write (Just (show_integer (numerator q))) stdout; return () };");
+    assert!(
+        msg.contains("Ratio has zero denominator"),
+        "expected the zero-denominator fault from `%`, got: {msg}"
+    );
+    let msg = run_faults("error x = (7 :: Integer);\nq = (1 :: Integer) % 0;\nmain = do { write (Just (show_integer (numerator q))) stdout; return () };");
+    assert!(
+        msg.contains("Ratio has zero denominator"),
+        "the `%` zero-denominator fault must survive a user `error`, got: {msg}"
+    );
+}
+
+#[test]
+fn arithmetic_results_are_in_lowest_terms() {
+    // GHC: `(1%2) / ((-3)%4)` is `(-2) % 3`.
+    assert_eq!(
+        run("a = Ratio { num: (1 :: Integer), den: (2 :: Integer) };\nb = Ratio { num: (-3 :: Integer), den: (4 :: Integer) };\nq = a / b;\nmain = do { write (Just (show_integer (numerator q))) stdout; write (Just (show_integer (denominator q))) stdout; return () };"),
+        "-23"
+    );
+    // GHC: `numerator (1%2 + 1%2)` is 1, denominator 1.
+    assert_eq!(
+        run("a = Ratio { num: (1 :: Integer), den: (2 :: Integer) };\nq = a + a;\nmain = do { write (Just (show_integer (numerator q))) stdout; write (Just (show_integer (denominator q))) stdout; return () };"),
+        "11"
+    );
+    // `recip` reduces too: `recip (6%8)` is `4 % 3` (GHC), not `8 % 6`.
+    assert_eq!(
+        run("q = recip (Ratio { num: (6 :: Integer), den: (8 :: Integer) });\nmain = do { write (Just (show_integer (numerator q))) stdout; write (Just \"/\") stdout; write (Just (show_integer (denominator q))) stdout; return () };"),
+        "4/3"
+    );
+    // ... and so do `-` and `*`: `3/6 - 1/6` is `1 % 3` (GHC), `2/3 * 3/4` is
+    // `1 % 2`.
+    assert_eq!(
+        run("a = Ratio { num: (3 :: Integer), den: (6 :: Integer) };\nb = Ratio { num: (1 :: Integer), den: (6 :: Integer) };\nq = a - b;\nmain = do { write (Just (show_integer (numerator q))) stdout; write (Just \"/\") stdout; write (Just (show_integer (denominator q))) stdout; return () };"),
+        "1/3"
+    );
+    assert_eq!(
+        run("a = Ratio { num: (2 :: Integer), den: (3 :: Integer) };\nb = Ratio { num: (3 :: Integer), den: (4 :: Integer) };\nq = a * b;\nmain = do { write (Just (show_integer (numerator q))) stdout; write (Just \"/\") stdout; write (Just (show_integer (denominator q))) stdout; return () };"),
+        "1/2"
+    );
+}
+
+#[test]
+fn a_user_percent_cannot_hijack_the_arithmetic_normalisation() {
+    // The instance bodies reduce through the PRELUDE-INTERNAL `__ratio_percent`
+    // kernel, not through the surface `%`. That is load-bearing for the same
+    // reason Task 3's `__fault` is: an instance body is inlined BY NAME, so if
+    // the bodies called `%`, a program's own definition would answer them.
+    // MEASURED with the surface spelling: `a / b` answered `7/1`.
+    assert_eq!(
+        run("(%) a b = Ratio { num: (7 :: Integer), den: (1 :: Integer) };\na = Ratio { num: (1 :: Integer), den: (2 :: Integer) };\nb = Ratio { num: (3 :: Integer), den: (4 :: Integer) };\nq = a / b;\nmain = do { write (Just (show_integer (numerator q))) stdout; write (Just \"/\") stdout; write (Just (show_integer (denominator q))) stdout; return () };"),
+        "2/3"
+    );
+    // ... and the zero-denominator fault still faults under that shadow, so the
+    // bottom is not reachable through the operator either.
+    let msg = run_faults("(%) a b = Ratio { num: (7 :: Integer), den: (1 :: Integer) };\na = Ratio { num: (0 :: Integer), den: (1 :: Integer) };\nq = recip a;\nmain = do { write (Just (show_integer (numerator q))) stdout; return () };");
+    assert!(
+        msg.contains("Ratio has zero denominator"),
+        "the reduction kernel must not be reachable through a user `%`, got: {msg}"
+    );
+    // The kernel's OWN spelling is reserved by construction, not by a
+    // `builtin_sigs` reservation (that path resolves AFTER the definition-site
+    // arms, and MEASURED a user `__ratio_percent` answered `a / b` with `7/1`
+    // when it was one). It is resolved first, like `__fault`.
+    assert_eq!(
+        run("__ratio_percent a b = Ratio { num: (7 :: Integer), den: (1 :: Integer) };\nf x y = __ratio_percent x y;\nj = f (1 :: Integer) (2 :: Integer);\nmain = do { write (Just (show_integer (numerator j))) stdout; return () };"),
+        "1"
+    );
+    assert_eq!(
+        run("__ratio_percent a b = Ratio { num: (7 :: Integer), den: (1 :: Integer) };\na = Ratio { num: (1 :: Integer), den: (2 :: Integer) };\nb = Ratio { num: (3 :: Integer), den: (4 :: Integer) };\nq = a / b;\nmain = do { write (Just (show_integer (numerator q))) stdout; write (Just \"/\") stdout; write (Just (show_integer (denominator q))) stdout; return () };"),
+        "2/3"
+    );
+    // The SURFACE `%` is a shadowable Prelude binding too (H2010: `(%)` is a
+    // function, not a keyword), so a program's own `(%)` DOES replace what
+    // `3 % 6` means — while still not reaching the arithmetic above.
+    assert_eq!(
+        run("(%) a b = Ratio { num: (7 :: Integer), den: (1 :: Integer) };\nq = (3 :: Integer) % (6 :: Integer);\nmain = do { write (Just (show_integer (numerator q))) stdout; return () };"),
+        "7"
+    );
+}
+
+#[test]
+fn percent_and_gcd_reject_a_non_integer_payload() {
+    // `%` is `Integer -> Integer -> Ratio Integer` and `gcd` is
+    // `Integer -> Integer -> Integer`, because rill has no `Integral` class
+    // (design A6 / A4, OD-24). The narrowing is a RECORDED OPEN DEFECT, not a
+    // settled behaviour — so a call at another payload is a loud rejection,
+    // never a silent `f64` computation. Both names are ordinary Prelude
+    // DEFINITIONS, so the diagnostic is the shared call-checking one, naming
+    // the offending argument and both types.
+    rejects_with(
+        "main = do { write (Just (show_integer (gcd 1.0 2.0))) stdout; return () };",
+        "argument 1 of `gcd` has type Double, but the parameter has type Integer",
+    );
+    rejects_with(
+        "main = do { write (Just (show_integer (numerator (1.0 % 2.0)))) stdout; return () };",
+        "argument 1 of `%` has type Double, but the parameter has type Integer",
+    );
+    // GHC accepts `Ratio Int` arithmetic (`Integral Int` holds there) and
+    // rejects `Ratio Double` (`No instance for 'Integral Double'`). rill
+    // rejects BOTH, because the kernel is `Integer`-only — that is the A6 cost,
+    // and it is loud in both directions rather than silently unreduced.
+    rejects_with(
+        "r :: Ratio Int;\nr = 1 % 2;\nmain = do { write (Just (show_int (numerator r))) stdout; return () };",
+        "cannot unify value type Integer with Int",
     );
 }
 

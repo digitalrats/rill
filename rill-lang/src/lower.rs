@@ -1216,6 +1216,84 @@ impl<'a> Lowerer<'a> {
         Ok((dst, ret))
     }
 
+    /// Lower one of the PRELUDE's internal INTEGER kernels: `__ratio_percent
+    /// n d` (`RatioPercent`) and `__gcd a b` (`Gcd`).
+    ///
+    /// Both are resolved by RESERVED SPELLING — compared literally, AHEAD of
+    /// every definition-site arm — never by a name a program can redefine. That
+    /// ordering is what makes the language's own behaviour un-interceptable:
+    /// `Ratio`'s instance bodies are inlined BY NAME, so a program's own `%`
+    /// must not be able to answer `a / b`, and a program's own `__gcd` must not
+    /// be able to answer the Prelude's `gcd` definition. MEASURED before the
+    /// ordering was fixed: a user `__ratio_percent` answered `a / b` with
+    /// `7/1` (the same defect class Task 3 closed for `error`).
+    ///
+    /// Both kernels are `Integer`-only: `gcd` because `Integral` does not exist
+    /// (design A6 / OD-24), `__ratio_percent` because it is built on `gcd`. A
+    /// non-`Integer` operand is a LOUD rejection naming that, never a silent
+    /// computation on the `f64` track.
+    ///
+    /// Kept out of the `Apply` arm so `lower_value`'s stack frame does not grow
+    /// — that frame is at its ceiling (Task 3 recorded the same cost for
+    /// `error`, whose arm this mirrors).
+    ///
+    /// [`RATIO_PERCENT_PRIMITIVE`]: crate::ir::RATIO_PERCENT_PRIMITIVE
+    /// [`GCD_PRIMITIVE`]: crate::ir::GCD_PRIMITIVE
+    fn lower_integer_kernel(
+        &mut self,
+        name: &str,
+        call_args: &[Expr],
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        let is_ratio = name == crate::ir::RATIO_PERCENT_PRIMITIVE;
+        if call_args.len() != 2 {
+            return Err(CompileError::Type {
+                msg: format!("`{name}` expects 2 argument(s), got {}", call_args.len()),
+                span,
+            });
+        }
+        // Each operand is lowered with `Integer` EXPECTED, so an integer
+        // LITERAL becomes an `Integer` constant rather than the `Int` a
+        // context-free literal defaults to (Haskell 2010 §6.4.1's
+        // `fromInteger`-polymorphism at this position). Inference already
+        // pinned these to `Integer`; without the expectation lowering would
+        // emit an `Int` payload for a typed-`Integer` slot — MEASURED: `3 % 6`
+        // failed with "expects Integer argument 1, got Int".
+        let int_exp = ValueTy::Integer;
+        let (a, a_ty) = self.lower_value_expected(&call_args[0], Some(&int_exp))?;
+        let (b, b_ty) = self.lower_value_expected(&call_args[1], Some(&int_exp))?;
+        for (i, (t, e)) in [(a_ty, &call_args[0]), (b_ty, &call_args[1])]
+            .into_iter()
+            .enumerate()
+        {
+            if !matches!(t, ValueTy::Integer | ValueTy::Var(_)) {
+                return Err(CompileError::Type {
+                    msg: format!(
+                        "`{name}` expects Integer argument {}, got {t:?} (no `Integral` class \
+                         exists, so this kernel is Integer-only — OD-24)",
+                        i + 1
+                    ),
+                    span: e.span(),
+                });
+            }
+        }
+        let dst = self.fresh_value_reg();
+        let (op, ret) = if is_ratio {
+            (
+                ValueBuiltinOp::RatioPercent,
+                ValueTy::Con("Ratio".into(), vec![ValueTy::Integer]),
+            )
+        } else {
+            (ValueBuiltinOp::Gcd, ValueTy::Integer)
+        };
+        self.emit_value(ValueInstr::ValueCallBuiltin {
+            dst,
+            op,
+            args: vec![a, b],
+        });
+        Ok((dst, ret))
+    }
+
     /// Lower `e` as a LAZY argument: in complete mode, wrap it in a
     /// [`ValueInstr::ValueLazy`] thunk (a fragment computing `e` capturing its
     /// free variables), so the value is NOT forced at the call site — it is
@@ -1940,6 +2018,17 @@ impl<'a> Lowerer<'a> {
                 // body's fault.
                 if name == crate::ir::VALUE_FAULT_PRIMITIVE {
                     return self.lower_error_apply(name, call_args, span, expected);
+                }
+                // `__ratio_percent n d` and `__gcd a b` — the PRELUDE's
+                // internal kernels (`ir::RATIO_PERCENT_PRIMITIVE`,
+                // `ir::GCD_PRIMITIVE`), resolved by RESERVED SPELLING ahead of
+                // every definition-site arm, for the same reason `__fault` is
+                // (see that arm above). Out of line: `lower_value`'s stack
+                // frame is at its ceiling — a large inline branch has overflowed
+                // this test binary's stack before (Task 3 recorded exactly that
+                // cost for `error`).
+                if name == crate::ir::RATIO_PERCENT_PRIMITIVE || name == crate::ir::GCD_PRIMITIVE {
+                    return self.lower_integer_kernel(name, call_args, *span);
                 }
                 // A binding whose whole body is an UNDER-APPLIED method call
                 // (`g = fmap (+ 1.0)`) applied to its remaining arguments. The
@@ -6840,6 +6929,14 @@ impl<'a> Lowerer<'a> {
             // compile-time primitive like the collection ops and must never be
             // captured as a free variable — unless a user definition shadows it.
             || (name == "error" && !self.defs.contains_key(name))
+            // `__fault`, `__ratio_percent` and `__gcd` are the PRELUDE's
+            // internal reserved spellings, lowered directly to instructions
+            // unconditionally (see `ir::VALUE_FAULT_PRIMITIVE`,
+            // `ir::RATIO_PERCENT_PRIMITIVE`, `ir::GCD_PRIMITIVE`), so they are
+            // never runtime captures.
+            || name == crate::ir::VALUE_FAULT_PRIMITIVE
+            || name == crate::ir::RATIO_PERCENT_PRIMITIVE
+            || name == crate::ir::GCD_PRIMITIVE
             || self.env.data_types.contains_key(name)
             || self.env.newtypes.contains_key(name)
             || self.sum_ctor(name).is_some()

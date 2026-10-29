@@ -17,6 +17,10 @@ enum InfixOp {
     Sub,
     Mul,
     Div,
+    /// `%` — Data.Ratio's ratio constructor (`infixl 7`), NOT a remainder
+    /// operator: Haskell 2010's remainder functions are `mod`/`rem`/`div`/
+    /// `quot`, and `%` is `Data.Ratio.%`.
+    Percent,
     CmpEq,
     CmpNe,
     CmpLt,
@@ -51,6 +55,7 @@ impl InfixOp {
             InfixOp::Sub => "-",
             InfixOp::Mul => "*",
             InfixOp::Div => "/",
+            InfixOp::Percent => "%",
             InfixOp::CmpEq => "==",
             InfixOp::CmpNe => "/=",
             InfixOp::CmpLt => "<",
@@ -162,6 +167,11 @@ fn infix_binding_power(t: &Tok) -> Option<(InfixOp, u8, u8)> {
         // means something else in Haskell, so `%` was removed.)
         Tok::Star => (InfixOp::Mul, 13, 14),
         Tok::Slash => (InfixOp::Div, 13, 14),
+        // `%` — `Data.Ratio.%`, `infixl 7` (the same level as `* /`, as the
+        // Report's `Data.Ratio` fixes it, so `2 * 3 % 4` is `2 * (3 % 4)`).
+        // Not the remainder operator: that meaning was removed because it took
+        // a name Haskell gives to a different function.
+        Tok::Percent => (InfixOp::Percent, 13, 14),
         // `!` — rill's infix indexing (`index`), the analog of Haskell's `!!`.
         // `infixl 9`: `a ! i + 1` ≡ `(a ! i) + 1`, `a ! b ! c` ≡ `(a ! b) ! c`.
         // `!` is the index operator in expression position regardless of
@@ -263,6 +273,7 @@ fn bare_operator_name(tok: &Tok) -> Option<&'static str> {
         Tok::Minus => "-",
         Tok::Star => "*",
         Tok::Slash => "/",
+        Tok::Percent => "%",
         Tok::EqEq => "==",
         Tok::NotEq => "/=",
         Tok::Lt => "<",
@@ -2341,6 +2352,7 @@ impl<'a> Parser<'a> {
             }
             Tok::Star => Ok(Expr::Ref("*".into(), t.span)),
             Tok::Slash => Ok(Expr::Ref("/".into(), t.span)),
+            Tok::Percent => Ok(Expr::Ref("%".into(), t.span)),
             Tok::Ident(name) => {
                 // `true` / `false` resolve to the constructors `True` /
                 // `False` they name (the Report's spelling is canonical).

@@ -855,35 +855,59 @@ instance Eq (Ratio a) where {
     (/=) x y = if x.num * y.den == y.num * x.den then False else True;
 }
 
---  SIGN NORMALISATION. H2010's `Ratio` invariant is `den > 0`: `Data.Ratio`'s
---  `%` divides by `gcd` and moves any sign onto `num`, and every operation
---  inherits that invariant. `Ord`'s cross-multiplication and `signum` ASSUME it
---  — `n1/d1 < n2/d2` is `n1*d2 < n2*d1` only when both denominators are
---  positive, because multiplying an inequality by a negative flips it.
---  `Eq` does not need it (cross-multiplication is sign-safe).
+--  REDUCTION AND SIGN NORMALISATION. H2010's `Ratio` invariant is "lowest
+--  terms with `den > 0`": `Data.Ratio`'s `%` divides by `gcd` and moves any
+--  sign onto `num`, and every operation inherits that invariant, so
+--  `numerator (1%2 + 1%2)` is `1` and `numerator (3%6)` is `1`.
+--  `Ord`'s cross-multiplication and `signum` ASSUME the sign half — `n1/d1 <
+--  n2/d2` is `n1*d2 < n2*d1` only when both denominators are positive, because
+--  multiplying an inequality by a negative flips it. `Eq` does not need it
+--  (cross-multiplication is sign-safe).
 --
---  This task has no `gcd` yet, so nothing REDUCES, but it must still keep the
---  denominator non-negative: a record literal may spell `Ratio { num: 1, den:
---  -2 }`, and `(/ x y)` divides by `y.num`, which is negative whenever `y` is.
---  Without normalisation `(1/2) / ((-3)/4)` produced `4/(-6)` and `q > 0`
---  answered `True` (GHC: `-2/3`, so `False`) — a silent WRONG VALUE, not a
---  cosmetic difference.
+--  EVERY producing method builds its result through `__ratio_percent`, the
+--  builtin kernel that IS `Data.Ratio.%`: it divides both fields by their gcd,
+--  moves a negative denominator's sign onto the numerator, and faults on a
+--  zero denominator. One normalisation site, reached by the surface `%`, by
+--  `+ - * /` and by `recip` alike, so every arithmetic result is in H2010's
+--  lowest terms and `numerator`/`denominator` — which are plain FIELD
+--  PROJECTIONS — report what GHC reports.
 --
---  Every producing method therefore ends with the same three steps: compute the
---  numerator and denominator, build a zero from the fields (`n - n`, so the
---  method stays payload-generic — an annotated `(0 :: Integer)` would pin it to
---  `Integer`, the same reason `negate` builds its zero this way), and if the
---  denominator is negative negate BOTH fields with the payload's own binary
---  `-`. `(+)` needs it only because an INPUT may violate the invariant; `*`,
---  `-`, `/` and `recip` can produce a negative denominator themselves.
+--  The kernel is spelled `__ratio_percent`, NOT `%`, and that distinction is
+--  load-bearing: an instance body is inlined BY NAME, so calling the surface
+--  `%` would let a program's own `(%) a b = Ratio { num: 7, den: 1 }` answer
+--  `a / b`. That is the same defect class Task 3 closed for the zero-
+--  denominator fault (a built-in guarantee must not be reachable through a
+--  name a program can redefine). `__ratio_percent` is a RESERVED SPELLING
+--  compared literally in `infer` and `lower`, ahead of every definition-site
+--  arm — the same `__fault` technique — so a user binding of that exact name
+--  cannot intercept it either. Programs write `%`; the language's own
+--  normalisation uses the kernel. (A `builtin_sigs` entry would NOT be enough:
+--  that path resolves AFTER the definition-site arms, and a user
+--  `__ratio_percent` answered `a / b` with `7/1` when it did.)
 --
---  Reduction is deliberately absent: `1/2 + 1/3` stays `5/6` and an
---  intermediate produced by `(/)` stays `-4/6`. Declaring `%`, `numerator` and
---  `denominator` does NOT close this: Task 4 defines them as plain field
---  projections (`numerator r = r.num`) and only `%` normalises, so the gap
---  survives that task as planned. It closes only when the ARITHMETIC BODIES
---  themselves reduce, which needs `gcd` (available from Task 4) — i.e. Task 4
---  must also reduce in `+ - * /`, not only in `%`. `gcd` needs `Integral`.
+--  INTEGER PAYLOAD ONLY. `__ratio_percent` is `Integer -> Integer -> Ratio
+--  Integer` because it goes through `gcd`, which is
+--  `Integer -> Integer -> Integer` — rill has no `Integral` class, so the
+--  Report's `Integral a => …` cannot be written (design A6 / OD-24). The
+--  consequence is DELIBERATE and LOUD: the arithmetic methods that reduce
+--  (`+ - * /`, `recip`) are typed at `Integer` fields, and a `Ratio Int`
+--  arithmetic call is REJECTED with "cannot unify value type Int with
+--  Integer" rather than answering an unreduced pair. GHC accepts
+--  `Ratio Int` arithmetic; until `Integral` exists the narrowing is a
+--  recorded open defect (A6), not a settled behaviour. `negate` and `abs` do
+--  not reduce and stay payload-generic.
+--
+--  The alternative — leaving the bodies payload-generic and unreduced — was
+--  measured and rejected: `numerator ((1%2) / ((-3)%4))` answered `-4` where
+--  GHC answers `-2`. A silent wrong VALUE is worse than a loud type error.
+--  `gcd` is a builtin kernel at `Integer` (see `builtin_sigs`), not a Prelude
+--  definition: it is a binary-GCD algorithm over `BigInt`, and writing it in
+--  the language would need recursion over `Int` fields. Like every
+--  `builtin_sigs` name (`show_integer`, `map`, …) it therefore RESERVES the
+--  spelling — a user `gcd` is not consulted. That is a divergence from H2010,
+--  where `gcd` is an ordinary shadowable Prelude binding, and it is the same
+--  divergence the rest of the builtin surface already carries (recorded as an
+--  open defect on the builtin-name reservation, not as settled behaviour).
 
 --  `Ord` encodes an order as `-1`/`0`/`1` (see the class declaration above).
 --  `compare` is the class's own method; `<`, `<=`, `>`, `>=`, `min` and `max`
@@ -902,11 +926,17 @@ instance Ord (Ratio a) where {
     max x y = if x.num * y.den <= y.num * x.den then y else x;
 }
 
---  The zero these bodies need is built FROM THE FIELDS (`x.num - x.num`), not
---  written as a literal: an unannotated `0` is an `Int` today, and an annotated
---  `(0 :: Integer)` would type the whole method at `Integer` only. A
+--  The zero `negate`/`abs` need is built FROM THE FIELDS (`x.num - x.num`),
+--  not written as a literal: an unannotated `0` is an `Int` today, and an
+--  annotated `(0 :: Integer)` would type the whole method at `Integer` only. A
 --  field-typed zero keeps `negate` usable at every field type: MEASURED,
 --  `negate` on `Ratio Int` works.
+--
+--  `negate`/`abs` do NOT go through the kernel, because H2010's `negate` is
+--  `negate (x :% y) = (-x) :% y` — it does not re-normalise, and it does not
+--  need to: its input is already in lowest terms with `den > 0`, so the result
+--  is too. That is GHC parity, and it also keeps `negate` payload-generic
+--  (`negate` on `Ratio Int` works; the reduced methods above do not).
 --
 --  `negate`/`abs`/`signum` are written against `<`, `-` and `+` over the fields
 --  (the Report's equations, expanded) because their KERNELS have no IR
@@ -946,9 +976,9 @@ instance Ord (Ratio a) where {
 --  the wrong value. Stage 7b's `fromInteger : Integer -> a` corrects the
 --  signature and adds the body.
 instance Num (Ratio a) where {
-    (+) x y = let n = x.num * y.den + y.num * x.den in let d = x.den * y.den in let z = d - d in if d < z then Ratio { num: z - n, den: z - d } else Ratio { num: n, den: d };
-    (-) x y = let n = x.num * y.den - y.num * x.den in let d = x.den * y.den in let z = d - d in if d < z then Ratio { num: z - n, den: z - d } else Ratio { num: n, den: d };
-    (*) x y = let n = x.num * y.num in let d = x.den * y.den in let z = d - d in if d < z then Ratio { num: z - n, den: z - d } else Ratio { num: n, den: d };
+    (+) x y = __ratio_percent (x.num * y.den + y.num * x.den) (x.den * y.den);
+    (-) x y = __ratio_percent (x.num * y.den - y.num * x.den) (x.den * y.den);
+    (*) x y = __ratio_percent (x.num * y.num) (x.den * y.den);
     negate x = let z = x.num - x.num in Ratio { num: z - x.num, den: x.den };
     abs x = Ratio { num: let z = x.num - x.num in if x.num < z then z - x.num else x.num, den: let z = x.den - x.den in if x.den < z then z - x.den else x.den };
     signum x = Ratio { num: let z = x.num - x.num in let one = z + (1 :: Integer) in if x.num < z then z - one else if x.num > z then one else z, den: (1 :: Integer) };
@@ -956,15 +986,18 @@ instance Num (Ratio a) where {
 
 --  `(/)` multiplies by the reciprocal: `(n1/d1) / (n2/d2) = (n1*d2)/(d1*n2)`.
 --  `recip` swaps the fields (the `Recip` KERNEL has no IR instruction either).
---  Both NORMALISE THE SIGN and FAULT on a zero denominator — see the
---  normalisation note above; a zero denominator is a fault because H2010's
---  `Ratio` is a partial construction (GHC: "Ratio has zero denominator").
+--  Both go through `__ratio_percent`, so both REDUCE, keep `den > 0`, and fault
+--  on a zero denominator — see the normalisation note above; a zero denominator
+--  is a fault because H2010's `Ratio` is a partial construction (GHC: "Ratio
+--  has zero denominator").
 --
 --  The fault is spelled `__fault`, NOT `error`. `error` is Prelude §9.1's
 --  ordinary, SHADOWABLE binding, and an instance body is inlined BY NAME, so
 --  a program's own `error x = Ratio { num: 7, den: 1 }` would answer this
 --  branch and turn `recip (0/1)` into `7/1`. Programs still write `error`;
---  only the language's own partial operations use `__fault`.
+--  only the language's own partial operations use `__fault`. (The zero-
+--  denominator fault now occurs inside `__ratio_percent`, which is uncitable
+--  by a program for the same reason; `__fault` remains the general spelling.)
 --
 --  `__fault` is a single RESERVED SPELLING compared literally in two places
 --  (`infer` and `lower`), not a syntactic convention: the lexer has no `__`
@@ -979,9 +1012,44 @@ instance Num (Ratio a) where {
 --  No `fromRational` here: the class does not declare that method yet (stage
 --  7b adds it together with the literal rule that needs it).
 instance Fractional (Ratio a) where {
-    (/) x y = let n = x.num * y.den in let d = x.den * y.num in let z = d - d in if d == z then __fault "Ratio has zero denominator" else if d < z then Ratio { num: z - n, den: z - d } else Ratio { num: n, den: d };
-    recip x = let d = x.num in let z = d - d in if d == z then __fault "Ratio has zero denominator" else if d < z then Ratio { num: z - x.den, den: z - d } else Ratio { num: x.den, den: d };
+    (/) x y = __ratio_percent (x.num * y.den) (x.den * y.num);
+    recip x = __ratio_percent x.den x.num;
 }
+
+--  `Data.Ratio`'s field projections. These are ORDINARY DEFINITIONS, not
+--  builtins: `r.num` already reads the field, so a builtin beside it would be
+--  two mechanisms for one thing (design §7). They also normalise NOTHING — a
+--  projection reports what the value holds (a hand-written
+--  `Ratio { num: 6, den: 8 }` answers `6/8`), which is exactly why the
+--  ARITHMETIC bodies above must reduce for their answers to match GHC.
+--
+--  A bare signature is enough: the body is a single field projection, so the
+--  inferred type is already `Ratio a -> a` and the signature only documents
+--  it in the Report's spelling.
+numerator r :: Ratio a -> a = r.num;
+denominator r :: Ratio a -> a = r.den;
+
+--  `gcd :: Integer -> Integer -> Integer` (Haskell 2010 Prelude §6.4.2) — an
+--  ORDINARY prelude definition over the reserved `__gcd` kernel, so a program
+--  may shadow it exactly as H2010 allows (`gcd` is a Prelude binding, not a
+--  keyword). The signature is HONESTLY NARROWER than the Report's
+--  `Integral a => a -> a -> a`: rill has no `Integral` class, so the kernel is
+--  `Integer`-only (design A6 / OD-24 — an open defect, not a settled
+--  behaviour). The `Integer` fields are written out because the kernel's
+--  operand type is `Integer`; a `gcd` at another payload is a loud rejection.
+gcd a b :: Integer -> Integer -> Integer = __gcd a b;
+
+--  `(%) :: Integer -> Integer -> Ratio Integer` — `Data.Ratio`'s smart
+--  constructor, and like `gcd` an ORDINARY, SHADOWABLE prelude definition over
+--  the reserved `__ratio_percent` kernel. The `Ratio` arithmetic bodies call
+--  the KERNEL, not this spelling, so a program's own `(%)` replaces only what
+--  `1 % 2` means to that program, never what `a / b` computes.
+--
+--  The signature is HONESTLY NARROWER than the Report's
+--  `Integral a => a -> a -> Ratio a` — the A4 narrowing, an open OD-24 defect,
+--  loud at either end (a `Double` or `Int` operand is a type error, never a
+--  silent `f64` computation).
+(%) a b :: Integer -> Integer -> Ratio Integer = __ratio_percent a b;
 
 --  A buffer is an ordinary value and a NUMERIC one: `Buffer` is a subclass of
 --  `Num` (and therefore of `Eq`/`Ord`), so it uses the SAME operator vocabulary
@@ -2004,6 +2072,19 @@ impl TypeEnv {
             "show_bool".to_string(),
             crate::ast::TypeExpr::TFunc(vec![tv("Bool")], Box::new(tv("String"))),
         );
+        // `%` and `gcd` are NOT builtin_sigs entries: both are ordinary,
+        // SHADOWABLE Haskell 2010 Prelude bindings, so each is a PRELUDE
+        // DEFINITION over a reserved kernel (`__ratio_percent`, `__gcd`). A
+        // `builtin_sigs` entry would have reserved the spelling, which H2010
+        // does not allow (`(%)` and `gcd` are functions, not keywords).
+        // `__ratio_percent` is deliberately NOT a `builtin_sigs` entry. Its
+        // signature is the same `Integer -> Integer -> Ratio Integer`, but its
+        // resolution must be by RESERVED SPELLING ahead of every
+        // definition-site arm (see `ir::RATIO_PERCENT_PRIMITIVE`), which is
+        // what makes the `Ratio` arithmetic un-interceptable. A `builtin_sigs`
+        // entry resolves AFTER the definition-site arms, so a program's own
+        // `__ratio_percent` would have answered an instance body's
+        // normalisation — MEASURED: `a / b` gave `7/1`.
         // Immutable array storage primitives: the flat, type-agnostic surface
         // (design §Storage primitives, immutable list). Every INDEX computation
         // lives in the interpreter for the two prelude shapes (`Int`,
