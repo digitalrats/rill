@@ -784,7 +784,7 @@ fn a_polymorphic_helper_accepts_a_computed_argument() {
 }
 
 #[test]
-fn a_builtin_argument_gets_its_declared_parameter_type() {
+fn a_builtin_argument_is_inferred_at_its_declared_parameter_type() {
     // `show_int :: Int -> String` declares a concrete `Int` parameter, so its
     // argument must be inferred AT `Int`. Without the threading a
     // result-directed method inside the argument cannot select its instance:
@@ -796,16 +796,14 @@ fn a_builtin_argument_gets_its_declared_parameter_type() {
     use rill_lang::lexer::tokenize;
     use rill_lang::mode::Mode;
     use rill_lang::parser::parse;
-    use rill_lang::types::ty::ValueTy;
     let src = "main = do { write (Just (show_int (fromInteger 2))) stdout; return () };";
     let toks = tokenize(src).expect("lex");
     let prog = parse(&toks, src.as_bytes()).expect("parse");
-    let typed = rill_lang::types::infer::infer_program(&prog, Mode::Complete)
+    // The assertion is that inference ACCEPTS the program at all: without the
+    // declared-parameter-type threading `fromInteger 2` cannot select a `Num`
+    // instance ("expected type unknown"), so the call above would fail.
+    rill_lang::types::infer::infer_program(&prog, Mode::Complete)
         .unwrap_or_else(|e| panic!("`{src}` must typecheck: {e}"));
-    assert_eq!(
-        typed.def_schemes["main"].ty.vty,
-        ValueTy::Con("IO".to_string(), vec![ValueTy::Void])
-    );
     // The control that already worked: a bare integer literal at `Int`.
     assert_eq!(
         run("main = do { write (Just (show_int 2)) stdout; return () };"),

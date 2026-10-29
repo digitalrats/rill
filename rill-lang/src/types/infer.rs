@@ -5854,10 +5854,12 @@ fn infer_apply_impl(
             // parameters or integer literals left every other parameter's
             // argument untyped.
             //
-            // A `Buffer` parameter is the one place this does not apply: its
-            // slot accepts a buffer computation, a Buffer value, or a numeric
-            // signal constant, so its argument is inferred plainly and a
-            // numeric constant is RE-inferred at `Buffer` below.
+            // A `Buffer` parameter is carved out: its slot accepts a buffer
+            // computation, a Buffer value, or a numeric signal constant, so its
+            // argument is inferred plainly and a numeric constant is
+            // RE-inferred at `Buffer` below. The carve-out is kept so the
+            // `Buffer` parameter's behaviour stays byte-identical across this
+            // change — it is not a claim that threading would be unsound there.
             let buffer_param = matches!(pt, ValueTy::Buffer(_));
             let at0 = if buffer_param {
                 infer_expr(ctx, a)?
@@ -6430,13 +6432,38 @@ fn infer_apply_impl(
                         fresh_ids.push(ctx.fresh_vty());
                     }
                     let mut it = fresh_ids.into_iter();
-                    let (_, ret) = signature_param_and_result_tys_conv(
+                    let (sig_param_tys, ret) = signature_param_and_result_tys_conv(
                         &ctx.env,
                         &class_var,
                         &cv_subst,
                         sig,
                         || it.next().unwrap_or(ValueTy::Double),
                     );
+                    // A method is CURRIED (Haskell 2010 §4.3.3), so the
+                    // signature's arity is checked exactly as the guarded
+                    // primitive path below checks it. This branch sits inside
+                    // the result-directed block, which returns before that
+                    // guard, so it needs its own copy: without it a surplus
+                    // argument (`fromInteger 1 2`) was silently accepted —
+                    // returning the applied result made it typecheck as
+                    // `Integer`, where GHC reports "No instance for `Num (t0 ->
+                    // t1)`".
+                    if args.len() < n_sig_args {
+                        // Partial application yields the curried remainder.
+                        let ret_ty = ret.unwrap_or_else(|| ctx.fresh_vty());
+                        let rest: Vec<ValueTy> =
+                            sig_param_tys[args.len().min(sig_param_tys.len())..].to_vec();
+                        return Ok(ArrowTy::value(nest_thunk(&rest, vec![ret_ty])));
+                    }
+                    if args.len() > n_sig_args {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "method `{name}` of `{class_name}` expects {n_sig_args} argument(s), got {}",
+                                args.len()
+                            ),
+                            span,
+                        });
+                    }
                     // A FULL application yields the signature's RESULT type —
                     // exactly what the source-instance path below returns (its
                     // body's type). Returning `nest_thunk(&param_tys, …)` here

@@ -5786,6 +5786,21 @@ impl<'a> Lowerer<'a> {
         prefetched: Option<(usize, usize, ValueTy)>,
         param_tys: &[ValueTy],
     ) -> Result<(usize, ValueTy), CompileError> {
+        // A kernel consumes exactly the signature's arguments. A SURPLUS
+        // application is an arity error (Haskell 2010 §4.3.3), never a silently
+        // dropped argument: `fromInteger 1 2` must not lower a kernel that
+        // takes one. Fewer arguments is a partial application, which the call
+        // sites turn into a curried closure before reaching here.
+        if call_args.len() > param_tys.len() {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "method `{name}` of `{class_name}` expects {} argument(s), got {}",
+                    param_tys.len(),
+                    call_args.len()
+                ),
+                span,
+            });
+        }
         // Lower the arguments once; a primitive kernel consumes registers. Each
         // argument is lowered with its SIGNATURE parameter type as the expected
         // type: the instance key already solved the class variable, so the

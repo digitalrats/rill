@@ -9,6 +9,7 @@ use common::*;
 use rill_lang::compile_eval;
 use rill_lang::ffi::ForeignRegistry;
 use rill_lang::mode::Mode;
+use rill_lang::types::ty::ValueTy;
 
 /// Compile and run `src`, returning the concatenated stdout.
 fn run_out(src: &str) -> String {
@@ -245,6 +246,28 @@ fn user_def_shadows_builtin_eq_ord_method_names() {
     );
 }
 
+/// Infer the program and return the value type of the binding `x`. Panics when
+/// the program is rejected — use [`infer_err`] for a program that must fail.
+fn infer_x(src: &str) -> ValueTy {
+    let typed = infer_typed(src);
+    typed.def_schemes["x"].ty.vty.clone()
+}
+
+/// Infer `src` at `Mode::Complete`, panicking with the diagnostic if rejected.
+fn infer_typed(src: &str) -> rill_lang::types::infer::TypedProgram {
+    let toks = rill_lang::lexer::tokenize(src).expect("lex");
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).expect("parse");
+    rill_lang::types::infer::infer_program(&prog, Mode::Complete)
+        .unwrap_or_else(|e| panic!("`{src}` must typecheck: {e}"))
+}
+
+/// The diagnostic for a program inference REJECTS, or `None` when it accepts it.
+fn infer_err(src: &str) -> Option<rill_lang::CompileError> {
+    let toks = rill_lang::lexer::tokenize(src).expect("lex");
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).expect("parse");
+    rill_lang::types::infer::infer_program(&prog, Mode::Complete).err()
+}
+
 #[test]
 fn an_applied_primitive_method_has_its_result_type() {
     // A FULLY APPLIED primitive method's type is the signature's RESULT, not the
@@ -257,16 +280,6 @@ fn an_applied_primitive_method_has_its_result_type() {
     // This is asserted at the INFERENCE layer because it is an inference defect:
     // `fromInteger`'s VALUE needs the `FromInteger` IR instruction (design §3.9,
     // Task 5), so running the program would report an unrelated lowering gap.
-    use rill_lang::lexer::tokenize;
-    use rill_lang::parser::parse;
-    use rill_lang::types::ty::ValueTy;
-    let infer_x = |src: &str| {
-        let toks = tokenize(src).expect("lex");
-        let prog = parse(&toks, src.as_bytes()).expect("parse");
-        let typed = rill_lang::types::infer::infer_program(&prog, Mode::Complete)
-            .unwrap_or_else(|e| panic!("`{src}` must typecheck: {e}"));
-        typed.def_schemes["x"].ty.vty.clone()
-    };
     // Two targets of the SAME polymorphic method, so the answer comes from the
     // instance and not from a defaulted variable.
     assert_eq!(
@@ -289,5 +302,30 @@ fn an_applied_primitive_method_has_its_result_type() {
             "x :: Double = (+) 1.0 2.0;\nmain = do { write (Just (show_double x)) stdout; return () };"
         ),
         "3.0"
+    );
+}
+
+#[test]
+fn a_result_directed_primitive_method_checks_its_arity() {
+    // GHC 9.10.3: `fromInteger 1 2` is "No instance for `Num (t0 -> t1)`" —
+    // a method applied to MORE arguments than its signature takes is an error.
+    // The result-directed primitive branch had no arity check, so returning the
+    // applied result (the previous fix) made these typecheck as `Integer`.
+    assert!(
+        infer_err("x :: Integer = fromInteger 1 2;\nmain = 0.0;").is_some(),
+        "`fromInteger 1 2` must be an arity error, not an `Integer`"
+    );
+    assert!(
+        infer_err("x :: Integer = fromInteger 1 2 3;\nmain = 0.0;").is_some(),
+        "`fromInteger 1 2 3` must be an arity error"
+    );
+    // Controls: correct arity still works.
+    assert_eq!(
+        infer_x("x :: Integer = fromInteger 1;\nmain = 0.0;"),
+        ValueTy::Integer
+    );
+    assert_eq!(
+        infer_x("x :: Double = fromInteger 1;\nmain = 0.0;"),
+        ValueTy::Double
     );
 }
