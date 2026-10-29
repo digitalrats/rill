@@ -666,6 +666,37 @@ zero denominator (H2010: `Ratio`'s `%` is partial). `numerator`/`denominator` as
 `PRELUDE` definitions projecting the fields — **not** builtins (a builtin beside
 `.num` would be two mechanisms for reading a field; spec §7).
 
+**Reduction must go into the arithmetic bodies too, not only into `%`.** Task 3
+sign-normalises `/`, `recip`, `(*)`, `(-)` but does NOT reduce, so
+`numerator ((1%2) / ((-3)%4))` is `-4` where GHC gives `-2`. `numerator`/
+`denominator` are field projections, so they expose whatever the body produced:
+reducing only in `%` leaves the divergence. With `gcd` available in this task, add
+reduction to `+ - * /` and `recip` as well, so every arithmetic result is in
+H2010's lowest terms and `numerator`/`denominator` match GHC.
+
+Write the test first:
+
+```rust
+#[test]
+fn arithmetic_results_are_in_lowest_terms() {
+    // GHC: `(1%2) / ((-3)%4)` is `(-2) % 3`.
+    assert_eq!(
+        run("a = Ratio { num: (1 :: Integer), den: (2 :: Integer) };
+b = Ratio { num: (-3 :: Integer), den: (4 :: Integer) };
+q = a / b;
+main = do { write (Just (show_integer (numerator q))) stdout; write (Just (show_integer (denominator q))) stdout; return () };"),
+        "-23"
+    );
+    // GHC: `numerator (1%2 + 1%2)` is 1, denominator 1.
+    assert_eq!(
+        run("a = Ratio { num: (1 :: Integer), den: (2 :: Integer) };
+q = a + a;
+main = do { write (Just (show_integer (numerator q))) stdout; write (Just (show_integer (denominator q))) stdout; return () };"),
+        "11"
+    );
+}
+```
+
 - [ ] **Step 4: Run the tests, then the full gates, then commit**
 
 ```bash
