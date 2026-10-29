@@ -1142,6 +1142,14 @@ fn collect_static_calls(
                 collect_static_calls(a, src, bound, nodes, out);
             }
         }
+        // A kernel is a compiler primitive, not a call to a named definition, so
+        // it contributes no edge to the static call graph — the same reason a
+        // `builtin_sigs` call does not. Its arguments may still contain calls.
+        Expr::Kernel { args, .. } => {
+            for a in args {
+                collect_static_calls(a, src, bound, nodes, out);
+            }
+        }
         Expr::Ref(_, _) | Expr::Int(_, _) | Expr::Double(_, _) | Expr::Str(_, _) => {}
         Expr::Neg(inner, _) => collect_static_calls(inner, src, bound, nodes, out),
         Expr::Let { defs, body, .. } => {
@@ -4205,6 +4213,10 @@ fn infer_expr_expected(
         Expr::ApplyExpr { callee, args, span } => {
             infer_apply_expr(ctx, callee, args, *span, expected)
         }
+        // A Prelude-internal kernel, bound at parse time. Its typing rule lives
+        // in [`infer_kernel`], shared with the name-based fallback, so this node
+        // and a hand-built application of the same kernel cannot disagree.
+        Expr::Kernel { kernel, args, span } => infer_kernel(ctx, *kernel, args, *span, expected),
         Expr::Str(_, _) => Ok(ArrowTy::value_channel(ValueTy::String)),
         Expr::Let {
             defs,
@@ -5789,6 +5801,82 @@ fn probe_first_arg_solves_class_var(ctx: &mut Ctx, name: &str, first: &Expr) -> 
     }
 }
 
+/// Type an application of one of the PRELUDE's internal kernels
+/// ([`crate::ast::Kernel`]).
+///
+/// This is the ONE typing rule for the kernels, reached from the
+/// [`Expr::Kernel`](crate::ast::Expr::Kernel) node by inference and — for a
+/// hand-built AST that still spells one as an application — by the name-based
+/// fallback in [`infer_apply_impl`]. Both routes agree because both call here,
+/// which is what the two copies of this rule previously could not guarantee.
+///
+/// None of the three is SHADOWABLE, and none needs to be: a kernel is not a
+/// name in the language any more (see [`crate::ast::Expr::Kernel`] for why a
+/// reserved spelling was not enough). The `Ratio` instance bodies are inlined
+/// into their call sites, so a program's own `(%)` or `gcd` must never be able
+/// to answer `a / b` or the Prelude's `gcd` — binding the operation at the node
+/// makes that structural rather than a lookup order a later pass can undo.
+fn infer_kernel(
+    ctx: &mut Ctx,
+    kernel: crate::ast::Kernel,
+    args: &[Expr],
+    span: Span,
+    _expected: Option<ValueTy>,
+) -> Result<ArrowTy, CompileError> {
+    let name = kernel.spelling();
+    match kernel {
+        // `__fault msg` — the Prelude's internal bottom. Its result type is a
+        // FRESH variable: it is bottom, so the call site's expectation decides
+        // it, exactly like `error`'s.
+        crate::ast::Kernel::Fault => {
+            if args.len() != 1 {
+                return Err(CompileError::Type {
+                    msg: format!("`{name}` expects 1 argument, got {}", args.len()),
+                    span,
+                });
+            }
+            let msg = infer_const_value(ctx, &args[0])?;
+            if ctx.subst.resolve_value(&msg) != ValueTy::String {
+                return Err(CompileError::Type {
+                    msg: format!("`{name}` expects a String message, got {msg:?}"),
+                    span: args[0].span(),
+                });
+            }
+            let ret = ctx.fresh_vty();
+            Ok(ArrowTy::value_channel(ret))
+        }
+        // `__ratio_percent n d` and `__gcd a b` — both `Integer -> Integer -> …`
+        // (there is no `Integral` class to generalise over: design A6 / OD-24).
+        crate::ast::Kernel::RatioPercent | crate::ast::Kernel::Gcd => {
+            if args.len() != 2 {
+                return Err(CompileError::Type {
+                    msg: format!("`{name}` expects 2 argument(s), got {}", args.len()),
+                    span,
+                });
+            }
+            for (i, a) in args.iter().enumerate() {
+                let t = infer_method_value_vty(ctx, a, "argument")?;
+                if let Err(e) = unify_value(&t, &ValueTy::Integer, &mut ctx.subst, a.span()) {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "`{name}` expects Integer argument {}, got {t:?}: {e} (no \
+                             `Integral` class exists, so this kernel is Integer-only — OD-24)",
+                            i + 1
+                        ),
+                        span: a.span(),
+                    });
+                }
+            }
+            let ret = if kernel == crate::ast::Kernel::RatioPercent {
+                ValueTy::Con("Ratio".into(), vec![ValueTy::Integer])
+            } else {
+                ValueTy::Integer
+            };
+            Ok(ArrowTy::value_channel(ret))
+        }
+    }
+}
+
 fn infer_apply_impl(
     ctx: &mut Ctx,
     name: &str,
@@ -6094,73 +6182,20 @@ fn infer_apply_impl(
     if name == "param" {
         return infer_param(args, span);
     }
+    // A reserved kernel spelling that reached THIS name-based path (only the
+    // PRELUDE's own `numerator`/`denominator`-style bodies and a program text
+    // parsed before the node existed can): type it exactly like the node form.
+    // The node ([`Expr::Kernel`]) is the REAL carrier — this is the fallback,
+    // kept so a hand-built AST in a test types the same way a parsed one does.
+    if let Some(kernel) = crate::ast::Kernel::from_reserved_spelling(name) {
+        return infer_kernel(ctx, kernel, args, span, expected);
+    }
     // `error :: String -> a` (Haskell 2010 Prelude §9.1). Its result type is a
     // FRESH variable: it is bottom, so the call site's expectation decides it
     // and a use in `Ratio a`'s field position types just as one at `Double`
     // does. A non-`String` message is rejected here, before lowering. A USER
     // definition of the name shadows it (a Prelude name is a binding, not a
     // keyword), the same precedence every other builtin name follows.
-    //
-    // `__fault` is the PRELUDE-INTERNAL spelling of the same instruction
-    // (`ir::VALUE_FAULT_PRIMITIVE`). It is deliberately NOT shadowable: the
-    // language's own partial operations (the `Ratio` zero-denominator fault)
-    // must not be reachable through a name a program can redefine, or a user
-    // `error` would replace the fault with a value. It is a single reserved
-    // SPELLING compared literally (not a lexer rule), so this branch does not
-    // consult `locals`/`defs` — and it precedes them, exactly as the collection
-    // ops do.
-    if name == crate::ir::VALUE_FAULT_PRIMITIVE {
-        if args.len() != 1 {
-            return Err(CompileError::Type {
-                msg: format!("`{name}` expects 1 argument, got {}", args.len()),
-                span,
-            });
-        }
-        let msg = infer_const_value(ctx, &args[0])?;
-        if ctx.subst.resolve_value(&msg) != ValueTy::String {
-            return Err(CompileError::Type {
-                msg: format!("`{name}` expects a String message, got {msg:?}"),
-                span: args[0].span(),
-            });
-        }
-        let ret = ctx.fresh_vty();
-        return Ok(ArrowTy::value_channel(ret));
-    }
-    // `__ratio_percent` and `__gcd` — the PRELUDE's internal INTEGER kernels
-    // (`ir::RATIO_PERCENT_PRIMITIVE`, `ir::GCD_PRIMITIVE`). Like `__fault` they
-    // are single RESERVED SPELLINGS, resolved here ahead of every
-    // definition-site arm, because the `Ratio` instance bodies are inlined BY
-    // NAME: a program's own `(%)` must not answer `a / b`, and a program's own
-    // `__gcd` must not answer the Prelude's `gcd` definition. Both signatures
-    // are `Integer -> Integer -> …` — there is no `Integral` class to generalise
-    // over (design A6 / OD-24).
-    if name == crate::ir::RATIO_PERCENT_PRIMITIVE || name == crate::ir::GCD_PRIMITIVE {
-        if args.len() != 2 {
-            return Err(CompileError::Type {
-                msg: format!("`{name}` expects 2 argument(s), got {}", args.len()),
-                span,
-            });
-        }
-        for (i, a) in args.iter().enumerate() {
-            let t = infer_method_value_vty(ctx, a, "argument")?;
-            if let Err(e) = unify_value(&t, &ValueTy::Integer, &mut ctx.subst, a.span()) {
-                return Err(CompileError::Type {
-                    msg: format!(
-                        "`{name}` expects Integer argument {}, got {t:?}: {e} (no `Integral` \
-                         class exists, so this kernel is Integer-only — OD-24)",
-                        i + 1
-                    ),
-                    span: a.span(),
-                });
-            }
-        }
-        let ret = if name == crate::ir::RATIO_PERCENT_PRIMITIVE {
-            ValueTy::Con("Ratio".into(), vec![ValueTy::Integer])
-        } else {
-            ValueTy::Integer
-        };
-        return Ok(ArrowTy::value_channel(ret));
-    }
     if name == "error" && !ctx.locals.contains_key(name) && !ctx.defs.contains_key(name) {
         if args.len() != 1 {
             return Err(CompileError::Type {

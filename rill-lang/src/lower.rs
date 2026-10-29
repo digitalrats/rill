@@ -1219,14 +1219,22 @@ impl<'a> Lowerer<'a> {
     /// Lower one of the PRELUDE's internal INTEGER kernels: `__ratio_percent
     /// n d` (`RatioPercent`) and `__gcd a b` (`Gcd`).
     ///
-    /// Both are resolved by RESERVED SPELLING — compared literally, AHEAD of
-    /// every definition-site arm — never by a name a program can redefine. That
-    /// ordering is what makes the language's own behaviour un-interceptable:
-    /// `Ratio`'s instance bodies are inlined BY NAME, so a program's own `%`
-    /// must not be able to answer `a / b`, and a program's own `__gcd` must not
-    /// be able to answer the Prelude's `gcd` definition. MEASURED before the
-    /// ordering was fixed: a user `__ratio_percent` answered `a / b` with
-    /// `7/1` (the same defect class Task 3 closed for `error`).
+    /// Both are reached by [`crate::ast::Kernel`], the node the PARSER binds —
+    /// not by a name resolved in this pass. That is what makes the language's
+    /// own behaviour un-interceptable: `Ratio`'s instance bodies are inlined
+    /// BY NAME, so a program's own `%` must not be able to answer `a / b`, and a
+    /// program's own `__gcd` must not be able to answer the Prelude's `gcd`
+    /// definition. MEASURED before the ordering was fixed: a user
+    /// `__ratio_percent` answered `a / b` with `7/1` (the same defect class
+    /// Task 3 closed for `error`).
+    ///
+    /// A reserved SPELLING compared ahead of the definition-site arms (the
+    /// previous technique) was NOT sufficient: `reduce` runs between `infer`
+    /// and this pass, and a user `__gcd` carrying a SIGNATURE was β-reduced
+    /// into the Prelude's `gcd` body before either comparison could see it —
+    /// MEASURED: `__gcd :: Integer -> Integer -> Integer; __gcd a b = 99;` then
+    /// `gcd 12 18` answered `99` instead of `6`. Binding the operation to a
+    /// node removes the carrier, so no pass has a name to substitute.
     ///
     /// Both kernels are `Integer`-only: `gcd` because `Integral` does not exist
     /// (design A6 / OD-24), `__ratio_percent` because it is built on `gcd`. A
@@ -1236,16 +1244,14 @@ impl<'a> Lowerer<'a> {
     /// Kept out of the `Apply` arm so `lower_value`'s stack frame does not grow
     /// — that frame is at its ceiling (Task 3 recorded the same cost for
     /// `error`, whose arm this mirrors).
-    ///
-    /// [`RATIO_PERCENT_PRIMITIVE`]: crate::ir::RATIO_PERCENT_PRIMITIVE
-    /// [`GCD_PRIMITIVE`]: crate::ir::GCD_PRIMITIVE
     fn lower_integer_kernel(
         &mut self,
-        name: &str,
+        kernel: crate::ast::Kernel,
         call_args: &[Expr],
         span: Span,
     ) -> Result<(usize, ValueTy), CompileError> {
-        let is_ratio = name == crate::ir::RATIO_PERCENT_PRIMITIVE;
+        let name = kernel.spelling();
+        let is_ratio = kernel == crate::ast::Kernel::RatioPercent;
         if call_args.len() != 2 {
             return Err(CompileError::Type {
                 msg: format!("`{name}` expects 2 argument(s), got {}", call_args.len()),
@@ -1994,41 +2000,47 @@ impl<'a> Lowerer<'a> {
                 self.cur_value_block = join;
                 Ok((out, t_ty))
             }
+            // A Prelude-internal kernel, bound at parse time. There is no NAME
+            // here, so no definition-site arm can run for it and no pass can
+            // substitute a user definition into its place — see
+            // [`Expr::Kernel`] for why a reserved SPELLING (the previous
+            // technique, compared in `infer` and here) was not enough: `reduce`
+            // runs between those two passes and β-reduced a SIGNED user
+            // definition of the spelling into the Prelude's own body.
+            //
+            // Lowered out of line: `lower_value_expected`'s frame is at its
+            // ceiling (Task 3 recorded the same cost for `error`).
+            Expr::Kernel {
+                kernel,
+                args: call_args,
+                span,
+            } => match kernel {
+                crate::ast::Kernel::Fault => {
+                    self.lower_error_apply(kernel.spelling(), call_args, span, expected)
+                }
+                crate::ast::Kernel::RatioPercent | crate::ast::Kernel::Gcd => {
+                    self.lower_integer_kernel(*kernel, call_args, *span)
+                }
+            },
             Expr::Apply {
                 name,
                 args: call_args,
                 span,
             } => {
-                // `__fault msg` — the PRELUDE's internal bottom. This is the
-                // instruction the language's own partial operations use (the
-                // `Ratio` zero-denominator fault), and it is deliberately NOT
-                // reachable through a shadowable source name: `error` is an
-                // ordinary Prelude BINDING, so a user `error` would otherwise
-                // hijack an instance body's fault and answer a plausible value
-                // (`recip (0/1)` → `7/1`).
-                //
-                // `__fault` is a single RESERVED SPELLING compared literally
-                // here, not a syntactic convention: the lexer has no `__`
-                // prefix rule, so a user binding of this exact name would be
-                // honoured anywhere a definition-site arm runs first. Resolving
-                // it FIRST — before every definition-site specialization below,
-                // not merely before the ordinary def lookup — is what makes the
-                // prelude's own fault un-interceptable: no user `__fault`, with
-                // or without a signature, curried or not, reaches an instance
-                // body's fault.
-                if name == crate::ir::VALUE_FAULT_PRIMITIVE {
-                    return self.lower_error_apply(name, call_args, span, expected);
-                }
-                // `__ratio_percent n d` and `__gcd a b` — the PRELUDE's
-                // internal kernels (`ir::RATIO_PERCENT_PRIMITIVE`,
-                // `ir::GCD_PRIMITIVE`), resolved by RESERVED SPELLING ahead of
-                // every definition-site arm, for the same reason `__fault` is
-                // (see that arm above). Out of line: `lower_value`'s stack
-                // frame is at its ceiling — a large inline branch has overflowed
-                // this test binary's stack before (Task 3 recorded exactly that
-                // cost for `error`).
-                if name == crate::ir::RATIO_PERCENT_PRIMITIVE || name == crate::ir::GCD_PRIMITIVE {
-                    return self.lower_integer_kernel(name, call_args, *span);
+                // A reserved kernel spelling that reached THIS path — only a
+                // hand-built AST can (the parser binds the node). Typing and
+                // lowering agree by construction because both route through the
+                // same `lower_kernel`/`lower_integer_kernel` functions the node
+                // arm uses.
+                if let Some(kernel) = crate::ast::Kernel::from_reserved_spelling(name) {
+                    return match kernel {
+                        crate::ast::Kernel::Fault => {
+                            self.lower_error_apply(name, call_args, span, expected)
+                        }
+                        crate::ast::Kernel::RatioPercent | crate::ast::Kernel::Gcd => {
+                            self.lower_integer_kernel(kernel, call_args, *span)
+                        }
+                    };
                 }
                 // A binding whose whole body is an UNDER-APPLIED method call
                 // (`g = fmap (+ 1.0)`) applied to its remaining arguments. The
@@ -7034,6 +7046,14 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Expr::Int(_, _) | Expr::Double(_, _) | Expr::Void(_) | Expr::Str(_, _) => {}
+            // A kernel is a compiler instruction, not a call to a named
+            // definition: the callee contributes no capture (there is no name),
+            // and only the arguments can carry free variables.
+            Expr::Kernel { args, .. } => {
+                for a in args {
+                    self.free_vars_impl(a, bound, out, seen);
+                }
+            }
             // An annotation is transparent to free-variable analysis: the type
             // it names is compile-time only, so only the inner expression can
             // contribute a capture.
@@ -8701,6 +8721,17 @@ impl<'a> Lowerer<'a> {
                 span: *span,
             }),
             Expr::Ref(name, span) => self.lower_ref(name, args, *span),
+            // A kernel is a VALUE-track operation: `__gcd`, `__ratio_percent`
+            // and `__fault` all produce (or fault on) a value, never a signal
+            // buffer. Reaching a signal position is a type error, reported here
+            // rather than as a confusing "unknown name" later.
+            Expr::Kernel { kernel, span, .. } => Err(CompileError::Type {
+                msg: format!(
+                    "`{}` is a value operation; a signal position requires a Buffer",
+                    kernel.spelling()
+                ),
+                span: *span,
+            }),
             Expr::Neg(inner, _) => {
                 let outs = self.lower(inner, args)?;
                 Ok(outs
@@ -9633,6 +9664,12 @@ fn rename_bound(e: &Expr, renames: &HashMap<String, String>) -> Expr {
         },
         Expr::ApplyExpr { callee, args, span } => Expr::ApplyExpr {
             callee: Box::new(rename_bound(callee, renames)),
+            args: args.iter().map(|a| rename_bound(a, renames)).collect(),
+            span: *span,
+        },
+        // A kernel node has no name to rename; only its arguments are walked.
+        Expr::Kernel { kernel, args, span } => Expr::Kernel {
+            kernel: *kernel,
             args: args.iter().map(|a| rename_bound(a, renames)).collect(),
             span: *span,
         },

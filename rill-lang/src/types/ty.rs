@@ -3748,6 +3748,14 @@ impl TypeEnv {
                 }
                 Ok(())
             }
+            // A kernel has no callee name and no type of its own to validate;
+            // only its arguments can carry an annotation.
+            Expr::Kernel { args, .. } => {
+                for a in args {
+                    self.validate_body_type_names(a, tyvars)?;
+                }
+                Ok(())
+            }
             Expr::ApplyExpr { callee, args, .. } => {
                 self.validate_body_type_names(callee, tyvars)?;
                 for a in args {

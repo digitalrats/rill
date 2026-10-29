@@ -530,6 +530,19 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             render_expr(inner, buf, 15)?;
             Ok(())
         }
+        // A kernel renders back as its reserved spacing — the spelling is
+        // internal, and the renderer's contract is a SOURCE round-trip (the
+        // re-parsed program must be the same AST, not necessarily a program a
+        // user wrote). The name is the one `Kernel::from_reserved_spelling`
+        // recognises, so the round-trip re-binds the same node.
+        Expr::Kernel { kernel, args, .. } => {
+            write!(buf, "{}", kernel.spelling()).ok();
+            for a in args {
+                write!(buf, " ").ok();
+                render_expr(a, buf, 20)?; // application args are tight
+            }
+            Ok(())
+        }
         Expr::Annot { expr, ty, .. } => {
             // `e :: t` (Haskell 2010 §3.12). Two parenthesization concerns:
             //

@@ -726,3 +726,188 @@ fn from_integer_is_deliberately_omitted_pending_the_integer_signature() {
         "unknown identifier `fromRational`",
     );
 }
+
+// --- Reserved kernel spellings survive EVERY pass (fix round 1) ------------
+//
+// The kernels behind `gcd`, `%` and the `Ratio` fault are not reachable through
+// a name a program can redefine. Two previous attempts expressed that as a
+// reserved SPELLING compared ahead of the definition-site arms, first in
+// `lower` (Task 3), then in `infer` as well. Both were defeated by the same
+// thing: a pass nobody had covered yet.
+//
+// `crate::compile_to_ir_entry` runs tokenize → parse → desugar → infer →
+// **reduce** → lower. A reserved-spelling guard in `infer` and in `lower` still
+// leaves `reduce` between them, and `reduce` β-reduces a user `__gcd` that
+// carries a TYPE SIGNATURE into the Prelude's `gcd` body before lowering sees
+// the name. MEASURED at HEAD: `gcd 12 18` answered `99`.
+//
+// The fix binds the operation to an `Expr::Kernel` node at PARSE time, so there
+// is no name for any pass to look up. The tests below pin each pass by name, and
+// every one uses the SIGNED user definition — the shape that defeated the
+// spelling guard. A future pass that resolves names must still keep these green;
+// if it does not, the node is the thing to extend, not another name list.
+
+#[test]
+fn infer_pass_reserved_gcd_spelling_survives_a_signed_user_definition() {
+    // The `infer` pass. `infer_apply_impl` used to compare the literal
+    // spelling here; a signed user `__gcd` was typed as the user's function
+    // because this comparison only recognised the UNRESOLVED Prelude body.
+    //
+    // GHC has no `__gcd`; the Prelude's `gcd` answers 6. The kernel node makes
+    // the spelling invisible to inference entirely.
+    assert_eq!(
+        run("__gcd :: Integer -> Integer -> Integer;\n__gcd a b = 99;\nmain = do { write (Just (show_integer (gcd (12 :: Integer) (18 :: Integer)))) stdout; return () };"),
+        "6"
+    );
+    // The kernel applied DIRECTLY must also reach the kernel, not the user's
+    // function — otherwise the Prelude's own `gcd` definition would compute
+    // against the user's body.
+    assert_eq!(
+        run("__gcd :: Integer -> Integer -> Integer;\n__gcd a b = 99;\nf x y = gcd x y;\nmain = do { write (Just (show_integer (f (12 :: Integer) (18 :: Integer)))) stdout; return () };"),
+        "6"
+    );
+}
+
+#[test]
+fn reduce_pass_reserved_gcd_spelling_survives_a_signed_user_definition() {
+    // The `reduce` pass — the one that was missing, and the reason the two
+    // earlier rounds did not hold. β-reduction inlines a definition whose
+    // lambda count matches the call's arguments; a SIGNED user `__gcd` is
+    // exactly that shape (`reduce`'s `annotate_formal_arg_types` keeps the
+    // signature's formal types on the substituted literals, which is why the
+    // unsigned form happened to survive).
+    //
+    // MEASURED before the node existed: this program printed 99.
+    assert_eq!(
+        run("__gcd :: Integer -> Integer -> Integer;\n__gcd a b = 99;\nmain = do { write (Just (show_integer (gcd (12 :: Integer) (18 :: Integer)))) stdout; return () };"),
+        "6"
+    );
+    // A larger pair keeps the answer from coinciding with a small literal.
+    assert_eq!(
+        run("__gcd :: Integer -> Integer -> Integer;\n__gcd a b = 99;\nmain = do { write (Just (show_integer (gcd (144 :: Integer) (60 :: Integer)))) stdout; return () };"),
+        "12"
+    );
+}
+
+#[test]
+fn lower_pass_reserved_gcd_spelling_survives_a_signed_user_definition() {
+    // The `lower` pass. `lower_value_expected` compared the literal spelling
+    // first; a program that reached it with a signed user `__gcd` in scope
+    // resolved against the user's definition instead. The node arm has no name
+    // to compare, so the ordering the earlier rounds relied on cannot regress.
+    assert_eq!(
+        run("__gcd :: Integer -> Integer -> Integer;\n__gcd a b = 99;\nmain = do { write (Just (show_integer (gcd (0 :: Integer) (7 :: Integer)))) stdout; return () };"),
+        "7"
+    );
+}
+
+#[test]
+fn reduce_pass_reserved_ratio_percent_spelling_survives_a_signed_user_definition() {
+    // The same attack against the OTHER integer kernel, through the `reduce`
+    // pass (the one that was missing). `3 % 6` must still be `1/2`: the signa-
+    // ture makes the user `__ratio_percent` β-reducible, so a name-based guard
+    // would have let `7/1` through.
+    //
+    // MEASURED before the node existed: this program printed 7.
+    assert_eq!(
+        run("__ratio_percent :: Integer -> Integer -> Ratio Integer;\n__ratio_percent a b = Ratio { num: 7, den: 1 };\nmain = do { write (Just (show_integer (numerator ((3 :: Integer) % (6 :: Integer))))) stdout; write (Just \"/\") stdout; write (Just (show_integer (denominator ((3 :: Integer) % (6 :: Integer))))) stdout; return () };"),
+        "1/2"
+    );
+    // ... and the ARITHMETIC bodies must not have been rewritten to the user's
+    // kernel either: `1/6 + 1/6` is `1/3` in GHC.
+    assert_eq!(
+        run("__ratio_percent :: Integer -> Integer -> Ratio Integer;\n__ratio_percent a b = Ratio { num: 7, den: 1 };\na = Ratio { num: (1 :: Integer), den: (6 :: Integer) };\nq = a + a;\nmain = do { write (Just (show_integer (numerator q))) stdout; write (Just \"/\") stdout; write (Just (show_integer (denominator q))) stdout; return () };"),
+        "1/3"
+    );
+}
+
+#[test]
+fn reduce_pass_reserved_fault_spelling_survives_a_signed_user_definition() {
+    // `__fault` has the same shape and therefore the same hole, so it is pinned
+    // under the same attack. The signed user binding must not replace the
+    // language's own bottom: `recip (0/1)` still faults with GHC's message.
+    //
+    // MEASURED before the node existed: `recip (0/1)` compiled against the
+    // user's `__fault`, whose body was β-reduced into the instance body.
+    let msg = run_faults("__fault :: String -> Integer;\n__fault x = 99;\na = Ratio { num: (0 :: Integer), den: (1 :: Integer) };\nq = recip a;\nmain = do { write (Just (show_integer q.den)) stdout; return () };");
+    assert!(
+        msg.contains("Ratio has zero denominator"),
+        "a SIGNED user `__fault` must not intercept the Ratio zero-denominator fault, got: {msg}"
+    );
+    // The spelling is INTERNAL (`ir.rs`: "not part of the language's
+    // surface"), so a program that writes it reaches the KERNEL, not its own
+    // definition — the same rule that makes the invocation un-interceptable.
+    // Pinned rather than left implicit, because "a user may shadow it" and "a
+    // user may not" are the two readings the earlier rounds oscillated between.
+    let msg = run_faults("__fault :: String -> Integer;\n__fault x = 99;\nmain = do { write (Just (show_integer (__fault \"boom\"))) stdout; return () };");
+    assert!(
+        msg.contains("boom"),
+        "a program's own `__fault` call reaches the kernel, whose message is the argument, got: {msg}"
+    );
+}
+
+#[test]
+fn percent_sections_parse_and_apply() {
+    // Haskell 2010 §3.5: `(% 2)` is `\x -> x % 2` (a RIGHT section) and
+    // `(2 %)` is `\x -> 2 % x` (a LEFT section). Both are valid surface
+    // syntax, and GHC accepts both.
+    //
+    // MEASURED at HEAD: both PANICKED the compiler with
+    // `panicked at parser.rs: "a bare operator name always maps to an InfixOp"`.
+    // `bare_operator_name` had learned `Tok::Percent` (`(% 2)` and `(2 %)` were
+    // therefore RECOGNISED as sections) while `infix_op_from_name` had not, so a
+    // valid program reached an `expect` the table could not satisfy. At base
+    // both were a clean parse error, so this was a NEW user-reachable panic.
+    //
+    // Expected values are GHC's, checked with `runghc`, not assumed:
+    //     > numerator ((% 2) 3)      -- 3
+    //     > denominator ((% 2) 3)    -- 2
+    //     > numerator ((2 %) 3)      -- 2
+    //     > denominator ((2 %) 3)    -- 3
+    // i.e. `(% 2) 3` is `3 % 2` = 3/2 and `(2 %) 3` is `2 % 3` = 2/3.
+    assert_eq!(
+        run("main = do { write (Just (show_integer (numerator ((% 2) 3)))) stdout; return () };"),
+        "3"
+    );
+    assert_eq!(
+        run("main = do { write (Just (show_integer (denominator ((% 2) 3)))) stdout; return () };"),
+        "2"
+    );
+    assert_eq!(
+        run("main = do { write (Just (show_integer (numerator ((2 %) 3)))) stdout; return () };"),
+        "2"
+    );
+    assert_eq!(
+        run("main = do { write (Just (show_integer (denominator ((2 %) 3)))) stdout; return () };"),
+        "3"
+    );
+    // The two sections are DIFFERENT functions: `(% 2) 3` is 3/2 and `(2 %) 3`
+    // is 2/3, so a fix that made both sides of the section the same value would
+    // fail here even though both single assertions above could pass.
+    assert_eq!(
+        run("main = do { write (Just (show_integer (numerator ((% 2) 3) - numerator ((2 %) 3)))) stdout; return () };"),
+        "1"
+    );
+}
+
+#[test]
+fn every_bare_operator_name_a_section_can_name_has_an_infix_op() {
+    // The panic in `percent_sections_parse_and_apply` was a TABLE DISAGREEMENT:
+    // `bare_operator_name` (which decides what a section may name) and
+    // `infix_op_from_name` (which maps that name to an operator) must accept
+    // exactly the same set, or a recognised section reaches an `expect`.
+    //
+    // This pins the second operator the tables disagreed about so the class of
+    // defect is covered, not just the instance: `/=` is what `bare_operator_name`
+    // returns for `Tok::NotEq` while `infix_op_from_name` spells the same
+    // operator `"!="`. Whichever spelling wins must not panic, so both section
+    // forms are exercised through the public compile path.
+    assert_eq!(
+        run("f = (/= 2);\nmain = do { write (Just (show_bool (f 1))) stdout; return () };"),
+        "True"
+    );
+    assert_eq!(
+        run("f = (1 /=);\nmain = do { write (Just (show_bool (f 2))) stdout; return () };"),
+        "True"
+    );
+}

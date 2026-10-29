@@ -600,6 +600,13 @@ fn desugar_expr(e: Expr) -> Result<Expr, CompileError> {
             args: desugar_exprs(args)?,
             span,
         },
+        // A kernel node is already core (the parser binds it): only its
+        // arguments can carry surface sugar.
+        Expr::Kernel { kernel, args, span } => Expr::Kernel {
+            kernel,
+            args: desugar_exprs(args)?,
+            span,
+        },
         Expr::ApplyExpr { callee, args, span } => Expr::ApplyExpr {
             callee: Box::new(desugar_expr(*callee)?),
             args: desugar_exprs(args)?,

@@ -264,6 +264,91 @@ pub enum Expr {
     ListLit(Vec<Expr>, Span),
     /// Map literal `{ "k": v, ... }` (string keys).
     MapLit(Vec<(String, Expr)>, Span),
+    /// An application of one of the PRELUDE's internal kernels, bound at
+    /// PARSE time rather than resolved by name in a later pass.
+    ///
+    /// This node exists because a reserved SPELLING is not enough. `__gcd`,
+    /// `__ratio_percent` and `__fault` were compared literally in `infer` and
+    /// in `lower`, but `reduce` runs BETWEEN them (`lib.rs`), and a user
+    /// definition of a kernel spelling that carries a type signature was
+    /// β-reduced into the Prelude's body before lowering ever saw the name:
+    ///
+    /// ```text
+    /// __gcd :: Integer -> Integer -> Integer; __gcd a b = 99;
+    /// gcd 12 18   --  expected 6, answered 99
+    /// ```
+    ///
+    /// The same defect class had already been fixed twice by adding a third
+    /// name comparison (Task 3 rounds 2 and 3). A name is the wrong carrier:
+    /// every pass that resolves names has to know the list, and every new pass
+    /// can forget it. Binding the operation to a NODE removes the carrier —
+    /// there is no `Ref` for a pass to look up, substitute, or inline, so
+    /// `infer`, `reduce` and `lower` are all interception-proof by
+    /// construction, and a future pass inherits that without knowing the
+    /// spellings exist.
+    ///
+    /// The conversion happens ONCE, in the parser's currying walk (see
+    /// `parser::curry_expr`), which is also how the PRELUDE text itself gets
+    /// its nodes. That is the only place the reserved spellings appear as
+    /// strings.
+    Kernel {
+        /// Which kernel is applied.
+        kernel: Kernel,
+        /// Arguments, in source order. Arity is checked by `infer`, not here,
+        /// so the diagnostic for a wrong arity is the same one the name-based
+        /// path produced.
+        args: Vec<Expr>,
+        /// Full span of the application.
+        span: Span,
+    },
+}
+
+/// One of the PRELUDE's internal kernels — the operations that must not be
+/// reachable through a name a program can redefine.
+///
+/// These are the bodies behind surface bindings that Haskell 2010 requires to
+/// stay SHADOWABLE: `(%)` and `gcd` are Prelude functions, and `Ratio`'s
+/// arithmetic normalises through them. A program may replace `%` or `gcd`;
+/// it must not thereby replace what `a / b` computes, nor what `recip (0/1)`
+/// does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum Kernel {
+    /// The Prelude-internal bottom (`__fault message`).
+    Fault,
+    /// `Ratio` normalisation (`__ratio_percent n d`).
+    RatioPercent,
+    /// Arbitrary-precision integer gcd (`__gcd a b`).
+    Gcd,
+}
+
+impl Kernel {
+    /// The reserved SOURCE spelling of this kernel.
+    ///
+    /// Used for rendering only — resolution no longer goes through a name
+    /// (see [`Expr::Kernel`]). Kept in step with the `ir` constants by
+    /// [`Kernel::from_reserved_spelling`], the ONE mapping in the compiler.
+    pub fn spelling(self) -> &'static str {
+        match self {
+            Kernel::Fault => crate::ir::VALUE_FAULT_PRIMITIVE,
+            Kernel::RatioPercent => crate::ir::RATIO_PERCENT_PRIMITIVE,
+            Kernel::Gcd => crate::ir::GCD_PRIMITIVE,
+        }
+    }
+
+    /// The kernel a reserved spelling denotes, or `None` for any other name.
+    ///
+    /// The ONLY place the reserved spellings are recognised. Every pass sees
+    /// [`Expr::Kernel`] instead of a name, so this list cannot be forgotten by
+    /// a later pass.
+    pub fn from_reserved_spelling(name: &str) -> Option<Kernel> {
+        match name {
+            crate::ir::VALUE_FAULT_PRIMITIVE => Some(Kernel::Fault),
+            crate::ir::RATIO_PERCENT_PRIMITIVE => Some(Kernel::RatioPercent),
+            crate::ir::GCD_PRIMITIVE => Some(Kernel::Gcd),
+            _ => None,
+        }
+    }
 }
 
 impl Expr {
@@ -316,6 +401,7 @@ impl Expr {
             | Expr::Neg(_, s) => *s,
             Expr::Apply { span, .. }
             | Expr::ApplyExpr { span, .. }
+            | Expr::Kernel { span, .. }
             | Expr::Let { span, .. }
             | Expr::Record(_, span)
             | Expr::ActorParam { span, .. }

@@ -1,6 +1,6 @@
 //! Recursive-descent + Pratt (operator-precedence) parser.
 
-use crate::ast::{Def, Expr, MatchArm, Param, Pattern, Program, TypeExpr};
+use crate::ast::{Def, Expr, Kernel, MatchArm, Param, Pattern, Program, TypeExpr};
 use crate::error::{CompileError, Span};
 use crate::lexer::{Tok, Token};
 use crate::mode::Mode;
@@ -196,7 +196,19 @@ fn infix_op_from_name(name: &str) -> Option<InfixOp> {
         "-" => InfixOp::Sub,
         "*" => InfixOp::Mul,
         "/" => InfixOp::Div,
+        // `%` — `Data.Ratio.%`. Absent from this table once meant `(% 2)` and
+        // `(2 %)` PANICKED (`a bare operator name always maps to an InfixOp`):
+        // `bare_operator_name` knew the token while the name table did not, so
+        // a valid Haskell 2010 section reached an `expect` it could not
+        // satisfy. Both forms are ordinary sections — `(% 2) x` is `x % 2`.
+        "%" => InfixOp::Percent,
         "==" => InfixOp::CmpEq,
+        // `/=` is the spelling `bare_operator_name` returns for `Tok::NotEq`
+        // (Haskell 2010's spelling), so it MUST be here: `(/= 2)` and `(1 /=)`
+        // are ordinary sections, and their absence from this table reached an
+        // `expect` — the same panic `%` had. `!=` stays as the legacy lexer
+        // alias for the same token.
+        "/=" => InfixOp::CmpNe,
         "!=" => InfixOp::CmpNe,
         "<" => InfixOp::CmpLt,
         ">" => InfixOp::CmpGt,
@@ -2571,11 +2583,32 @@ fn curry_defs_in(defs: &mut Vec<Def>) {
 /// nodes are walked but not rewritten (the plan's application currying covers
 /// name-based applications; expression callees already parse left-associatively
 /// as juxtaposition).
+///
+/// This walk is ALSO where a reserved kernel spelling becomes an
+/// [`Expr::Kernel`] node — the ONE point the spellings are recognised
+/// ([`Kernel::from_reserved_spelling`]). Every expression in the program,
+/// including the PRELUDE's own text, passes through here, so binding the
+/// operation to a node happens before `infer`, `reduce` and `lower` run. A
+/// name-based binding would have left a `Ref` for a pass to substitute; a node
+/// leaves nothing to substitute, which is what makes the interception-proofness
+/// a property of the AST rather than a list every pass must remember to copy.
 fn curry_expr(e: &mut Expr) {
     match e {
         Expr::Apply { name, args, span } => {
             for a in args.iter_mut() {
                 curry_expr(a);
+            }
+            // Bind the kernel BEFORE the currying rewrite below: after it the
+            // callee is a `Ref` in an `ApplyExpr` chain, which `reduce`'s
+            // β-reduction is free to resolve against a user definition of the
+            // same spelling (that is exactly the Critical this node closes).
+            if let Some(kernel) = Kernel::from_reserved_spelling(name) {
+                *e = Expr::Kernel {
+                    kernel,
+                    args: std::mem::take(args),
+                    span: *span,
+                };
+                return;
             }
             if args.len() > 1 {
                 let name = name.clone();

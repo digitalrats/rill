@@ -188,6 +188,16 @@ pub(crate) fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
                 .collect(),
             *span,
         ),
+        // A kernel node has NO NAME, so no substitution entry can reach it —
+        // that is the whole point of binding the operation to a node instead of
+        // a spelling. Only its arguments are walked (a `kernel` call can appear
+        // inside an inlined body, and its own arguments may contain names being
+        // substituted).
+        Expr::Kernel { kernel, args, span } => Expr::Kernel {
+            kernel: *kernel,
+            args: args.iter().map(|a| substitute(a, subst)).collect(),
+            span: *span,
+        },
         Expr::Let { defs, body, span } => {
             // Let bindings shadow outer names inside the body: drop them from
             // the substitution while descending. The def bodies themselves are
@@ -658,6 +668,21 @@ fn reduce_expr(
                 span: *span,
             }
         }
+        // A kernel application: never a user definition, so never inlined — its
+        // arguments are reduced like any other expression's. This arm is the one
+        // place a β-reduction pass could have been fooled by a reserved spelling,
+        // and it is now structurally incapable of it: there is no NAME to look
+        // up. The node is what the parser bound, so a user `__gcd` with a
+        // signature (which `infer`'s spelling guard used to miss because
+        // `reduce` ran between the passes) cannot substitute anything here.
+        Expr::Kernel { kernel, args, span } => Expr::Kernel {
+            kernel: *kernel,
+            args: args
+                .iter()
+                .map(|a| reduce_expr(a, ctx, cafs, reducing, mode))
+                .collect(),
+            span: *span,
+        },
         Expr::Let { defs, body, span } => {
             // Reduce let defs, build context, reduce body
             let reduced_defs: Vec<Def> = defs
