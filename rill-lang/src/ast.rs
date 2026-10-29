@@ -464,11 +464,15 @@ pub enum Def {
         span: Span,
     },
     /// `type Name = T` — synonym (pure substitution).
+    ///
+    /// Haskell 2010 §4.1.2 allows any `type` on the right-hand side, so the
+    /// target is a full type EXPRESSION: `type Rational = Ratio Integer` is a
+    /// constructor application, exactly like a signature's body.
     TypeAlias {
         /// Alias name.
         name: String,
-        /// Target type name.
-        target: TypeName,
+        /// Target type expression (`Ratio Integer`, `Double`, `Pair Int Int`).
+        target: TypeExpr,
         /// Span.
         span: Span,
     },

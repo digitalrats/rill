@@ -156,7 +156,8 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
             Ok(())
         }
         Def::TypeAlias { name, target, .. } => {
-            write!(buf, "{pad}type {name} = {target}").ok();
+            write!(buf, "{pad}type {name} = ").ok();
+            render_type_expr(target, buf);
             Ok(())
         }
         Def::Newtype { name, target, .. } => {

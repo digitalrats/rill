@@ -1561,12 +1561,22 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `type Name = T` — synonym (pure substitution).
+    /// `type Name = T` — synonym (pure substitution). Haskell 2010 §4.1.2 puts
+    /// no restriction on `T`: it is a full type, so a synonym may name a
+    /// parameterized type (`type IntBox = Box Int`) or a function type.
     fn parse_type_alias_def(&mut self) -> Result<Def, CompileError> {
         let start = self.bump().span.start;
         let (name, _) = self.expect_ident()?;
         self.eat(&Tok::Eq)?;
-        let (target, _) = self.expect_ident()?;
+        // The target type ends where the next declaration begins (Haskell
+        // layout): the same offside guard a `::` signature uses keeps `type
+        // IntBox = Box Int` followed by `f :: IntBox -> Int` from reading the
+        // next declaration's head as a further type argument.
+        let saved_col = self.type_layout_col;
+        self.type_layout_col = Some(self.cur_col());
+        let parsed = self.parse_type_expr();
+        self.type_layout_col = saved_col;
+        let target = parsed?;
         Ok(Def::TypeAlias {
             name,
             target,

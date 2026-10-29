@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{Def, Expr};
+use crate::ast::{Def, Expr, TypeExpr};
 use crate::error::{CompileError, Span};
 
 use super::unify::unify_value;
@@ -287,6 +287,13 @@ pub enum TypeEntry {
     /// A `newtype` wrapper.
     Newtype,
     /// A `type` synonym (`type Angles = Double`) and the name it stands for.
+    ///
+    /// The payload is the FINAL target's source spelling, so a chain of
+    /// synonyms reports where it ends (`type HzAlias = Hz` →
+    /// `Alias("Hz")`). A compound target keeps its spelling
+    /// (`type IntBox = Box Int` → `Alias("Box Int")`), because a
+    /// `type_entry` answer is a NAME-shaped entry: the resolved value type is
+    /// [`TypeEnv::vty_of_name`]'s answer, not this one's.
     Alias(String),
     /// A type variable: a lowercase name (Haskell 2010 §3.1), which is the
     /// binder / `forall` / class-variable space. Known, but NOT a type — an
@@ -599,8 +606,14 @@ pub struct TypeEnv {
     /// ([`TypeEnv::scalar_name_of`]): a later registration for the same value
     /// type renames it.
     pub scalars: Vec<(String, ScalarType)>,
-    /// Type synonyms (alias name → target name).
-    pub type_aliases: HashMap<String, String>,
+    /// Type synonyms (alias name → the type expression it stands for).
+    ///
+    /// The target stays UNRESOLVED on purpose: a synonym may name a type
+    /// declared later, and resolving one needs the whole [`TypeEnv`]
+    /// ([`TypeEnv::vty_of_name`] / [`TypeEnv::vty_of_expr`]). Haskell 2010
+    /// §4.1.2 allows any type on the right, so the target is a full expression
+    /// — `type Rational = Ratio Integer` is a constructor application.
+    pub type_aliases: HashMap<String, TypeExpr>,
     /// Newtype wrappers (wrapper name → inner type name).
     pub newtypes: HashMap<String, String>,
     /// Data type declarations: name → shape.
@@ -2403,7 +2416,7 @@ impl TypeEnv {
     ///
     /// 1. a registered predefined scalar (`Int`, `Double`, `Bool`, `String`,
     ///    `Buffer`, `()`);
-    /// 2. a `type` synonym, followed to its final target;
+    /// 2. a `type` synonym, deferred to its final target;
     /// 3. a `newtype` wrapper;
     /// 4. a declared `data`/abstract type or a builtin constructor, with its
     ///    type-argument arity;
@@ -2411,26 +2424,29 @@ impl TypeEnv {
     ///    is a well-formed name in the type language);
     /// 6. otherwise `None`: an UPPERCASE name that no declaration introduced
     ///    does not exist (`unknown type name`).
+    ///
+    /// A synonym entry names the target it ENDS at: a chain of bare names is
+    /// followed ([`Self::alias_final_expr`]), and a parameterized target keeps
+    /// its source spelling (`type IntBox = Box Int` → `Alias("Box Int")`).
+    /// The VALUE type it denotes is [`Self::vty_of_name`]'s answer, which
+    /// expands the expression.
     pub fn type_entry(&self, name: &str) -> Option<TypeEntry> {
         if let Some((_, scalar)) = self.scalars.iter().find(|(n, _)| n == name) {
             return Some(TypeEntry::Scalar(scalar.clone()));
         }
-        // A synonym denotes whatever its FINAL target denotes; a chain that
-        // loops (or ends at a name that is not a type) denotes nothing. The
-        // walk is bounded by the alias count, so a cycle terminates.
         if self.type_aliases.contains_key(name) {
-            let mut cur = name;
-            let mut hops = 0usize;
-            while let Some(target) = self.type_aliases.get(cur) {
-                hops += 1;
-                if hops > self.type_aliases.len() {
-                    return None;
-                }
-                cur = target.as_str();
-            }
-            return match self.type_entry(cur)? {
-                TypeEntry::Variable | TypeEntry::Alias(_) => None,
-                _ => Some(TypeEntry::Alias(cur.to_string())),
+            // A synonym denotes whatever its FINAL target denotes; a chain that
+            // loops (or ends at a name that is not a type) denotes nothing.
+            // The walk is bounded by the alias count, so a cycle terminates.
+            let target = self.alias_final_expr(name)?;
+            return match target {
+                TypeExpr::TName(n) => match self.type_entry(n)? {
+                    TypeEntry::Variable | TypeEntry::Alias(_) => None,
+                    _ => Some(TypeEntry::Alias(n.clone())),
+                },
+                // A compound target (`Box Int`) is a type in its own right;
+                // its kind and value type are answered from the expression.
+                other => Some(TypeEntry::Alias(self.type_expr_spelling(other))),
             };
         }
         if self.newtypes.contains_key(name) {
@@ -2443,6 +2459,76 @@ impl TypeEnv {
             return Some(TypeEntry::Variable);
         }
         None
+    }
+
+    /// The target a synonym CHAIN ends at, following bare-name links only.
+    ///
+    /// `type A = B; type B = Pair Int Int` resolves `A` to `Pair Int Int`; a
+    /// chain that loops is a cycle and yields `None`. The hop limit is the
+    /// alias count, so the walk always terminates.
+    fn alias_final_expr(&self, name: &str) -> Option<&TypeExpr> {
+        let mut cur = name;
+        let mut hops = 0usize;
+        loop {
+            let target = self.type_aliases.get(cur)?;
+            hops += 1;
+            if hops > self.type_aliases.len() {
+                return None;
+            }
+            match target {
+                TypeExpr::TName(n) if self.type_aliases.contains_key(n) => cur = n,
+                other => return Some(other),
+            }
+        }
+    }
+
+    /// Whether `name`'s synonym expansion reaches `name` again — a cyclic
+    /// synonym (`type A = B; type B = A`, `type A = Box A`), which denotes no
+    /// type.
+    fn alias_is_cyclic(&self, name: &str) -> bool {
+        self.alias_cyclic_from(name, &mut HashSet::new(), &mut HashSet::new(), 0)
+    }
+
+    /// [`Self::alias_is_cyclic`] with an explicit DFS path (`visiting`) and a
+    /// memo of names already PROVEN acyclic (`safe`).
+    ///
+    /// The memo keeps a diamond-shaped graph (`type T0 = Pair T1 T1`, …) linear
+    /// instead of exponential. The path guard keeps detection exact: a name
+    /// reached twice on one path is the cycle. Both sets are bounded by the
+    /// alias count, so the search always terminates.
+    fn alias_cyclic_from(
+        &self,
+        name: &str,
+        visiting: &mut HashSet<String>,
+        safe: &mut HashSet<String>,
+        depth: usize,
+    ) -> bool {
+        if safe.contains(name) {
+            return false;
+        }
+        if depth > self.type_aliases.len() {
+            return true;
+        }
+        if !visiting.insert(name.to_string()) {
+            return true;
+        }
+        let cyclic = match self.type_aliases.get(name) {
+            Some(target) => {
+                // Only FREE names can be a synonym link: a `forall`/context
+                // binder shadows any alias of the same spelling.
+                let mut mentioned: Vec<String> = Vec::new();
+                free_type_names(target, &mut Vec::new(), &mut mentioned);
+                mentioned
+                    .iter()
+                    .any(|n| self.alias_cyclic_from(n, visiting, safe, depth + 1))
+            }
+            None => false,
+        };
+        visiting.remove(name);
+        if !cyclic {
+            safe.insert(name.to_string());
+        }
+        cyclic
     }
 
     /// Whether `name` denotes a TYPE: a registry entry that is not a type
@@ -2495,6 +2581,18 @@ impl TypeEnv {
     /// unknown kind is never an error: it is the caller's context that would
     /// have to judge it, and this table cannot.
     pub fn kind_of(&self, name: &str) -> Option<Kind> {
+        if self.type_aliases.contains_key(name) {
+            // A synonym's kind is its target's kind — `type IntBox = Box Int`
+            // is `*`, `type BoxAlias = Box` is `* -> *`. A CYCLIC synonym has
+            // no kind (and its expansion would not terminate), so the cycle
+            // test runs first: the declaration check reports it, and a caller
+            // that asks anyway gets `None` rather than a stack overflow.
+            if self.alias_is_cyclic(name) {
+                return None;
+            }
+            let target = self.alias_final_expr(name)?;
+            return self.type_expr_kind(target, Span::new(0, 0)).ok().flatten();
+        }
         match self.type_entry(name)? {
             TypeEntry::Scalar(_) | TypeEntry::Newtype => Some(Kind::TYPE),
             TypeEntry::Alias(target) => self.kind_of(&target),
@@ -2888,16 +2986,53 @@ impl TypeEnv {
                     }
                 }
             }
-            // `type A = B` / `newtype A = B`: `B` must denote a type, because
-            // the wrapper's inner type is resolved from it. A synonym may name
-            // a synonym declared later (the env registers every alias before
-            // this runs), and a chain that never reaches a type is unknown.
-            Def::TypeAlias { target, span, .. } | Def::Newtype { target, span, .. } => {
+            // `type A = T` / `newtype A = B`: the right-hand side must denote a
+            // type, because the synonym/wrapper is resolved from it. A synonym
+            // may name a synonym declared later (the env registers every alias
+            // before this runs), and a chain that never reaches a type is
+            // unknown.
+            //
+            // Haskell 2010 §4.1.2: `type` accepts ANY type on the right, so the
+            // target is validated as a type EXPRESSION (`type IntBox = Box Int`
+            // checks `Box`'s name and arity like any signature would). A
+            // `newtype` target stays a bare name (this task does not widen it)
+            // and is validated as one.
+            Def::TypeAlias {
+                target, span, name, ..
+            } => {
+                // A synonym must name something: an expansion that meets
+                // itself (`type A = B; type B = A` or `type A = Box A`)
+                // denotes no type, exactly like the name-chain cycle it used
+                // to be. Detected FIRST, over the DECLARATIONS, so the cycle
+                // is named as such rather than surfacing as an unknown name
+                // and so no later resolver walk can loop.
+                if self.alias_is_cyclic(name) {
+                    return Err(CompileError::Type {
+                        msg: format!("cyclic type synonym `{name}`"),
+                        span: *span,
+                    });
+                }
+                // A synonym declares no type PARAMETERS (the syntax has none),
+                // so a lowercase name inside its target is free and names no
+                // type — `type A = a` is GHC's `Not in scope: type variable
+                // 'a'`. This is the same answer the bare-name rule gave before
+                // the target became an expression, so the guarantee is intact.
+                // A `forall`/context binder inside the target supplies its own
+                // variable, so only FREE names are checked.
+                let mut unbound: Vec<String> = Vec::new();
+                free_type_names(target, &mut Vec::new(), &mut unbound);
+                if let Some(v) = unbound.iter().find(|n| self.is_type_variable(n)) {
+                    return Err(unknown_type_error(v, *span));
+                }
+                self.validate_type_expr(target, &[], *span)?;
+            }
+            Def::Newtype { target, span, .. } => {
                 if !self.is_known_type_name(target) || !self.is_type_name(target) {
                     return Err(unknown_type_error(target, *span));
                 }
-                // The alias's inner type is used as a TYPE, so it must have
-                // kind `*`: `type A = List` is `type A = []`, rejected by GHC.
+                // The wrapper's inner type is used as a TYPE, so it must have
+                // kind `*`: `newtype A = List` is `newtype A = []`, rejected by
+                // GHC.
                 let inner = crate::ast::TypeExpr::TName(target.clone());
                 self.check_type_kind(&inner, *span)?;
             }
@@ -3214,12 +3349,82 @@ impl TypeEnv {
     /// resolves to a fresh unification variable, which is the caller's job
     /// (see [`Self::is_type_name`], the predicate that separates the two cases).
     pub fn vty_of_name(&self, name: &str) -> Option<ValueTy> {
+        // A synonym denotes whatever its target EXPRESSION denotes, so a
+        // parameterized target resolves as an application (`type Rational =
+        // Ratio Integer` → `Con("Ratio", [Integer])`).
+        if let Some(target) = self.type_aliases.get(name) {
+            return self.vty_of_expr_at(target, 0);
+        }
         match self.type_entry(name)? {
             TypeEntry::Scalar(s) => Some(s.vty),
+            // A synonym never reaches here: the expression arm above answers
+            // for every alias name. Kept for exhaustiveness.
             TypeEntry::Alias(target) => self.vty_of_name(&target),
             TypeEntry::Newtype => Some(ValueTy::Newtype(name.to_string(), vec![])),
             TypeEntry::TypeCtor { .. } => Some(ValueTy::Con(name.to_string(), vec![])),
             TypeEntry::Variable => None,
+        }
+    }
+
+    /// The value type a type EXPRESSION denotes, expanding type synonyms.
+    ///
+    /// This is the expression form of [`Self::vty_of_name`]: names resolve
+    /// through the registry, an application is the one [`ValueTy::Con`] shape
+    /// built by [`Self::ctor_application`], and a function type is
+    /// [`ValueTy::Thunk`]. `None` when a name denotes no type (an unknown
+    /// uppercase name, or a type variable — which is the caller's binder to
+    /// supply).
+    ///
+    /// Expansion is DEPTH-LIMITED ([`MAX_VALUE_RESOLVE_DEPTH`]) so a synonym
+    /// that expands into itself (`type A = Box A`) cannot recurse forever; such
+    /// a cycle is already rejected by the declaration check
+    /// ([`Self::validate_type_names`]).
+    pub fn vty_of_expr(&self, te: &TypeExpr) -> Option<ValueTy> {
+        self.vty_of_expr_at(te, 0)
+    }
+
+    fn vty_of_expr_at(&self, te: &TypeExpr, depth: usize) -> Option<ValueTy> {
+        if depth > MAX_VALUE_RESOLVE_DEPTH {
+            return None;
+        }
+        match te {
+            TypeExpr::TName(n) => {
+                // Follow the SYNONYM CHAIN iteratively — one hop per alias, so a
+                // long acyclic chain costs no recursion (the hop limit is the
+                // alias count, the same bound the name walk has always used).
+                // Only the final target's STRUCTURE recurses below.
+                if !self.type_aliases.contains_key(n) {
+                    return self.vty_of_name(n);
+                }
+                // A cyclic chain denotes no type; the declaration check reports
+                // it, and this answers `None` rather than looping.
+                let target = self.alias_final_expr(n)?;
+                match target {
+                    TypeExpr::TName(final_name) => self.vty_of_name(final_name),
+                    other => self.vty_of_expr_at(other, depth + 1),
+                }
+            }
+            TypeExpr::TApp(head, args) => {
+                let vargs: Vec<ValueTy> = args
+                    .iter()
+                    .map(|a| self.vty_of_expr_at(a, depth + 1))
+                    .collect::<Option<Vec<_>>>()?;
+                // A synonym may not be APPLIED here: a target must have kind
+                // `*` ([`Self::check_type_kind`]), so `type B = List` is
+                // rejected and `B Int` cannot arise. The head is therefore a
+                // constructor name, and the one application shape
+                // ([`Self::ctor_application`]) builds it.
+                Some(self.ctor_application(head, vargs))
+            }
+            TypeExpr::TFunc(args, ret) => Some(ValueTy::Thunk(
+                args.iter()
+                    .map(|a| self.vty_of_expr_at(a, depth + 1))
+                    .collect::<Option<Vec<_>>>()?,
+                vec![self.vty_of_expr_at(ret, depth + 1)?],
+            )),
+            TypeExpr::TForall(_, inner) | TypeExpr::TConstrained(_, inner) => {
+                self.vty_of_expr_at(inner, depth + 1)
+            }
         }
     }
 
@@ -3556,6 +3761,47 @@ impl TypeEnv {
         self.typeclasses
             .get(class)
             .and_then(|c| c.defaults.get(method).cloned())
+    }
+}
+
+/// The names a type expression reads that its OWN binders do not introduce:
+/// a `forall a. …` binds `a`, and a class context `(C v) => …` binds `v`. A
+/// synonym declares no type parameters, so every name this returns is free.
+fn free_type_names(te: &TypeExpr, bound: &mut Vec<String>, out: &mut Vec<String>) {
+    match te {
+        TypeExpr::TName(n) => {
+            if !bound.iter().any(|b| b == n) {
+                out.push(n.clone());
+            }
+        }
+        TypeExpr::TApp(head, args) => {
+            if !bound.iter().any(|b| b == head) {
+                out.push(head.clone());
+            }
+            for a in args {
+                free_type_names(a, bound, out);
+            }
+        }
+        TypeExpr::TFunc(args, ret) => {
+            for a in args {
+                free_type_names(a, bound, out);
+            }
+            free_type_names(ret, bound, out);
+        }
+        TypeExpr::TForall(vars, inner) => {
+            let mark = bound.len();
+            bound.extend(vars.iter().cloned());
+            free_type_names(inner, bound, out);
+            bound.truncate(mark);
+        }
+        TypeExpr::TConstrained(constraints, inner) => {
+            // A context binds the class VARIABLE it constrains (`C v` binds
+            // `v`); the class name is a typeclass, not a type.
+            let mark = bound.len();
+            bound.extend(constraints.iter().map(|(_, v)| v.clone()));
+            free_type_names(inner, bound, out);
+            bound.truncate(mark);
+        }
     }
 }
 

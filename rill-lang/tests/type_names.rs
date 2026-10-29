@@ -248,6 +248,78 @@ fn the_unit_type_is_the_parentheses() {
 }
 
 #[test]
+fn a_type_synonym_may_name_a_parameterized_type() {
+    // Haskell 2010 §4.1.2 allows any type on the right of `type`, so a synonym
+    // may name a CONSTRUCTOR APPLICATION. Before this task the parser accepted
+    // only a bare identifier (`expected Eq, found Semi`), so a synonym of a
+    // parameterized type could not be written at all.
+    //
+    // `Ratio` is registered later (the numeric-literal stage); the syntax is
+    // proved here through a user type, which is the same `TypeExpr::TApp`.
+    let out = compile(
+        "data Box a = { v: a };\ntype IntBox = Box Int;\nf :: IntBox -> Int;\nf b = b.v;\n\
+         main = f (Box { v: 3 });",
+    )
+    .expect("a synonym may name a parameterized type");
+    assert!(out.contains("Int(3)"), "got {out}");
+
+    // The registry resolves the alias to the applied type, not to a name.
+    // `Int` resolves to its LEAF value type, so the payload of `Box` is
+    // `ValueTy::Int` — the same type a `Box Int` signature parameter has.
+    let env = env_of("data Box a = { v: a }; type IntBox = Box Int;");
+    assert_eq!(
+        env.vty_of_name("IntBox"),
+        Some(ValueTy::Con("Box".into(), vec![ValueTy::Int]))
+    );
+    assert_eq!(
+        env.kind_of("IntBox"),
+        Some(rill_lang::types::ty::Kind::TYPE)
+    );
+
+    // A synonym may name ANOTHER synonym of a parameterized type, and the
+    // target may nest applications.
+    let env = env_of(
+        "data Box a = { v: a }; type IntBox = Box Int; type IntBox2 = IntBox; \
+         type PairBox = Box (Box Int);",
+    );
+    assert_eq!(
+        env.vty_of_name("IntBox2"),
+        Some(ValueTy::Con("Box".into(), vec![ValueTy::Int]))
+    );
+    assert_eq!(
+        env.vty_of_name("PairBox"),
+        Some(ValueTy::Con(
+            "Box".into(),
+            vec![ValueTy::Con("Box".into(), vec![ValueTy::Int])]
+        ))
+    );
+
+    // A synonym may name a FUNCTION type too (Haskell 2010 §4.1.2 puts no
+    // restriction on the right-hand side).
+    let out = compile("type Op = Int -> Int;\nf :: Op;\nf x = x;\nmain = f 5")
+        .expect("a synonym may name a function type");
+    assert!(out.contains("Int(5)"), "got {out}");
+}
+
+#[test]
+fn a_cyclic_type_synonym_is_a_clean_error() {
+    // A synonym cycle denotes no type. It must be a diagnostic — not a hang and
+    // not a stack overflow: `type A = B; type B = A` (a bare-name cycle) and
+    // `type A = Box A` (an expansion cycle through an application) are both
+    // rejected.
+    for src in [
+        "type A = B; type B = A; main = 1.0;",
+        "data Box a = { v: a }; type A = Box A; main = 1.0;",
+    ] {
+        let err = compile_err(src);
+        assert!(
+            err.contains("cyclic type synonym"),
+            "expected a cyclic-synonym diagnostic for `{src}`, got: {err}"
+        );
+    }
+}
+
+#[test]
 fn the_registry_is_the_single_source() {
     // Add ONE name to the registry and assert every consumer sees it. Each
     // consumer that keeps its own list is a failing assertion below.
@@ -398,4 +470,93 @@ fn the_registry_is_the_single_source() {
     );
     // The unit type's spelling is the registry's `()` (it has no other name).
     assert_eq!(env.type_spelling(&ValueTy::Void), "()");
+}
+
+#[test]
+fn a_synonym_target_is_still_a_type_position() {
+    // Widening the syntax must not widen the TYPE CHECK: a lowercase name is a
+    // type variable, so `type A = a` names no type (GHC: `Not in scope`), and a
+    // bare constructor target still fails the kind rule.
+    let err = compile_err("type A = a; main = 1.0;");
+    assert!(
+        err.contains("type A = a") || err.contains("`a`"),
+        "got {err}"
+    );
+    let err = compile_err("type A = List; main = 1.0;");
+    assert!(err.contains("has kind `* -> *`"), "got {err}");
+    let err = compile_err("type A = Nope; main = 1.0;");
+    assert!(err.contains("unknown type name `Nope`"), "got {err}");
+    let err = compile_err("type A = Pair Int; main = 1.0;");
+    assert!(err.contains("has kind `* -> *`"), "got {err}");
+    let err = compile_err("data Box a = { v: a }; type A = Box Int Int; main = 1.0;");
+    assert!(err.contains("too many arguments"), "got {err}");
+}
+
+#[test]
+fn a_synonym_chain_through_an_alias_resolves() {
+    // A free `type` target must have kind `*`, so a synonym cannot be used as
+    // a constructor HEAD (`type B = List` is `type B = []`, rejected by GHC).
+    // The MEANINGFUL chain is name → name, where the final target is applied:
+    // `type IntList = List Int; type L = IntList` is `List Int`.
+    let env = env_of("type IntList = List Int; type L = IntList;");
+    assert_eq!(
+        env.vty_of_name("L"),
+        Some(ValueTy::Con("List".into(), vec![ValueTy::Int]))
+    );
+    let out = compile(
+        "type IntList = List Int; type L = IntList; f :: L -> Int; f xs = length xs; main = f [7]",
+    )
+    .expect("a synonym chain ending in an application must resolve");
+    assert!(out.contains("Int(1)"), "got {out}");
+    // And a bare-constructor target is still a kind error, unchanged.
+    let err = compile_err("type B = List; main = 1.0;");
+    assert!(err.contains("has kind `* -> *`"), "got {err}");
+}
+
+#[test]
+fn an_expansion_cycle_through_nesting_is_a_clean_error() {
+    // A cycle does not have to be a bare name chain: `type A = Int -> A` and
+    // `type A = Pair Int A` both expand forever. Both are diagnostics with a
+    // span, and neither hangs nor overflows the stack.
+    for src in [
+        "type A = Int -> A; main = 1.0;",
+        "type A = Pair Int A; main = 1.0;",
+        "type A = B; type B = C; type C = Box A; data Box a = { v: a }; main = 1.0;",
+    ] {
+        let err = compile_err(src);
+        assert!(
+            err.contains("cyclic type synonym"),
+            "expected a cyclic-synonym diagnostic for `{src}`, got: {err}"
+        );
+    }
+    // A LONG but acyclic chain still resolves (the hop limit is the alias
+    // count, not a fixed small number).
+    let chain: String = (0..40)
+        .map(|i| format!("type T{i} = T{};\n", i + 1))
+        .collect();
+    let src = format!("{chain}type T40 = Double; f :: T0 -> Double; f x = x; main = f 2.0");
+    let out = compile(&src);
+    assert!(
+        out.is_ok(),
+        "a 40-link acyclic chain must resolve: {:?}",
+        out.err()
+    );
+}
+
+#[test]
+fn a_synonym_target_ends_at_the_next_declaration() {
+    // The offside guard must stop a type APPLICATION from swallowing the next
+    // declaration's head. Without it, `type IntBox = Box Int` on its own line
+    // would read `Box Int f` and fail with an unrelated message.
+    for src in [
+        // Semicolon-separated, one line.
+        "data Box a = { v: a }; type IntBox = Box Int; f :: IntBox -> Int; f b = b.v; main = f (Box { v: 4 })",
+        // Newline-separated without semicolons.
+        "data Box a = { v: a }\ntype IntBox = Box Int\nf :: IntBox -> Int\nf b = b.v\nmain = f (Box { v: 4 })",
+        // The target continuing onto the next line is still one application.
+        "data Box a = { v: a }\ntype IntBox =\n    Box Int\nf :: IntBox -> Int\nf b = b.v\nmain = f (Box { v: 4 })",
+    ] {
+        let out = compile(src).unwrap_or_else(|e| panic!("`{src}` must compile: {e}"));
+        assert!(out.contains("Int(4)"), "got {out} for:\n{src}");
+    }
 }

@@ -77,3 +77,39 @@ fn roundtrips_mode_pragma() {
 fn roundtrips_an_out_of_range_integer_literal() {
     roundtrip("main = 123456789012345678901234567890");
 }
+
+#[test]
+fn roundtrips_a_type_synonym_with_a_compound_target() {
+    // A synonym's target is a full `TypeExpr` (Haskell 2010 §4.1.2), so the
+    // serialized AST must carry the application rather than a bare name:
+    // `type IntBox = Box Int`, `type Op = Int -> Int`, and a nested
+    // application all round-trip.
+    roundtrip("data Box a = { v: a }; type IntBox = Box Int; main = ()");
+    roundtrip("type Op = Int -> Int; main = ()");
+    roundtrip("data Box a = { v: a }; type PairBox = Box (Box Int); main = ()");
+    roundtrip("type Angles = Double; main = ()");
+}
+
+#[test]
+fn renders_a_type_synonym_with_a_compound_target() {
+    // The DSL renderer must re-emit a compound target so the printed program
+    // re-parses to the same program. Spans differ by construction, so the
+    // fixed point asserted here is the rendered TEXT.
+    use rill_lang::render::render;
+    for src in [
+        "data Box a = { v: a }; type IntBox = Box Int; main = ()",
+        "type Op = Int -> Int; main = ()",
+        "type IntList = List Int; type L = IntList; main = ()",
+    ] {
+        let first = render(&parse(src)).unwrap();
+        assert!(
+            first.contains("type "),
+            "the synonym must be rendered:\n{first}"
+        );
+        let second = render(&parse(&first)).unwrap();
+        assert_eq!(
+            second, first,
+            "render must be a fixed point for:\n{src}\nrendered:\n{first}"
+        );
+    }
+}
