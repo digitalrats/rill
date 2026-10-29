@@ -229,6 +229,105 @@ git commit -m 'fix: applied primitive methods return their result type; builtins
 
 ---
 
+### Task 2b: one curried application rule instead of fourteen copies
+
+**Files:**
+- Modify: `rill-lang/src/types/infer.rs` (add one function; replace its 8
+  duplicated uses)
+- Test: `rill-lang/tests/typeclass.rs`, `rill-lang/tests/arg_checking.rs`
+
+**Interfaces:**
+- Consumes: `nest_thunk` (`infer.rs:627`), `signature_param_and_result_tys_conv`,
+  `infer_method_value_vty_expected`, `unify_value`.
+- Produces: `fn apply_args_curried(ctx, params: &[ValueTy], ret: &ValueTy,
+  args: &[Expr], span: Span, what: &str) -> Result<ArrowTy, CompileError>` —
+  THE application rule for every call site that has a parameter list and a
+  result type.
+
+**Why (measured).** Applying a function's type to its arguments is implemented
+**eight times** in `infer.rs`, and arity is checked in **fourteen** places. They
+disagree, and the disagreement is what produced two separate Task 2 defects:
+
+| Site | What it does | Defect it caused |
+|---|---|---|
+| `infer.rs:4942` (result-directed primitive) | returned `nest_thunk(&param_tys, …)` — the WHOLE arrow — on a full application | `(fromInteger 1) :: Integer` failed with "cannot unify `Thunk([Int],[Integer])` with `Integer`" (Task 2 fix i) |
+| `infer.rs:6451` | `ret` with no arity guard | `fromInteger 1 2` typechecked as `Integer` where GHC reports an arity error (Task 2 fix round 1) |
+| `4662`, `4735`, `4782`, `5439`, `5555`, `6551` | six more hand-written copies | no live defect, but each is a place the next fix will miss |
+
+One function already does it correctly —
+`infer_method_under_given` (`infer.rs:505-539`): reject surplus args, unify each
+supplied arg against its parameter, and return the curried remainder when fewer
+were supplied. Its body is the model; the rest are copies that drifted.
+
+- [ ] **Step 1: Write the failing test**
+
+Add to `rill-lang/tests/typeclass.rs` a test that pins the rule at EVERY site at
+once, so a site that bypasses the function is caught:
+
+```rust
+#[test]
+fn every_call_site_applies_the_same_curried_rule() {
+    use rill_lang::lexer::tokenize;
+    use rill_lang::parser::parse;
+    let ok = |src: &str| {
+        let toks = tokenize(src).expect("lex");
+        let prog = parse(&toks, src.as_bytes()).expect("parse");
+        rill_lang::types::infer::infer_program(&prog, Mode::Complete).is_ok()
+    };
+    // Under-application yields a function value; over-application is an error.
+    // GHC 9.10.3: `fromInteger 1 2` is "No instance for `Num (t0 -> t1)`".
+    assert!(ok("x :: Integer = fromInteger 1;\nmain = 0.0;"));
+    assert!(!ok("x :: Integer = fromInteger 1 2;\nmain = 0.0;"));
+    assert!(!ok("x :: Integer = fromInteger 1 2 3;\nmain = 0.0;"));
+    // A partial application of a TWO-parameter method is a function value, and
+    // applying it once more completes it — the property the copies disagreed on.
+    assert!(ok("h :: Double -> Double;\nh = (+) 1.0;\nmain = 0.0;"));
+    assert!(ok("x :: Double = (+) 1.0 2.0;\nmain = 0.0;"));
+    assert!(!ok("x :: Double = (+) 1.0 2.0 3.0;\nmain = 0.0;"));
+}
+```
+
+- [ ] **Step 2: Run it and watch it fail on the over-application rows**
+
+Run: `cargo test -p rill-lang --features dsp --test typeclass`
+Expected: at least `(+) 1.0 2.0 3.0` is accepted (should be rejected), because
+the source-instance and operator paths guard differently from the primitive one.
+
+- [ ] **Step 3: Add `apply_args_curried` and route every site through it**
+
+Move the body of `infer_method_under_given`'s arity+curry logic into
+`apply_args_curried`, with `what: &str` supplying the error message's subject
+(`"method \`fromInteger\` of \`Num\`"`, `"\`add\`"`, …) so the existing
+diagnostics keep their wording. Then replace the eight sites listed above:
+
+- **full application returns `ret`** (never the whole arrow),
+- **under-application returns the curried remainder**,
+- **over-application is a compile error**.
+
+Keep every site's surrounding substitution work (`cv_subst`, fresh vars, the
+`ClassVarSubst` chosen) — the function takes already-converted `params`/`ret`, so
+each caller keeps its own conversion and only the application half is shared.
+
+- [ ] **Step 4: Run the tests and the inventory check**
+
+```
+cargo test -p rill-lang --features dsp
+grep -c 'expects .*argument(s), got' rill-lang/src/types/infer.rs
+```
+
+Expected: all green, and the arity-message count drops from 14 to the sites that
+still need their own message (aim for ≤ 3: user-def calls, operators, and the
+shared function's own). If the count does not drop, the sites were not routed
+through the function — that is a failure, not a detail.
+
+- [ ] **Step 5: Run the full gates, then commit**
+
+```bash
+git commit -m 'refactor: one curried application rule for every call site'
+```
+
+---
+
 ### Task 3: `Ratio` and `Rational`, with value-comparing instances
 
 **Files:**
