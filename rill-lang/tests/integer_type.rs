@@ -782,3 +782,39 @@ fn a_polymorphic_helper_accepts_a_computed_argument() {
         "1.0"
     );
 }
+
+#[test]
+fn a_builtin_argument_gets_its_declared_parameter_type() {
+    // `show_int :: Int -> String` declares a concrete `Int` parameter, so its
+    // argument must be inferred AT `Int`. Without the threading a
+    // result-directed method inside the argument cannot select its instance:
+    // `fromInteger : Int -> a` mentions the class variable only in its RESULT,
+    // so `fromInteger 2` alone is "cannot resolve method `fromInteger` of `Num`:
+    // expected type unknown". Threading the declared parameter type is the ONLY
+    // thing that fixes it — `int_literal_widens_to` does not apply, because the
+    // argument is an application, not a literal.
+    use rill_lang::lexer::tokenize;
+    use rill_lang::mode::Mode;
+    use rill_lang::parser::parse;
+    use rill_lang::types::ty::ValueTy;
+    let src = "main = do { write (Just (show_int (fromInteger 2))) stdout; return () };";
+    let toks = tokenize(src).expect("lex");
+    let prog = parse(&toks, src.as_bytes()).expect("parse");
+    let typed = rill_lang::types::infer::infer_program(&prog, Mode::Complete)
+        .unwrap_or_else(|e| panic!("`{src}` must typecheck: {e}"));
+    assert_eq!(
+        typed.def_schemes["main"].ty.vty,
+        ValueTy::Con("IO".to_string(), vec![ValueTy::Void])
+    );
+    // The control that already worked: a bare integer literal at `Int`.
+    assert_eq!(
+        run("main = do { write (Just (show_int 2)) stdout; return () };"),
+        "2"
+    );
+    // And a `Double`-parameter builtin, where the threading decides the literal's
+    // `fromInteger` target rather than merely satisfying a unification.
+    assert_eq!(
+        run("main = do { write (Just (show_double 2)) stdout; return () };"),
+        "2.0"
+    );
+}

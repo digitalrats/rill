@@ -10,6 +10,14 @@ use rill_lang::compile_eval;
 use rill_lang::ffi::ForeignRegistry;
 use rill_lang::mode::Mode;
 
+/// Compile and run `src`, returning the concatenated stdout.
+fn run_out(src: &str) -> String {
+    let mut prog =
+        rill_lang::compile::<f32, 256>(src, ForeignRegistry::new()).expect("compile failed");
+    prog.run().expect("run failed");
+    prog.stdout().concat()
+}
+
 /// Compile `src` (which must bind `main` to the evaluated expression) and RUN
 /// it once on the single-run value surface, returning the already-run program.
 fn run(src: &str) -> WorldState<f32, 256> {
@@ -234,5 +242,52 @@ fn user_def_shadows_builtin_eq_ord_method_names() {
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Double(6.0)
+    );
+}
+
+#[test]
+fn an_applied_primitive_method_has_its_result_type() {
+    // A FULLY APPLIED primitive method's type is the signature's RESULT, not the
+    // whole unapplied arrow. `fromInteger : Int -> a` applied to one argument is
+    // an `a` solved by the instance — `Integer` at `Num Integer`. Before the fix
+    // `x`'s scheme was `Thunk([Int], [Integer])` (the whole arrow), so the
+    // annotation could not unify: "cannot unify value type Thunk([Int],
+    // [Integer]) with Integer".
+    //
+    // This is asserted at the INFERENCE layer because it is an inference defect:
+    // `fromInteger`'s VALUE needs the `FromInteger` IR instruction (design §3.9,
+    // Task 5), so running the program would report an unrelated lowering gap.
+    use rill_lang::lexer::tokenize;
+    use rill_lang::parser::parse;
+    use rill_lang::types::ty::ValueTy;
+    let infer_x = |src: &str| {
+        let toks = tokenize(src).expect("lex");
+        let prog = parse(&toks, src.as_bytes()).expect("parse");
+        let typed = rill_lang::types::infer::infer_program(&prog, Mode::Complete)
+            .unwrap_or_else(|e| panic!("`{src}` must typecheck: {e}"));
+        typed.def_schemes["x"].ty.vty.clone()
+    };
+    // Two targets of the SAME polymorphic method, so the answer comes from the
+    // instance and not from a defaulted variable.
+    assert_eq!(
+        infer_x("x :: Integer = fromInteger 1;\nmain = 0.0;"),
+        ValueTy::Integer,
+        "`(fromInteger 1) :: Integer` is the applied RESULT, not the method arrow"
+    );
+    assert_eq!(
+        infer_x("x :: Double = fromInteger 1;\nmain = 0.0;"),
+        ValueTy::Double,
+        "`(fromInteger 1) :: Double` is the applied RESULT, not the method arrow"
+    );
+    // CONTROL, not evidence: `(+)` is a fully applied primitive method whose
+    // result type was already right (it takes the operator path), so it must
+    // keep RUNNING. This guards the fix from having traded a result type for a
+    // value; it passes before the fix too, and is labelled as a control rather
+    // than counted as a demonstration of it.
+    assert_eq!(
+        run_out(
+            "x :: Double = (+) 1.0 2.0;\nmain = do { write (Just (show_double x)) stdout; return () };"
+        ),
+        "3.0"
     );
 }

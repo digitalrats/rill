@@ -5844,28 +5844,25 @@ fn infer_apply_impl(
             .collect::<Result<_, _>>()?;
         let ret_ty = instantiate_builtin_sig_vty(ctx, &ret, &mut sig_vars)?;
         for (pt, a) in param_tys.into_iter().zip(args.iter()) {
-            // Thread the parameter type as the argument's expected type when it
-            // is RESULT-DIRECTED for the argument's interior: an `IO` parameter
-            // (`makeInputStream :: IO (Maybe a) -> …` handed
-            // `return (Just 7.0)`) and a function parameter
-            // (`makeOutputStream :: (Maybe a -> IO ()) -> …` handed
-            // `\mb -> … return () …`). A result-directed method inside the
-            // argument then selects its instance. Other parameters keep plain
-            // inference (their expected type may be a signal channel).
-            let resolved_pt = ctx.subst.resolve_value(&pt);
-            let directed = matches!(&resolved_pt, ValueTy::Con(n, _) if n == "IO")
-                || matches!(resolved_pt, ValueTy::Thunk(..));
-            // An integer LITERAL argument is `fromInteger`-polymorphic (Haskell
-            // 2010 §6.4.1): it takes the declared parameter's type, so a
-            // `Double`/`Integer` parameter must type it there — otherwise
-            // `show_double 2` is `Int` vs `Double` and rejected, which is what
-            // made `show_double 123456789012345678901234567890` a phantom type
-            // error. Same rule as [`def_arg_widens_to`]'s literal arm.
-            let literal_widens = int_literal_widens_to(&resolved_pt, a);
-            let at0 = if directed || literal_widens {
-                infer_expr_expected(ctx, a, Some(pt.clone()))?
-            } else {
+            // Every argument is inferred AT its declared parameter type. Haskell
+            // 2010 types an application by unifying each argument against the
+            // function's declared argument type, and that is the only way a
+            // result-directed method inside the argument (`show_int
+            // (fromInteger 2)`) learns its instance: `fromInteger : Int -> a`
+            // has no argument that could solve `a`, so the expected type must
+            // come from the parameter. Threading it only for `IO`/`Thunk`
+            // parameters or integer literals left every other parameter's
+            // argument untyped.
+            //
+            // A `Buffer` parameter is the one place this does not apply: its
+            // slot accepts a buffer computation, a Buffer value, or a numeric
+            // signal constant, so its argument is inferred plainly and a
+            // numeric constant is RE-inferred at `Buffer` below.
+            let buffer_param = matches!(pt, ValueTy::Buffer(_));
+            let at0 = if buffer_param {
                 infer_expr(ctx, a)?
+            } else {
+                infer_expr_expected(ctx, a, Some(pt.clone()))?
             };
             // A Buffer param (a foreign builtin's signal slot) accepts a signal
             // computation (a `Buffer -> … -> Buffer` arrow applied to the
@@ -5877,7 +5874,7 @@ fn infer_apply_impl(
                 && matches!(at0.vty, ValueTy::Double | ValueTy::Int)
                 && (matches!(a, Expr::Int(_, _) | Expr::Double(_, _))
                     || is_const_value_ref(ctx, a));
-            let at = if matches!(pt, ValueTy::Buffer(_)) && numeric_const {
+            let at = if buffer_param && numeric_const {
                 infer_expr_expected(ctx, a, Some(pt.clone()))?
             } else {
                 at0
@@ -5886,7 +5883,6 @@ fn infer_apply_impl(
             // computation (a `Buffer -> … -> Buffer` arrow) OR a plain Buffer
             // value — either way its first
             // output is a Buffer. Non-Buffer params must be 0→1 values.
-            let buffer_param = matches!(pt, ValueTy::Buffer(_));
             if !buffer_param && (at.arity_in() != 0 || at.arity_out() != 1) {
                 return Err(CompileError::Type {
                     msg: format!(
@@ -6441,8 +6437,14 @@ fn infer_apply_impl(
                         sig,
                         || it.next().unwrap_or(ValueTy::Double),
                     );
+                    // A FULL application yields the signature's RESULT type —
+                    // exactly what the source-instance path below returns (its
+                    // body's type). Returning `nest_thunk(&param_tys, …)` here
+                    // handed back the whole unapplied arrow: `(fromInteger 1)`
+                    // typed as `Thunk([Int], [Integer])` instead of the
+                    // `Integer` its annotation demands.
                     let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
-                    return Ok(ArrowTy::value(nest_thunk(&param_tys, vec![ret])));
+                    return Ok(ArrowTy::value(ret));
                 }
                 let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                     Some(r) => r,
