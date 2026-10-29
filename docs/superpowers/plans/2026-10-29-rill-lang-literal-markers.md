@@ -691,6 +691,31 @@ git commit -m 'feat: add gcd, %, numerator and denominator for Ratio'
   `ValueRecip { dst, src }`, `ValueFromInteger { dst, src, target: ValueTyTag }`.
   Task 7 emits `ValueFromInteger`.
 
+**`ValueAbs`/`ValueNegate`/`ValueSignum` dispatch on the OPERAND, not on the
+name.** Today `lower.rs:2288-2311` intercepts `abs` (and `sin`/`cos`/`tan`/
+`sqrt`/`exp`/`ln`/`tanh`) *by name, before class dispatch*, and requires a
+`Buffer` — so `abs 3.0` fails with "`abs` signal argument must be a Buffer" and
+`Num.abs` is unreachable for every type. That is a buffer-specific branch in
+lowering, which `AGENTS.md` forbids ("Do not introduce … a buffer branch in
+operator lowering").
+
+The kernels must take the same shape `+` already has: ONE instruction, whose
+execution branches on the operand kind.
+
+| Operand | `ValueAbs` executes |
+|---|---|
+| `Buffer` | `abs_slice::<T, 4, ScalarVector4<T>>(src, out)` from `rill-core` — **unchanged vectorized path** |
+| `Double` | `x.abs()` |
+| `Integer` | exact `|x|` |
+| `Int` | wrapping `abs` |
+
+**No SIMD regression, measured:** the current buffer path already calls
+`abs_slice`, and that function is a `ScalarVector4` loop (`rill-core/src/math/
+vector/math.rs:163-177`) — the scalar emulation, not a `F32x4` intrinsic. Routing
+it from the instruction instead of from a name branch calls the SAME function, so
+the code path is byte-identical. What would kill vectorization is per-element
+closure calls (the `map` shape), which this design does not use.
+
 **`ValueFromInteger` needs a `target`.** The instance decides the type; an unbound
 `dst` register cannot. `target` is a small tag (`Int`/`Integer`/`Double`/`Ratio`)
 because the interpreter must know which payload to build. `Int` targets are NOT
@@ -742,7 +767,30 @@ Each preserves the operand's numeric track (`Int` → `Int`, `Integer` → exact
 Then update `has_instruction` and the §3.9 pinning test in `kernels.rs` so the
 expected gap list is **empty**.
 
-- [ ] **Step 4: Run the tests, then the full gates, then commit**
+- [ ] **Step 4: Remove the name-based math-builtin branch**
+
+`lower.rs:2288-2311` intercepts `abs` (and the other six math names) before class
+dispatch. With `ValueAbs` in place, delete the `abs` arm and let the name resolve
+through `Num.abs`. Write the test first:
+
+```rust
+#[test]
+fn abs_is_a_class_method_not_a_buffer_builtin() {
+    // GHC: `abs (-3.0)` is 3.0, `abs (-3)` is 3, and `abs` over a buffer works
+    // too. rill rejected the scalar forms with "`abs` signal argument must be a
+    // Buffer" because lowering intercepted the NAME before class dispatch.
+    assert_eq!(run("main = do { write (Just (show_double (abs (0.0 - 3.0)))) stdout; return () };"), "3.0");
+    assert_eq!(run("main = do { write (Just (show_int (abs (0 - 3)))) stdout; return () };"), "3");
+    // The buffer path must keep working (and keep calling `abs_slice`).
+    assert_eq!(run("main = do { write (Just (show_double (abs (sine 440.0 0.5 0.0)))) stdout; return () };"), "0.0");
+}
+```
+
+Keep the other six names' branches for now: they are `Floating` methods in H2010
+and they need the `Floating` class, which this stage does not add. Record that in
+the report as an open defect with the same shape and the same fix.
+
+- [ ] **Step 5: Run the tests, then the full gates, then commit**
 
 ```bash
 git commit -m 'feat: implement the six numeric kernels'
