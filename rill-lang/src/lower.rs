@@ -1876,6 +1876,22 @@ impl<'a> Lowerer<'a> {
                 args: call_args,
                 span,
             } => {
+                // A binding whose whole body is an UNDER-APPLIED method call
+                // (`g = fmap (+ 1.0)`) applied to its remaining arguments. The
+                // value has no dictionary to carry: a constructor-class method's
+                // instance is selected by the class-var-applied CONTAINER, which
+                // is the argument the binding has not received yet. Lowering a
+                // value binding inlines its body at every use site, so the
+                // use-site application IS the specialization point — reduce
+                // `g x` to `fmap (+ 1.0) x` and the container is present, the
+                // instance selects, and two uses at different containers
+                // (`Maybe`, `List`) each get their own instance. That is the
+                // same per-call-site specialization constrained definitions use.
+                if let Some(out) =
+                    self.lower_applied_method_binding_site(name, call_args, expected, *span)
+                {
+                    return out;
+                }
                 // Class-constrained definition (`mk :: Ix i => Pair i i -> …`):
                 // the call site is the specialization point. See
                 // [`Self::lower_constrained_apply_site`]. Kept out of line so
@@ -1913,28 +1929,7 @@ impl<'a> Lowerer<'a> {
                 if let Some(sig) = self.env.builtin_sigs.get(name) {
                     let declared = sig.arg_types().len();
                     if !call_args.is_empty() && call_args.len() < declared {
-                        let names: Vec<String> = (call_args.len()..declared)
-                            .map(|i| format!("$builtin_p{i}"))
-                            .collect();
-                        let mut args = call_args.clone();
-                        args.extend(names.iter().map(|p| Expr::Ref(p.clone(), *span)));
-                        let mut lam = Expr::Apply {
-                            name: name.to_string(),
-                            args,
-                            span: *span,
-                        };
-                        for p in names.into_iter().rev() {
-                            lam = Expr::Lambda {
-                                params: vec![Param {
-                                    name: p,
-                                    span: *span,
-                                    bang: false,
-                                }],
-                                body: Box::new(lam),
-                                span: *span,
-                            };
-                        }
-                        return self.lower_value(&lam);
+                        return self.lower_under_applied(name, call_args, declared, *span);
                     }
                 }
                 // `runST (fn s -> body)`: `runST` is a built-in function whose
@@ -2572,8 +2567,20 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 // Sum constructor: `Circle 1.5`.
+                //
+                // A constructor is an ordinary CURRIED function (Haskell 2010
+                // §4.2.1): `M3 :: Double -> Double -> Three`, so supplying
+                // FEWER payload arguments than the constructor takes is a
+                // PARTIAL application and a value — `f = M3 1.0`,
+                // `map (Mk 1.0) xs`. Lower it exactly the way the bare-constructor
+                // case does (see `lower_value_ref`'s sum arm): rewrite into
+                // `\ $ctor_pK -> … C supplied… $ctor_pK` and let the closure
+                // machinery handle arity, partial application and
+                // re-application. More arguments than the payload is the arity
+                // error; inference rejects it first, and lowering keeps its own
+                // message for the paths that reach it directly.
                 if let Some((sum_name, ctor_idx, payload)) = self.sum_ctor(name) {
-                    if call_args.len() != payload.len() {
+                    if call_args.len() > payload.len() {
                         return Err(CompileError::Type {
                             msg: format!(
                                 "constructor `{name}` expects {} argument(s), got {}",
@@ -2582,6 +2589,9 @@ impl<'a> Lowerer<'a> {
                             ),
                             span: *span,
                         });
+                    }
+                    if call_args.len() < payload.len() {
+                        return self.lower_under_applied(name, call_args, payload.len(), *span);
                     }
                     let bangs = self.ctor_payload_bangs(&sum_name, ctor_idx);
                     let mut payload_regs = Vec::with_capacity(call_args.len());
@@ -3039,7 +3049,7 @@ impl<'a> Lowerer<'a> {
                             ),
                             span: *span,
                         })?;
-                        if call_args.len() != n_sig_args {
+                        if call_args.len() > n_sig_args {
                             return Err(CompileError::Type {
                                 msg: format!(
                                     "method `{name}` of `{class_name}` expects {n_sig_args} argument(s), got {}",
@@ -3047,6 +3057,17 @@ impl<'a> Lowerer<'a> {
                                 ),
                                 span: *span,
                             });
+                        }
+                        if call_args.len() < n_sig_args {
+                            // PARTIAL application of a constructor-class method
+                            // is a value (Haskell 2010 §4.3.3) and inference
+                            // already typed it as the curried remainder: the
+                            // instance cannot be selected yet because the
+                            // class-var-applied container is the missing
+                            // argument. `fmap (+ 1.0)` is therefore the closure
+                            // `\ $pK -> fmap supplied… $pK`, exactly the rewrite
+                            // the primitive-method path uses.
+                            return self.lower_under_applied(name, call_args, n_sig_args, *span);
                         }
                         // Phase 1: lower the container argument and resolve the
                         // constructor. The container arg may itself be a
@@ -4475,6 +4496,154 @@ impl<'a> Lowerer<'a> {
             // where the head arg becomes concrete (the body's own resolution).
         }
         Ok((head_args, constraints))
+    }
+
+    /// Lower `f supplied…` as a value by completing the call to `arity`
+    /// arguments and rewriting it into `\ $pK -> … f supplied… $pK`.
+    ///
+    /// THE rewrite for an under-applied call whose lowerer only knows the FULL
+    /// argument list (a foreign/builtin signature, a constructor, a
+    /// constructor-class method whose instance is selected by a later
+    /// argument). One helper, not three: the closure machinery already carries
+    /// arity, partial application and RE-application, so the rewritten form
+    /// needs no other support, and the `$`-prefixed parameter names cannot
+    /// collide with a source identifier.
+    ///
+    /// Kept out of line: the calling arms sit inside the deeply recursive
+    /// `lower_value` dispatch, where a few inline locals are enough to overflow
+    /// the stack on a nested program.
+    #[inline(never)]
+    fn lower_under_applied(
+        &mut self,
+        name: &str,
+        call_args: &[Expr],
+        arity: usize,
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        let names: Vec<String> = (call_args.len()..arity).map(|i| format!("$p{i}")).collect();
+        let mut args = call_args.to_vec();
+        args.extend(names.iter().map(|p| Expr::Ref(p.clone(), span)));
+        let mut lam = Expr::Apply {
+            name: name.to_string(),
+            args,
+            span,
+        };
+        for p in names.into_iter().rev() {
+            lam = Expr::Lambda {
+                params: vec![Param {
+                    name: p,
+                    span,
+                    bang: false,
+                }],
+                body: Box::new(lam),
+                span,
+            };
+        }
+        self.lower_value(&lam)
+    }
+
+    /// Lower a call to a binding whose body is an UNDER-APPLIED constructor-class
+    /// method — `g = fmap (+ 1.0)` applied as `g m` — by β-substituting the
+    /// remaining arguments into the method call.
+    ///
+    /// A constructor-class method's instance is chosen by the class-var-applied
+    /// CONTAINER argument (`fmap g m` selects on `m`). A partial application has
+    /// not received that container yet, so it cannot select an instance — it is
+    /// a bare function value, exactly as inference types it (`Functor f => f a
+    /// -> f b`). But lowering cannot build a runtime dictionary: its only way to
+    /// compile a method call is to inline the selected instance's body. The
+    /// binding's use site is therefore the specialization point, and it is a
+    /// legitimate one — a top-level value binding is INLINED at each use site
+    /// (`lower_value_ref`), so every application is a distinct call site with
+    /// its own container type, and `g (Just 1.0)` / `g [1.0]` each select their
+    /// own instance.
+    ///
+    /// This is the same per-call-site specialization [`Self::lower_constrained_apply_site`]
+    /// performs, and the same rule the reduce pass applies to a λ-parameter
+    /// definition. It is the ONE place lowering needs it: every other position
+    /// that could hold the bare method value (a λ body, an argument to a
+    /// higher-order function) reaches a call site of its own.
+    ///
+    /// Returns `None` for every other callee — the common case.
+    #[inline(never)]
+    fn lower_applied_method_binding_site(
+        &mut self,
+        name: &str,
+        call_args: &[Expr],
+        expected: Option<&ValueTy>,
+        span: Span,
+    ) -> Option<Result<(usize, ValueTy), CompileError>> {
+        if call_args.is_empty() {
+            return None;
+        }
+        // A value local or fragment capture of the same spelling shadows the
+        // definition, exactly as at every other definition lookup.
+        if self.value_locals.iter().any(|s| s.contains_key(name))
+            || self.fragment_captures.iter().any(|(n, _)| n == name)
+        {
+            return None;
+        }
+        let (under, missing) = self.under_applied_method_body(name)?;
+        // The definition's own scheme says how many arguments it still wants;
+        // applying at least that many reaches a FULL method call, which the
+        // ordinary paths lower. Fewer is still a value.
+        if call_args.len() < missing {
+            return None;
+        }
+        let mut args = under;
+        args.extend(call_args.iter().cloned());
+        let inlined = Expr::Apply {
+            name: self.under_applied_method_name(name)?,
+            args,
+            span,
+        };
+        Some(self.lower_value_expected(&inlined, expected))
+    }
+
+    /// The `(supplied arguments, missing count)` of a binding whose body is a
+    /// single under-applied constructor-class method call, and nothing else.
+    ///
+    /// The test is deliberately strict — the body must BE that call, so the
+    /// rewrite cannot duplicate or drop any other work. A binding that computes
+    /// something around a partial method (`h = f . fmap g`) is an ordinary
+    /// closure and keeps the runtime path.
+    fn under_applied_method_body(&self, name: &str) -> Option<(Vec<Expr>, usize)> {
+        let Def::Eval { params, body, .. } = self.defs.get(name)? else {
+            return None;
+        };
+        if !params.is_empty() {
+            return None;
+        }
+        let Expr::Apply {
+            name: callee, args, ..
+        } = body
+        else {
+            return None;
+        };
+        let class_name = self.env.class_of_method(callee)?;
+        let class_info = self.env.typeclasses.get(&class_name)?;
+        if class_info.arity == 0 {
+            return None;
+        }
+        let sig = class_info
+            .methods
+            .iter()
+            .find(|(m, _)| m == callee)
+            .map(|(_, s)| s.clone())?;
+        let declared = sig.sig_arg_count();
+        (args.len() < declared).then(|| (args.clone(), declared - args.len()))
+    }
+
+    /// The method name [`Self::under_applied_method_body`] found, when the
+    /// binding qualifies.
+    fn under_applied_method_name(&self, name: &str) -> Option<String> {
+        let Def::Eval { body, .. } = self.defs.get(name)? else {
+            return None;
+        };
+        match body {
+            Expr::Apply { name: callee, .. } => Some(callee.clone()),
+            _ => None,
+        }
     }
 
     /// Lower a call to a class-constrained definition (`mk :: Ix i => Pair i i

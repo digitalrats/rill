@@ -462,8 +462,8 @@ fn a_nullary_method_inside_a_buffer_operand_still_resolves() {
 fn a_literal_does_not_widen_into_a_buffer_parameter() {
     // GHC 9.10.3: `((\b -> b) 1.0) :: Buffer` is a type error (`No instance for
     // Fractional (FixedBuffer Double)`). The shared rule used the operator path's
-    // `unify_method_arg` carve-out — a literal in a `Buffer` parameter position
-    // is that buffer's constant — for EVERY application, so this compiled.
+    // literal carve-out — a literal in a `Buffer` parameter position is that
+    // buffer's constant — for EVERY application, so this compiled.
     match infer_err("main = ((\\b -> b) 1.0) :: Buffer;")
         .expect("a literal must not widen into a Buffer parameter")
     {
@@ -478,5 +478,68 @@ fn a_literal_does_not_widen_into_a_buffer_parameter() {
     assert!(
         infer_err("main = sine 440.0 0.5 0.0 * 0.5;").is_none(),
         "a literal operand of a Buffer operator must still be accepted"
+    );
+}
+
+#[test]
+fn a_literal_at_a_builtin_buffer_parameter_is_that_buffers_constant() {
+    // Haskell 2010 §6.4.1 `fromInteger`-polymorphism: the literal takes the
+    // type its position demands, and a foreign builtin's `Buffer` slot demands
+    // a buffer — so `arrayFromBuffer 1` is the block's constant. GHC 9.10.3
+    // accepts `arrayFromBuffer 1` at the FFI boundary the same way.
+    let mut ffi = ForeignRegistry::<f32>::new();
+    rill_lang::register::register_foreign_generators(&mut ffi);
+    let ir = rill_lang::compile_eval::<f32, 256>(
+        "main = length (arrayFromBuffer 1);",
+        "main",
+        Mode::Strict,
+    )
+    .expect("a literal at a Buffer parameter is that buffer's constant");
+    let mut world = WorldState::<f32, 256>::new(rill_lang::program::WorldConfig {
+        ffi: Some(ffi),
+        params: rill_core::Params::new(RATE),
+        ..Default::default()
+    });
+    rill_lang::test_eval(&ir, &mut world).expect("the primitive must run");
+    let r = world.result().expect("the program produced no result");
+    assert_eq!(
+        world.arena().get(r).expect("live"),
+        &rill_lang::arena::Value::Int(256),
+        "the buffer's constant fills the whole block"
+    );
+    // A NON-literal still does not widen into a `Buffer` parameter.
+    assert!(
+        infer_err("main = ((\\b -> b) 1.0) :: Buffer;").is_some(),
+        "a non-literal must not widen into a Buffer parameter"
+    );
+}
+
+#[test]
+fn a_constructor_class_method_section_is_a_curried_value() {
+    // GHC: `g = fmap (+ 1)` is `Functor f => f Integer -> f Integer`, and
+    // `g (Just 1)` is `Just 2`. The constructor-class dispatch demanded its
+    // exact arity, so a partial application was rejected even though the
+    // missing argument is exactly the one that selects the instance.
+    let src = r#"
+        g = fmap (+ 1.0);
+        main = case g (Just 1.0) of { Nothing -> 0.0; Just x -> x };
+    "#;
+    let prog = run(src);
+    let v = prog.result().unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Double(2.0)
+    );
+    // The SAME binding is usable at another container: the instance is selected
+    // at each use site, not at the binding.
+    let src = r#"
+        g = fmap (+ 1.0);
+        main = length (g [1.0, 2.0]);
+    "#;
+    let prog = run(src);
+    let v = prog.result().unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Int(2)
     );
 }

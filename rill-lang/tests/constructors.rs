@@ -106,3 +106,47 @@ fn a_builtin_sig_is_a_curried_value() {
         "x"
     );
 }
+
+#[test]
+fn a_partially_applied_constructor_lowers() {
+    // Inference types `M3 1.0` as `Double -> Three`, but lowerin still demanded
+    // the payload's exact arity, so the typed program died at compile time. A
+    // partially applied constructor must lower the way a BARE constructor does
+    // (a closure over the remaining payload).
+    //
+    // GHC: `data Three = M3 Double Double; f = M3 1.0; f 2.5` is well typed.
+    assert_eq!(
+        run("data Three = M3 Double Double;\n\
+             f = M3 1.0;\n\
+             main = do { write (Just (show_int (length [f 2.5]))) stdout; return () };"),
+        "1"
+    );
+    // The same for a constructor whose payload carries a type parameter, used
+    // as a higher-order argument.
+    assert_eq!(
+        run("data Opt a = Mk Double a;\n\
+             main = do { write (Just (show_int (length (map (Mk 1.0) [2.0, 3.0])))) stdout; return () };"),
+        "2"
+    );
+    // Over-application is still the arity error GHC reports.
+    let msg = compile_err("x = M3 1.0 2.0 3.0;\ndata Three = M3 Double Double;\nmain = 0.0;");
+    assert!(
+        msg.contains("expects"),
+        "the error must name the arity: {msg}"
+    );
+}
+
+#[test]
+fn a_free_payload_type_variable_does_not_alias() {
+    // `data T = C a` leaves `a` unbound, so GHC rejects the declaration. rill
+    // registers it anyway, and the payload placeholder must not survive as a
+    // live unification variable — two independent uses would then share it and
+    // conflict.
+    assert_eq!(
+        run("data T = C a;\n\
+             x = C 1.0;\n\
+             y = C \"s\";\n\
+             main = do { write (Just (show_int (length [x, y]))) stdout; return () };"),
+        "2"
+    );
+}

@@ -519,21 +519,27 @@ fn infer_method_under_given(
 
 /// How [`apply_args_curried`] unifies one argument against its parameter.
 ///
-/// The distinction is a property of the CALL, not of the application rule: an
-/// operator/method operand is allowed the `Buffer`-constant reading that
-/// lowering's `buffer_operand` emits (`sine 440.0 0.5 0.0 * 0.5` — `0.5` is
-/// the buffer's constant), while an ordinary application demands the argument
-/// inhabit the parameter exactly. Carrying it as a parameter keeps the shared
-/// rule's arity/currying judgement in ONE place without widening every
-/// application (`((\b -> b) 1.0) :: Buffer` is rejected, as GHC rejects it).
+/// The distinction is a property of the CALL, not of the application rule.
+/// Two call families read a numeric LITERAL in a `Buffer` parameter position as
+/// that buffer's constant — the spelling lowering's `buffer_operand` emits:
+/// an operator/method operand (`sine 440.0 0.5 0.0 * 0.5`, where `0.5` fills
+/// the block) and a foreign builtin's signal slot (`arrayFromBuffer 1`, where
+/// `1` is the block's constant). Both are Haskell 2010 §6.4.1
+/// `fromInteger`-polymorphism: the literal takes the type its position demands.
+///
+/// Every OTHER application demands the argument inhabit the parameter exactly,
+/// and `((\b -> b) 1.0) :: Buffer` is rejected as GHC rejects it — a
+/// non-literal does NOT widen into a `Buffer` anywhere. Carrying the choice as
+/// a parameter keeps the shared rule's arity/currying judgement in ONE place.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ArgUnify {
     /// The argument's type must be the parameter's type, exactly
     /// ([`unify_value`]).
     Exact,
     /// A numeric literal in a `Buffer` parameter position is that buffer's
-    /// constant ([`unify_method_arg`]).
-    MethodOperand,
+    /// constant ([`literal_fills_buffer`]) — the operator/method path and the
+    /// builtin signature catalog.
+    BufferConstant,
 }
 
 /// THE application rule's ARITY judgement, split out so a caller can reject a
@@ -626,11 +632,17 @@ fn apply_args_curried(
             // the diagnostic reads "cannot unify value type Double with Int" —
             // the mismatch's subject first, as every routed site reported it.
             ArgUnify::Exact => unify_value(&at, pt, &mut ctx.subst, a.span())?,
-            // An OPERATOR/METHOD operand: [`unify_method_arg`]'s extra rule — a
-            // numeric literal in a `Buffer` parameter position is that buffer's
-            // constant, exactly what lowering's `buffer_operand` emits
-            // (`sine 440.0 0.5 0.0 * 0.5`).
-            ArgUnify::MethodOperand => unify_method_arg(ctx, pt, &at, a)?,
+            // A `Buffer`-constant position: a numeric literal here is the
+            // buffer's constant, exactly what lowering's `buffer_operand`
+            // emits (`sine 440.0 0.5 0.0 * 0.5`, `arrayFromBuffer 1`). The
+            // ARGUMENT stays the left operand, so the diagnostic keeps each
+            // caller's `cannot unify value type Double with Int` ordering.
+            ArgUnify::BufferConstant => {
+                if literal_fills_buffer(ctx, pt, &at, a) {
+                    continue;
+                }
+                unify_value(&at, pt, &mut ctx.subst, a.span())?;
+            }
         }
     }
     // A partial application keeps the remaining parameters as a function value
@@ -809,15 +821,53 @@ fn sum_ctor_payload(ctx: &Ctx, sum_name: &str, ctor: &str) -> Option<Vec<ValueTy
 /// corresponding fresh var of `ret`, which is what keeps the payload and the
 /// result LINKED: `Cons 1.0 xs` is `t -> List t -> List t`, never two unrelated
 /// types.
+///
+/// A placeholder BEYOND the sum's arity is a FREE type variable in a field of a
+/// non-parameterized sum (`data T = C a`, where `a` is not bound by the
+/// declaration — GHC rejects that declaration as a type error). Rill registers
+/// it anyway, so it must not leak as a live unification variable: the
+/// placeholder ids are small integers that ARE valid live ids, so leaving
+/// `Var(1)` in place would make two independent uses (`x = C 1.0`, `y = C
+/// "s"`) alias one variable and conflict. Each surplus placeholder gets a
+/// FRESH var per instantiation instead, so the uses cannot alias.
 fn sum_ctor_scheme(ctx: &mut Ctx, sum_name: &str, ctor: &str) -> (Vec<ValueTy>, ValueTy) {
     let payload = sum_ctor_payload(ctx, sum_name, ctor).unwrap_or_default();
     let arity = ctx.env.type_ctor_arity(sum_name).unwrap_or(0);
     let result_args: Vec<ValueTy> = (0..arity).map(|_| ctx.fresh_vty()).collect();
+    // One substitution list shared by every payload entry, so a placeholder
+    // that appears twice in one constructor still means ONE type. Positions past
+    // the sum's own parameters are filled with fresh live vars (see above).
+    let mut subst_args = result_args.clone();
+    let needed = payload.iter().map(max_placeholder).max().unwrap_or(0) as usize;
+    while subst_args.len() < needed {
+        subst_args.push(ctx.fresh_vty());
+    }
     let params: Vec<ValueTy> = payload
         .iter()
-        .map(|p| substitute_field_params(p, &result_args))
+        .map(|p| substitute_field_params(p, &subst_args))
         .collect();
     (params, ValueTy::Con(sum_name.into(), result_args))
+}
+
+/// The largest placeholder index a declared field/payload type mentions (`1`
+/// for `a`, `2` for `m b` in `data K m a b`), or `0` when it has none. Used to
+/// size the substitution list for [`sum_ctor_scheme`].
+fn max_placeholder(ty: &ValueTy) -> u32 {
+    match ty {
+        ValueTy::Var(k) | ValueTy::TyConVar(k) => *k,
+        ValueTy::TyConApp(f, xs) => xs.iter().map(max_placeholder).fold(*f, |acc, x| acc.max(x)),
+        ValueTy::Con(_, xs) | ValueTy::Newtype(_, xs) => {
+            xs.iter().map(max_placeholder).max().unwrap_or(0)
+        }
+        ValueTy::Thunk(args, rets) => args
+            .iter()
+            .chain(rets.iter())
+            .map(max_placeholder)
+            .max()
+            .unwrap_or(0),
+        ValueTy::Buffer(elem) => max_placeholder(elem),
+        _ => 0,
+    }
 }
 
 /// Convert a data-declaration field/payload type expression into a value type,
@@ -1303,32 +1353,19 @@ fn infer_method_value_vty_expected(
     }
 }
 
-/// Unify one argument of a PRIMITIVE method call against the method's
-/// parameter type.
+/// The literal carve-out both `Buffer`-constant positions share: a numeric
+/// LITERAL in a `Buffer` parameter position is that buffer's constant, exactly
+/// what lowering's `buffer_operand` emits. Haskell 2010 §6.4.1
+/// `fromInteger`-polymorphism, read against the `Buffer` the position demands.
 ///
-/// A numeric LITERAL is a `Buffer` constant when the parameter is a `Buffer`:
-/// `sine 440.0 0.5 0.0 * 0.5` feeds `0.5` to `(*)`'s second operand, whose type
-/// is the block's. Haskell 2010 gets this from literal polymorphism
-/// (`fromRational`), which rill does not implement yet (design §3.6, stage 7);
-/// until it does, a literal in a buffer position is the constant that fills the
-/// block — exactly what lowering's `buffer_operand` emits. The rule is
-/// deliberately NARROW: a literal never stands in for a DIFFERENT scalar type,
-/// so `1 == 1.0` and `(1 :: Int) + 1.0` stay type errors (rill has no
-/// `fromInteger` elaboration to unify them).
-fn unify_method_arg(
-    ctx: &mut Ctx,
-    param: &ValueTy,
-    actual: &ValueTy,
-    arg: &Expr,
-) -> Result<(), CompileError> {
-    let numeric_literal = matches!(arg, Expr::Int(_, _) | Expr::Double(_, _));
-    if numeric_literal
+/// The rule is deliberately NARROW — only a LITERAL, and only when the parameter
+/// is a `Buffer`. A non-literal never widens into a `Buffer`
+/// (`((\b -> b) 1.0) :: Buffer` is rejected, as GHC rejects it), and a literal
+/// never stands in for a different SCALAR type (`1 == 1.0` stays an error).
+fn literal_fills_buffer(ctx: &Ctx, param: &ValueTy, actual: &ValueTy, arg: &Expr) -> bool {
+    matches!(arg, Expr::Int(_, _) | Expr::Double(_, _))
         && matches!(ctx.subst.resolve_value(param), ValueTy::Buffer(_))
         && !matches!(ctx.subst.resolve_value(actual), ValueTy::Buffer(_))
-    {
-        return Ok(());
-    }
-    unify_value(param, actual, &mut ctx.subst, arg.span())
 }
 
 /// Whether `e` is a bare reference to a nullary method of `class_name` (e.g./// `mempty` in `mappend xs mempty`) — such an argument resolves by the selector
@@ -5978,8 +6015,25 @@ fn infer_apply_impl(
         // what teaches a result-directed method inside the argument (`show_int
         // (fromInteger 2)`) its instance: `fromInteger : Int -> a` has nothing
         // in its own arguments to solve `a`.
+        //
+        // A `Buffer` parameter is a buffer-CONSTANT position (a foreign
+        // builtin's signal slot): a numeric literal there is the block's
+        // constant, Haskell 2010 §6.4.1 `fromInteger`-polymorphism read against
+        // the `Buffer` the slot demands (`arrayFromBuffer 1`, `lowpass 1000.0
+        // 0.7 1.0`). That is the same rule the operator/method path applies, and
+        // it is why the catalog passes `BufferConstant` rather than `Exact`.
+        // It does NOT widen a non-literal: `((\b -> b) 1.0) :: Buffer` stays
+        // rejected at whichever site applies it.
         let what = format!("`{name}`");
-        return apply_args_curried(ctx, &param_tys, &ret_ty, args, span, &what, ArgUnify::Exact);
+        return apply_args_curried(
+            ctx,
+            &param_tys,
+            &ret_ty,
+            args,
+            span,
+            &what,
+            ArgUnify::BufferConstant,
+        );
     }
     if name == "not" {
         if args.len() != 1 {
@@ -6770,7 +6824,7 @@ fn infer_apply_impl(
                         args,
                         span,
                         &what,
-                        ArgUnify::MethodOperand,
+                        ArgUnify::BufferConstant,
                     );
                 }
                 let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
@@ -6843,14 +6897,51 @@ fn infer_apply_impl(
                     ),
                     span,
                 })?;
-            if args.len() != n_sig_args {
-                return Err(CompileError::Type {
-                    msg: format!(
-                        "method `{name}` of `{class_name}` expects {n_sig_args} argument(s), got {}",
-                        args.len()
-                    ),
+            if args.len() > n_sig_args {
+                // Over-application is the shared arity judgement: `fmap f m x`
+                // applies a value that is not a function.
+                let what = format!("method `{name}` of `{class_name}`");
+                check_application_arity(n_sig_args, args.len(), span, &what)?;
+            }
+            if args.len() < n_sig_args {
+                // A constructor-class method is an ordinary curried function
+                // value like any other (Haskell 2010 §4.3.3): `fmap (+ 1.0)`
+                // supplies the function and leaves the container, so the call
+                // is a PARTIAL application and its type is the curried
+                // remainder — GHC types `g = fmap (+1)` as
+                // `Functor f => f Integer -> f Integer` and `g (Just 1)` is
+                // `Just 2`. The instance is NOT selected here, because the
+                // argument that would select it (the class-var-applied
+                // container) is exactly the missing one; making the class
+                // variable a live unification variable leaves the call site
+                // that eventually supplies the container to solve it. This is
+                // the same shape the bare method reference produces
+                // (`infer_ref_expected`), and the same shared rule decides the
+                // arity, so a partial application and a bare reference can
+                // never disagree about the remainder.
+                let mut fresh_ids: Vec<ValueTy> = Vec::new();
+                for _ in 0..8 {
+                    fresh_ids.push(ctx.fresh_vty());
+                }
+                let mut it = fresh_ids.into_iter();
+                let (param_tys, ret) = signature_param_and_result_tys_conv(
+                    &ctx.env,
+                    &class_var,
+                    &ClassVarSubst::Var(u32::MAX),
+                    sig,
+                    || it.next().unwrap_or(ValueTy::Double),
+                );
+                let ret_ty = ret.unwrap_or_else(|| ctx.fresh_vty());
+                let what = format!("method `{name}` of `{class_name}`");
+                return apply_args_curried(
+                    ctx,
+                    &param_tys,
+                    &ret_ty,
+                    args,
                     span,
-                });
+                    &what,
+                    ArgUnify::Exact,
+                );
             }
             // Phase 1: infer the container argument and resolve the constructor.
             // The container arg may itself be a result-directed method call
