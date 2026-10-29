@@ -328,6 +328,176 @@ git commit -m 'refactor: one curried application rule for every call site'
 
 ---
 
+### Task 2c: the application rule covers constructors, and stops swallowing errors
+
+**Files:**
+- Modify: `rill-lang/src/types/infer.rs` (`apply_args_curried`; the constructor
+  arm ~6311; the four remaining curried sites; the typeclass-method guard)
+- Modify: `rill-lang/src/types/ty.rs` if a constructor-scheme helper is needed
+  (`sum_ctor_payload` already exists at `infer.rs:746`)
+- Test: `rill-lang/tests/constructors.rs` (create), `rill-lang/tests/typeclass.rs`
+
+**Interfaces:**
+- Consumes: `apply_args_curried` (Task 2b), `sum_types_with_ctor`
+  (`infer.rs:734`), `sum_ctor_payload` (`infer.rs:746`), `DataInfo::Sum`.
+- Produces: a constructor's type is a curried function type
+  (`Just :: a -> Maybe a`), built from its sum's payload and type parameters; and
+  `apply_args_curried` no longer aborts on a bare-argument inference failure.
+
+**Three findings from Task 2b's review, all measured.**
+
+**(1) Critical — `apply_args_curried` swallows a fallback.** It runs
+`let at = infer_expr(ctx, a)?;` and the `?` propagates a bare-inference failure,
+so the `infer_method_value_vty_expected(ctx, a, …, Some(pt))` fallback never
+runs. Four call sites inherited this. Measured, base vs HEAD:
+
+| Program | `b1f0015` | HEAD |
+|---|---|---|
+| `typeclass Zero a where { zero: a; }` + `instance Zero (FixedBuffer Double) where { zero = sine 440.0 0.5 0.0; }` then `sine 440.0 0.5 0.0 + zero` | **OK** | **"cannot resolve method `zero` of `Zero`: expected type unknown"** |
+
+**(2) Important — a widening.** The same function uses `unify_method_arg` where
+the site it replaced used plain `unify_value`, so it accepts programs GHC rejects:
+
+| Program | GHC | HEAD |
+|---|---|---|
+| `((\b -> b) 1.0) :: Buffer` | type error (`No instance for Fractional (FixedBuffer Double)`) | **accepted** |
+
+**(3) H2010 divergence — a constructor is not usable as a value.** Measured in
+GHC 9.10.3, all accepted:
+
+```haskell
+g = Just            -- Just 5
+h = (,) 1           -- (1,2)
+k = (,,) 1 2        -- (1,2,3)
+map Just [1,2,3]    -- [Just 1, Just 2, Just 3]
+```
+
+Measured in rill, all **rejected** with "constructor `Just` for `Maybe` requires
+arguments". A constructor IS an ordinary curried function
+(`Just :: a -> Maybe a`); rill demands the exact arity.
+
+- [ ] **Step 1: Write the failing tests**
+
+`rill-lang/tests/constructors.rs` (create):
+
+```rust
+//! A constructor is an ordinary curried function (Haskell 2010 §4.2.1):
+//! `Just :: a -> Maybe a`, so it is usable as a VALUE and partially applicable.
+
+fn run(src: &str) -> String { /* compile + run, concatenated stdout */ }
+
+#[test]
+fn a_constructor_is_usable_as_a_value() {
+    // GHC: `map Just [1,2,3]` is `[Just 1, Just 2, Just 3]`.
+    assert_eq!(
+        run("main = do { write (Just (show_int (length (map Just [1, 2, 3])))) stdout; return () };"),
+        "3"
+    );
+}
+
+#[test]
+fn a_nullary_constructor_is_usable_as_a_value() {
+    // GHC: `Nothing` is a value of `Maybe a`, not a function.
+    assert_eq!(
+        run("xs = [Nothing];\nmain = do { write (Just (show_int (length xs))) stdout; return () };"),
+        "1"
+    );
+}
+
+#[test]
+fn a_constructor_checks_its_arity() {
+    // GHC: `Just 1 2` is a type error — `Just 1` is not a function.
+    assert!(compile_err("x = Just 1 2;\nmain = 0.0;").contains("expects"));
+}
+```
+
+`rill-lang/tests/typeclass.rs` — the two regressions:
+
+```rust
+#[test]
+fn a_nullary_method_inside_a_buffer_operand_still_resolves() {
+    // The shared application rule ran a bare inference with `?` first, so the
+    // expected-type fallback never happened and `zero` lost its instance.
+    assert_eq!(
+        run("typeclass Zero a where { zero: a; }\ninstance Zero (FixedBuffer Double) where { zero = sine 440.0 0.5 0.0; }\nmain = do { write (Just (show_double ((sine 440.0 0.5 0.0 + zero).v))) stdout; return () };"),
+        // assert the program RUNS; the exact sample value is the buffer sum
+        "RUNS"
+    );
+}
+
+#[test]
+fn a_literal_does_not_widen_into_a_buffer_parameter() {
+    // GHC: `No instance for Fractional (FixedBuffer Double)`.
+    assert!(compile_err("main = ((\\b -> b) 1.0) :: Buffer;").contains("cannot unify"));
+}
+```
+
+Adjust the first assertion to whatever the file's helper makes natural (compile
+success is the requirement — the defect was a compile error, not a wrong value).
+
+- [ ] **Step 2: Run them and watch them fail**
+
+Expected: `map Just` → "requires arguments"; the `Zero` program → "expected type
+unknown"; the `Buffer` widening → accepted (so `compile_err` panics).
+
+- [ ] **Step 3: Fix the two regressions in the shared rule**
+
+In `apply_args_curried`: attempt the bare inference with `if let Ok(at) = …`
+instead of `?`, so a result-directed/nullary argument falls through to the
+expected-type path. Use plain `unify_value` where the replaced site did (the
+`unify_method_arg` buffer carve-out belongs to the operator/method path, not to
+every application).
+
+- [ ] **Step 4: Give a constructor a curried type**
+
+Where a constructor name appears in a value position (`infer.rs` ~6311), build its
+scheme from its sum instead of demanding the exact arity:
+
+- `params` = `sum_ctor_payload(ctx, &sum_name, name)` with each placeholder
+  instantiated as a fresh live var,
+- `ret` = the sum applied to its type parameters (`Con(sum_name, fresh vars)`),
+- then `apply_args_curried` decides: fewer args → the curried remainder, exact →
+  `ret`, more → an arity error.
+
+A nullary constructor has `params` empty, so it is a plain value. Builtin sums
+(`Maybe`, `Either`) carry placeholder vars (`Var(1)`, `Var(2)`) that are NOT live
+unification vars — instantiate them, as the existing arm already does.
+
+- [ ] **Step 5: Route the four remaining curried sites**
+
+Task 2b's review classified the ten remaining arity checks. Four are the same
+curried application and must go through the shared rule:
+
+| Site | Why it is the same judgement |
+|---|---|
+| `infer.rs:5872` (builtin `builtin_sigs`) | `params`/`ret` are a curried function type; `write (Just 1)` is GHC-valid |
+| `7333` (`ctx.locals` thunk) | `arg_tys`/`ret` come from `flatten_thunk` — literally `params`/`ret` |
+| `7425` (closure-value over-application) | only the `>` half, the same shape already routed |
+| `7493` (alias `lam_count`) | `ref_scheme` is a `Thunk`; `f 1.0` of a 2-λ target is GHC-valid |
+
+The other six are a DIFFERENT judgement and stay: the rule's own message (531),
+constructor `ret` built from args (6311 — superseded by Step 4), ctor-class
+dispatch (6846), source-instance binder lists (6960), user-def λ-count with its
+`vec![Double]` partial branch (7532), and the collection-operation catalog (7843).
+
+- [ ] **Step 6: Run the tests and the inventory**
+
+```
+cargo test -p rill-lang --features dsp
+grep -c 'expects .*argument(s), got' rill-lang/src/types/infer.rs
+```
+
+Expected: all green; the count drops from 10 to **≤ 6** (the six genuinely
+distinct judgements). If it stays above 6, a listed site was not routed.
+
+- [ ] **Step 7: Run the full gates, then commit**
+
+```bash
+git commit -m 'feat: a constructor is a curried value; the application rule keeps its fallback'
+```
+
+---
+
 ### Task 3: `Ratio` and `Rational`, with value-comparing instances
 
 **Files:**
