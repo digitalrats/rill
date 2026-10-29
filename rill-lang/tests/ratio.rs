@@ -398,9 +398,9 @@ fn a_user_error_definition_shadows_the_prelude_error() {
     // This is the control that keeps the builtin from behaving like a keyword.
     //
     // Note the Ratio fault does NOT depend on this name any more: the instance
-    // bodies spell their bottom `__fault` (reserved to the prelude), so
-    // shadowing `error` is safe by construction — see
-    // `a_user_error_does_not_hijack_the_ratio_fault`.
+    // bodies spell their bottom `__fault` (the prelude-internal reserved
+    // spelling, resolved before any definition-site arm), so shadowing `error`
+    // is safe — see `a_user_error_does_not_hijack_the_ratio_fault`.
     assert_eq!(
         run("error x = x + 1.0;\nmain = do { write (Just (show_double (error 1.0))) stdout; return () };"),
         "2.0"
@@ -421,6 +421,22 @@ fn a_user_error_does_not_hijack_the_ratio_fault() {
     assert!(
         msg.contains("Ratio has zero denominator"),
         "the Ratio zero-denominator fault must survive a user `error`, got: {msg}"
+    );
+}
+
+#[test]
+fn the_internal_bottom_cannot_be_shadowed_by_a_user_binding() {
+    // `__fault` is the PRELUDE's internal bottom, compared by exact spelling at
+    // the FIRST arm of application lowering. A user definition of that name must
+    // not intercept it: if the arm ever moves after the definition-site arms,
+    // this program stops faulting and reports a type error instead.
+    //
+    // The user binding carries a CONFLICTING signature on purpose — that is the
+    // shape a lookup-based (rather than ordering-based) guard would honour.
+    let msg = run_faults("__fault :: Int -> Int;\n__fault x = x;\na = Ratio { num: (0 :: Integer), den: (1 :: Integer) };\nq = recip a;\nmain = do { write (Just (show_integer q.den)) stdout; return () };");
+    assert!(
+        msg.contains("Ratio has zero denominator"),
+        "a user `__fault` must not intercept the Ratio zero-denominator fault, got: {msg}"
     );
 }
 

@@ -6105,9 +6105,10 @@ fn infer_apply_impl(
     // (`ir::VALUE_FAULT_PRIMITIVE`). It is deliberately NOT shadowable: the
     // language's own partial operations (the `Ratio` zero-denominator fault)
     // must not be reachable through a name a program can redefine, or a user
-    // `error` would replace the fault with a value. A `__`-prefixed name is
-    // reserved to the prelude, so this branch does not consult `locals`/`defs`
-    // — and it precedes them, exactly as the collection ops do.
+    // `error` would replace the fault with a value. It is a single reserved
+    // SPELLING compared literally (not a lexer rule), so this branch does not
+    // consult `locals`/`defs` — and it precedes them, exactly as the collection
+    // ops do.
     if name == crate::ir::VALUE_FAULT_PRIMITIVE {
         if args.len() != 1 {
             return Err(CompileError::Type {

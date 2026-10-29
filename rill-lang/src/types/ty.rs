@@ -963,12 +963,18 @@ instance Num (Ratio a) where {
 --  The fault is spelled `__fault`, NOT `error`. `error` is Prelude §9.1's
 --  ordinary, SHADOWABLE binding, and an instance body is inlined BY NAME, so
 --  a program's own `error x = Ratio { num: 7, den: 1 }` would answer this
---  branch and turn `recip (0/1)` into `7/1`. The name here is reserved to the
---  prelude (`__` prefix, like `__prelude_end`), so no user binding can reach
---  it and this fault is not merely likely but GUARANTEED. Programs still write
---  `error`; only the language's own partial operations use `__fault`. Both
---  lower to the same `ValueFault` instruction, so the branch has the method's
---  own type and typechecks as GHC's does.
+--  branch and turn `recip (0/1)` into `7/1`. Programs still write `error`;
+--  only the language's own partial operations use `__fault`.
+--
+--  `__fault` is a single RESERVED SPELLING compared literally in two places
+--  (`infer` and `lower`), not a syntactic convention: the lexer has no `__`
+--  prefix rule, so a user binding of this exact name is shadowed by the
+--  internal arm at every site except where a definition-site arm runs first.
+--  The spelling is internal to the PRELUDE and is not part of the language's
+--  surface.
+--
+--  Both bottoms lower to the same `ValueFault` instruction, so the branch has
+--  the method's own type and typechecks as GHC's does.
 --
 --  No `fromRational` here: the class does not declare that method yet (stage
 --  7b adds it together with the literal rule that needs it).

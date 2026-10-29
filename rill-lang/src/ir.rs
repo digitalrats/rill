@@ -322,10 +322,12 @@ pub enum ValueTerm {
 /// hijacked by a user `error x = Ratio { num: 7, den: 1 }`, and `recip (0/1)`
 /// would answer `7/1` instead of faulting.
 ///
-/// This name is reserved to the prelude by convention (the same `__` prefix as
-/// `__prelude_end`): a source identifier can never shadow it, so an instance
-/// body's fault is a guaranteed fault. Programs use `error`; the prelude uses
-/// this.
+/// `__fault` is a single RESERVED SPELLING compared literally in two places
+/// (`infer` and `lower`), not a syntactic convention: the lexer has no `__`
+/// prefix rule, so a user binding of this exact name is shadowed by the
+/// internal arm at every site except where a definition-site arm runs first.
+/// The spelling is internal to the PRELUDE and is not part of the language's
+/// surface.
 pub const VALUE_FAULT_PRIMITIVE: &str = "__fault";
 
 /// A value instruction. Runs in the value-track phase of the program's single

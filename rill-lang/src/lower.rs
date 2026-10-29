@@ -1929,12 +1929,15 @@ impl<'a> Lowerer<'a> {
                 // hijack an instance body's fault and answer a plausible value
                 // (`recip (0/1)` → `7/1`).
                 //
-                // A `__`-prefixed name is reserved to the prelude (the same
-                // convention as `__prelude_end`), so this is resolved FIRST —
-                // before every definition-site specialization below, not merely
-                // before the ordinary def lookup. That makes the reservation
-                // structural: no user `__fault`, with or without a signature,
-                // curried or not, can intercept an instance body's fault.
+                // `__fault` is a single RESERVED SPELLING compared literally
+                // here, not a syntactic convention: the lexer has no `__`
+                // prefix rule, so a user binding of this exact name would be
+                // honoured anywhere a definition-site arm runs first. Resolving
+                // it FIRST — before every definition-site specialization below,
+                // not merely before the ordinary def lookup — is what makes the
+                // prelude's own fault un-interceptable: no user `__fault`, with
+                // or without a signature, curried or not, reaches an instance
+                // body's fault.
                 if name == crate::ir::VALUE_FAULT_PRIMITIVE {
                     return self.lower_error_apply(name, call_args, span, expected);
                 }
@@ -4196,8 +4199,10 @@ impl<'a> Lowerer<'a> {
             // `error` is lowered to its own fault instruction (see the `Apply`
             // arm), so it is a builtin op for capture purposes too — unless a
             // user definition of the name shadows it. `__fault` is the
-            // prelude-internal spelling: it is NEVER shadowable (see
-            // `ir::VALUE_FAULT_PRIMITIVE`), so it is unconditional.
+            // prelude-internal reserved SPELLING (compared literally, not a
+            // lexer rule): the definition-site arms in the `Apply` lowering
+            // place it first, so it is unconditional here too (see
+            // `ir::VALUE_FAULT_PRIMITIVE`).
             || (name == "error" && !self.defs.contains_key(name))
             || name == crate::ir::VALUE_FAULT_PRIMITIVE
     }
