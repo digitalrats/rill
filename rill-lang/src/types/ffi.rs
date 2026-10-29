@@ -269,6 +269,11 @@ fn param_names_for(name: &str, params: &[FfiParam]) -> Vec<String> {
 }
 
 fn param_from_typeexpr(env: &TypeEnv, te: &TypeExpr) -> Option<FfiParam> {
+    // A synonym is TRANSPARENT: `type B = FixedBuffer Double` names a signal
+    // channel exactly as the target does, so the SHAPE test below runs on the
+    // expansion.
+    let expanded = env.expand_alias_expr(te);
+    let te = &expanded;
     match te {
         // `FixedBuffer elem` — a signal channel, carrying its element.
         TypeExpr::TApp(head, args)
@@ -321,6 +326,11 @@ fn buffer_element(env: &TypeEnv, te: &TypeExpr) -> Option<ValueTy> {
 /// parameter; any other name is a record type. The registry decides — no
 /// private scalar-name list lives here.
 fn param_from_typeexpr_env(env: &TypeEnv, te: &TypeExpr) -> Option<FfiParam> {
+    // A synonym is TRANSPARENT before the scalar test too: `type D = Double`
+    // names the scalar `Double`, and `type B = FixedBuffer Double` names a
+    // signal channel — neither is an opaque record.
+    let expanded = env.expand_alias_expr(te);
+    let te = &expanded;
     match te {
         TypeExpr::TName(n) if env.is_ffi_scalar(n) => Some(FfiParam::Scalar),
         _ => param_from_typeexpr(env, te),
@@ -328,6 +338,9 @@ fn param_from_typeexpr_env(env: &TypeEnv, te: &TypeExpr) -> Option<FfiParam> {
 }
 
 fn outs_from_typeexpr(env: &TypeEnv, te: &TypeExpr) -> Option<usize> {
+    // A synonym is TRANSPARENT (see [`param_from_typeexpr`]).
+    let expanded = env.expand_alias_expr(te);
+    let te = &expanded;
     match te {
         TypeExpr::TApp(head, args)
             if env.buffer_role(head) == Some(BufferRole::Channel) && args.len() == 1 =>

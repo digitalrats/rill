@@ -2004,6 +2004,21 @@ impl TypeEnv {
     /// [`Self::with_builtins`]) and user declarations share one registration
     /// path.
     pub fn register_decls(&mut self, defs: &[Def]) {
+        // Synonyms first: an instance HEAD may name one (`type B = List;
+        // instance Functor B`), and the head is keyed by the type it EXPANDS
+        // to, so the alias has to be in the registry before an instance that
+        // mentions it is keyed. A synonym is transparent (Haskell 2010 §4.1.2).
+        for def in defs {
+            match def {
+                Def::TypeAlias { name, target, .. } => {
+                    self.type_aliases.insert(name.clone(), target.clone());
+                }
+                Def::Newtype { name, target, .. } => {
+                    self.newtypes.insert(name.clone(), target.clone());
+                }
+                _ => {}
+            }
+        }
         for def in defs {
             match def {
                 Def::Typeclass {
@@ -2052,14 +2067,20 @@ impl TypeEnv {
                         let bindings = params.iter().map(|p| p.name.clone()).collect();
                         methods.insert(mname.clone(), (bindings, body.clone()));
                     }
+                    // A synonym is TRANSPARENT in an instance head too: `type B
+                    // = List; instance Slf B` is the instance for `List`, so
+                    // the registry key is the EXPANDED head's. Without this the
+                    // entry sits under the alias name and no dispatch by the
+                    // real type can ever find it.
+                    let (head, ty, head_args) = self.expand_instance_head(head, ty, head_args);
                     self.instances.entry(class.clone()).or_default().insert(
                         ty.clone(),
                         InstanceInfo {
                             class: class.clone(),
-                            head: head.clone(),
+                            head,
                             ty: ty.clone(),
                             constraints: constraints.clone(),
-                            head_args: head_args.clone(),
+                            head_args,
                             // A body-less declaration is a MARKER: the class's
                             // methods are compiler kernels for that type
                             // (`instance Num Int where { }`). A declaration
@@ -2482,6 +2503,146 @@ impl TypeEnv {
         }
     }
 
+    /// Expand a synonym used as an application HEAD: `type L = List` makes
+    /// `L Int` mean `List Int`, and `type F = Pair Int` makes `F Bool` mean
+    /// `Pair Int Bool`.
+    ///
+    /// Haskell 2010 §4.1.2 puts no kind restriction on a `type` right-hand
+    /// side, and a synonym's kind is its TARGET's kind — GHC 9.10.3 accepts
+    /// `type B = []` and then `B Int` (`[Int]`). The declaration check therefore
+    /// allows an unsaturated target, and this expansion is what keeps every
+    /// application of such an alias equivalent to the target it names.
+    ///
+    /// `None` when `head` is not a synonym, is a CYCLIC synonym (already
+    /// rejected at declaration; expansion would not terminate), or names a
+    /// kind-`*` target (a function type, whose application the kind check
+    /// rejects). The walk consumes one alias per step and is bounded by the
+    /// alias count, so it always terminates.
+    pub(crate) fn expand_alias_application(
+        &self,
+        head: &str,
+        args: &[TypeExpr],
+    ) -> Option<(String, Vec<TypeExpr>)> {
+        if !self.type_aliases.contains_key(head) {
+            return None;
+        }
+        if self.alias_is_cyclic(head) {
+            return None;
+        }
+        let mut args: Vec<TypeExpr> = args.to_vec();
+        let mut cur = head;
+        for _ in 0..=self.type_aliases.len() {
+            match self.type_aliases.get(cur)? {
+                TypeExpr::TName(n) => {
+                    // `alias_final_expr` semantics: follow bare-name links, so a
+                    // chain costs one step per link and no recursion.
+                    if !self.type_aliases.contains_key(n) {
+                        return Some((n.clone(), args));
+                    }
+                    cur = n;
+                }
+                TypeExpr::TApp(h, targs) => {
+                    // Splice the target's own arguments ahead of the ones the
+                    // application supplies: `Pair Int` applied to `Bool` is
+                    // `Pair Int Bool`.
+                    let mut all: Vec<TypeExpr> = targs.clone();
+                    all.extend(args);
+                    if !self.type_aliases.contains_key(h) {
+                        return Some((h.clone(), all));
+                    }
+                    args = all;
+                    cur = h;
+                }
+                // A function type (`type F = Int -> Int`) has kind `*`, so it
+                // is not a constructor; there is nothing to expand.
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// The application an expression denotes with a synonym HEAD expanded:
+    /// `L Int` → `("List", [Int])`, `F Bool` → `("Pair", [Int, Bool])`.
+    ///
+    /// Every converter ([`Self::type_expr_kind`], [`Self::vty_of_expr_at`], and
+    /// the inference converters) goes through this, so a synonym head can never
+    /// denote a nominal `Con("L", …)` that no signature or value agrees with.
+    pub(crate) fn expand_alias_head(
+        &self,
+        head: &str,
+        args: Vec<TypeExpr>,
+    ) -> (String, Vec<TypeExpr>) {
+        match self.expand_alias_application(head, &args) {
+            Some(expanded) => expanded,
+            None => (head.to_string(), args),
+        }
+    }
+
+    /// One step of synonym expansion on a type EXPRESSION: a synonym NAME
+    /// becomes its final target, and a synonym HEAD becomes the target's head
+    /// with the target's own arguments spliced in front.
+    ///
+    /// This is the expression-side counterpart of [`Self::expand_alias_head`]:
+    /// a synonym is TRANSPARENT (Haskell 2010 §4.1.2, GHC's
+    /// `expandSynTyConApp`), so a consumer that inspects the SHAPE of a type —
+    /// the FFI classifier, which asks whether a parameter is a signal channel —
+    /// must see the target, not the alias spelling. A cyclic synonym, a
+    /// kind-`*` target (a function type) and a non-synonym come back unchanged;
+    /// the caller's own rules then reject the malformed case.
+    pub(crate) fn expand_alias_expr(&self, te: &TypeExpr) -> TypeExpr {
+        self.expand_alias_expr_at(te, 0)
+    }
+
+    /// [`Self::expand_alias_expr`] with a structural depth bound, so a
+    /// (rejected, but defensively handled) cyclic synonym cannot recurse
+    /// forever.
+    fn expand_alias_expr_at(&self, te: &TypeExpr, depth: usize) -> TypeExpr {
+        if depth > MAX_VALUE_RESOLVE_DEPTH {
+            return te.clone();
+        }
+        let deep = |t: &TypeExpr| self.expand_alias_expr_at(t, depth + 1);
+        match te {
+            TypeExpr::TName(_) => self.expand_alias_name_at(te, depth),
+            TypeExpr::TApp(head, args) => {
+                let args: Vec<TypeExpr> = args.iter().map(deep).collect();
+                let (head, all) = self.expand_alias_head(head, args);
+                let all: Vec<TypeExpr> = all.iter().map(deep).collect();
+                // The target's own head may be a synonym (`type A = B;
+                // type B = List`), so the expansion repeats at the new head.
+                if self.type_aliases.contains_key(&head) && depth < MAX_VALUE_RESOLVE_DEPTH {
+                    return self.expand_alias_expr_at(&TypeExpr::TApp(head, all), depth + 1);
+                }
+                TypeExpr::TApp(head, all)
+            }
+            TypeExpr::TFunc(args, ret) => {
+                TypeExpr::TFunc(args.iter().map(deep).collect(), Box::new(deep(ret)))
+            }
+            TypeExpr::TForall(bound, inner) => {
+                TypeExpr::TForall(bound.clone(), Box::new(deep(inner)))
+            }
+            TypeExpr::TConstrained(cs, inner) => {
+                TypeExpr::TConstrained(cs.clone(), Box::new(deep(inner)))
+            }
+        }
+    }
+
+    /// A bare NAME's expansion, recursing into the target's structure: a
+    /// synonym of `Box Int` yields that application (with its arguments
+    /// expanded in turn), a synonym of a bare name yields the final name.
+    fn expand_alias_name_at(&self, te: &TypeExpr, depth: usize) -> TypeExpr {
+        let TypeExpr::TName(n) = te else {
+            return te.clone();
+        };
+        if !self.type_aliases.contains_key(n) || self.alias_is_cyclic(n) {
+            return te.clone();
+        }
+        match self.alias_final_expr(n) {
+            Some(TypeExpr::TName(final_name)) => TypeExpr::TName(final_name.clone()),
+            Some(target) => self.expand_alias_expr_at(target, depth + 1),
+            None => te.clone(),
+        }
+    }
+
     /// Whether `name`'s synonym expansion reaches `name` again — a cyclic
     /// synonym (`type A = B; type B = A`, `type A = Box A`), which denotes no
     /// type.
@@ -2540,6 +2701,26 @@ impl TypeEnv {
     /// type at all.
     pub fn is_type_name(&self, name: &str) -> bool {
         self.type_entry(name).is_some_and(|e| e.is_type())
+    }
+
+    /// Expand an INSTANCE HEAD through synonyms and re-derive its registry key.
+    ///
+    /// A synonym is transparent in an instance head exactly as it is in a
+    /// signature — `type B = List; instance Functor B` is GHC's
+    /// `instance Functor []` — so the entry must be keyed by the type the head
+    /// EXPANDS to. Returns the expanded `(head, key, bound head args)`.
+    fn expand_instance_head(
+        &self,
+        head: &TypeExpr,
+        ty: &str,
+        head_args: &[String],
+    ) -> (TypeExpr, String, Vec<String>) {
+        let expanded = self.expand_alias_expr(head);
+        if &expanded == head {
+            return (head.clone(), ty.to_string(), head_args.to_vec());
+        }
+        let (key, args) = crate::parser::instance_head_key(&expanded);
+        (expanded, key, args)
     }
 
     /// Whether `name` is a type VARIABLE: a lowercase name that no declaration
@@ -2619,7 +2800,13 @@ impl TypeEnv {
                 for a in args {
                     self.check_type_kind(a, span)?;
                 }
-                let Some(head_kind) = self.kind_of(head) else {
+                // A synonym HEAD expands to its target's head: `type L = List`
+                // makes `L Int` mean `List Int`, so the kind comes from `List`.
+                // A synonym's kind is its target's kind (`kind_of`), and GHC
+                // accepts an unsaturated target (`type B = []`) applied later
+                // (`B Int`).
+                let (head, args) = self.expand_alias_head(head, args.clone());
+                let Some(head_kind) = self.kind_of(&head) else {
                     // A variable head (`m b`): the binder's kind decides.
                     return Ok(None);
                 };
@@ -3024,7 +3211,14 @@ impl TypeEnv {
                 if let Some(v) = unbound.iter().find(|n| self.is_type_variable(n)) {
                     return Err(unknown_type_error(v, *span));
                 }
-                self.validate_type_expr(target, &[], *span)?;
+                self.validate_type_names_in(target, &[], *span)?;
+                // Haskell 2010 §4.1.2 puts NO kind restriction on a `type`
+                // right-hand side: GHC 9.10.3 accepts `type B = []` (`B` has
+                // kind `* -> *`) and then `B Int`. What must still hold is that
+                // the target HAS a kind — an over-application like
+                // `type A = Maybe Int Int` has none — so the kind walk runs
+                // without the `*` requirement a type POSITION imposes.
+                self.type_expr_kind(target, *span)?;
             }
             Def::Newtype { target, span, .. } => {
                 if !self.is_known_type_name(target) || !self.is_type_name(target) {
@@ -3182,16 +3376,21 @@ impl TypeEnv {
                 if !tyvars.iter().any(|v| v == head) && !self.is_known_type_name(head) {
                     return Err(unknown_type_error(head, span));
                 }
+                // A synonym HEAD names its target, so the SHAPE tests below
+                // (`FixedBuffer elem`) must see the expansion: `type FB =
+                // FixedBuffer` makes `FB Int` reject the same wrong element as
+                // `FixedBuffer Int`.
+                let (head, args) = self.expand_alias_head(head, args.clone());
                 // A buffer constructor's element is CHECKED here: the one legal
                 // element today is the registry's marked scalar (`Double`), so
                 // `FixedBuffer Int` / `FixedBuffer Bool` name an element the
                 // language does not have. The requirement is named in the error,
                 // and the rule is a registry property — not a name list.
-                if self.buffer_role(head).is_some() && args.len() == 1 {
+                if self.buffer_role(&head).is_some() && args.len() == 1 {
                     self.validate_buffer_element(&args[0], tyvars, span)?;
                 }
                 for a in args {
-                    self.validate_type_names_in(a, tyvars, span)?;
+                    self.validate_type_names_in(&a, tyvars, span)?;
                 }
                 Ok(())
             }
@@ -3231,6 +3430,10 @@ impl TypeEnv {
         span: Span,
     ) -> Result<(), CompileError> {
         use crate::ast::TypeExpr;
+        // A synonym is TRANSPARENT: `type E = Double` makes `FixedBuffer E`
+        // carry the same element as `FixedBuffer Double`.
+        let expanded = self.expand_alias_expr(elem);
+        let elem = &expanded;
         match elem {
             // A type variable element: a constraint on the signature, deferred
             // to the call site.
@@ -3405,16 +3608,20 @@ impl TypeEnv {
                 }
             }
             TypeExpr::TApp(head, args) => {
+                // A synonym HEAD expands to its target before conversion:
+                // `type L = List` makes `L Int` denote `List Int`, and
+                // `type F = Pair Int` makes `F Bool` denote `Pair Int Bool`.
+                // Without this a synonym of an unsaturated target could not be
+                // applied at all, although GHC accepts `type B = []`.
+                let (head, args) = self.expand_alias_head(head, args.clone());
                 let vargs: Vec<ValueTy> = args
                     .iter()
                     .map(|a| self.vty_of_expr_at(a, depth + 1))
                     .collect::<Option<Vec<_>>>()?;
-                // A synonym may not be APPLIED here: a target must have kind
-                // `*` ([`Self::check_type_kind`]), so `type B = List` is
-                // rejected and `B Int` cannot arise. The head is therefore a
-                // constructor name, and the one application shape
-                // ([`Self::ctor_application`]) builds it.
-                Some(self.ctor_application(head, vargs))
+                // The one application shape ([`Self::ctor_application`]) builds
+                // it, so a buffer channel constructor keeps its single buffer
+                // representation whatever spelling named it.
+                Some(self.ctor_application(&head, vargs))
             }
             TypeExpr::TFunc(args, ret) => Some(ValueTy::Thunk(
                 args.iter()

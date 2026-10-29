@@ -737,6 +737,9 @@ pub(crate) fn data_field_vty_with_free(
             },
         },
         crate::ast::TypeExpr::TApp(head, args) => {
+            // A synonym HEAD expands to its target (`type L = List` makes
+            // `L Int` mean `List Int`), so both spellings denote one type.
+            let (head, args) = env.expand_alias_head(head, args.clone());
             let vargs: Vec<ValueTy> = args
                 .iter()
                 .map(|a| data_field_vty_with_free(env, tyvars, a, free))
@@ -744,13 +747,13 @@ pub(crate) fn data_field_vty_with_free(
             // A buffer CHANNEL constructor is the buffer value type itself
             // (`FixedBuffer elem` → `ValueTy::Buffer(elem)`), not a second
             // `App("FixedBuffer", …)` shape.
-            if let Some(buf) = env.channel_ctor_vty(head, &vargs) {
+            if let Some(buf) = env.channel_ctor_vty(&head, &vargs) {
                 return buf;
             }
             // A type PARAMETER applied as a constructor (`m b` in
             // `data K m a b`) becomes a type-constructor application whose head
             // is the parameter's var id. A concrete constructor stays `App`.
-            if let Some(k) = tyvars.iter().position(|t| t == head) {
+            if let Some(k) = tyvars.iter().position(|t| *t == head) {
                 ValueTy::TyConApp((k + 1) as u32, vargs)
             } else {
                 ValueTy::Con(head.clone(), vargs)
@@ -1716,13 +1719,16 @@ fn conv(
             // chooses between "declared" and "builtin" shapes — whether a name
             // is an algebraic data type is a question about the constructor
             // ([`TypeEnv::is_declared_data`]), not a spelling of the type.
+            // A synonym HEAD expands first (`type L = List` makes `L Int` mean
+            // `List Int`), so the two spellings denote the SAME value type.
+            let (head, args) = env.expand_alias_head(head, args.clone());
             let vargs: Vec<ValueTy> = args
                 .iter()
                 .map(|a| conv(env, class_var, class_var_subst, vars, fresh, a))
                 .collect();
             // A buffer CHANNEL constructor is the buffer value type — the one
             // representation, carrying the checked element.
-            env.ctor_application(head, vargs)
+            env.ctor_application(&head, vargs)
         }
         crate::ast::TypeExpr::TFunc(args, ret) => ValueTy::Thunk(
             args.iter()
@@ -2054,6 +2060,11 @@ pub(crate) fn bind_sig_type_vars(
                         .or_insert_with(|| ValueTy::Con(c, vec![]));
                 }
             }
+            // A synonym HEAD expands first, so the pattern's arguments line up
+            // with the actual type's spine: with `type F = Pair Int`, the
+            // pattern `F a` is `Pair Int a` and binds `a` to the SECOND
+            // argument, not the first.
+            let (_, args) = env.expand_alias_head(head, args.clone());
             for (a, av) in args.iter().zip(actual_args.iter()) {
                 bind_sig_type_vars(env, a, av, out);
             }
@@ -2103,11 +2114,14 @@ fn sig_ty_to_vty_inner(
             None => vars.entry(n.clone()).or_insert_with(fresh).clone(),
         },
         crate::ast::TypeExpr::TApp(head, args) => {
+            // A synonym HEAD expands to its target (`type L = List` makes
+            // `L Int` mean `List Int`), so both spellings denote one type.
+            let (head, args) = env.expand_alias_head(head, args.clone());
             let vargs: Vec<ValueTy> = args
                 .iter()
                 .map(|a| sig_ty_to_vty_inner(env, a, bindings, vars, &mut *fresh))
                 .collect();
-            match bindings.get(head) {
+            match bindings.get(&head) {
                 // A bound type-constructor variable is applied: splice its own
                 // arguments ahead of the new ones (`m := Maybe`, `m a` →
                 // `Maybe a`).
@@ -2122,8 +2136,8 @@ fn sig_ty_to_vty_inner(
                     let head_ty = vars
                         .entry(head.clone())
                         .or_insert_with(|| {
-                            if is_declared_type_name(env, head) {
-                                resolve_type_name(env, head)
+                            if is_declared_type_name(env, &head) {
+                                resolve_type_name(env, &head)
                             } else {
                                 fresh()
                             }
@@ -2141,7 +2155,7 @@ fn sig_ty_to_vty_inner(
                         // single buffer representation.
                         other => match vargs.len() {
                             0 => other,
-                            _ => env.ctor_application(head, vargs),
+                            _ => env.ctor_application(&head, vargs),
                         },
                     }
                 }
@@ -5075,16 +5089,19 @@ fn type_expr_to_vty_inner(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueT
                 .ok_or_else(|| crate::types::ty::unknown_type_name(n))
         }
         crate::ast::TypeExpr::TApp(head, args) => {
+            // A synonym HEAD expands to its target (`type L = List` makes
+            // `L Int` mean `List Int`), so both spellings denote one type.
+            let (head, args) = ctx.env.expand_alias_head(head, args.clone());
             let mut targs = Vec::with_capacity(args.len());
             for a in args {
-                targs.push(type_expr_to_vty_inner(ctx, a)?);
+                targs.push(type_expr_to_vty_inner(ctx, &a)?);
             }
             // A user data type (`IO a`, `Kleisli m a b`) is a `Data` application
             // (mirroring how record construction types it), so `IO` unifies
             // consistently between builtin signatures and do-blocks. A buffer
             // CHANNEL constructor becomes the buffer value type, its element
             // checked like anywhere else.
-            Ok(ctx.env.ctor_application(head, targs))
+            Ok(ctx.env.ctor_application(&head, targs))
         }
         crate::ast::TypeExpr::TFunc(args, ret) => {
             let mut targs = Vec::with_capacity(args.len());
@@ -5219,13 +5236,16 @@ fn instantiate_builtin_sig_vty_inner(
                 .ok_or_else(|| crate::types::ty::unknown_type_name(n))
         }
         TypeExpr::TApp(head, args) => {
+            // A synonym HEAD expands to its target (`type L = List` makes
+            // `L Int` mean `List Int`), so both spellings denote one type.
+            let (head, args) = ctx.env.expand_alias_head(head, args.clone());
             let mut targs = Vec::with_capacity(args.len());
             for a in args {
-                targs.push(instantiate_builtin_sig_vty_inner(ctx, a, vars)?);
+                targs.push(instantiate_builtin_sig_vty_inner(ctx, &a, vars)?);
             }
             // One representation: a declared type and a builtin constructor
             // both build the one `Con` application.
-            Ok(ValueTy::Con(head.clone(), targs))
+            Ok(ValueTy::Con(head, targs))
         }
         TypeExpr::TFunc(args, ret) => {
             let mut targs = Vec::with_capacity(args.len());

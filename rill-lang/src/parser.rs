@@ -360,7 +360,7 @@ fn is_type_var(te: &TypeExpr) -> bool {
 /// FULL applied type (`(Pair Int Int)` → `Pair Int Int`), which is what lets
 /// `Ix Int`, `Ix (Pair Int Int)` and `Ix (Pair Int (Pair Int Int))` coexist
 /// without colliding on the `Pair` constructor.
-fn instance_head_key(head: &TypeExpr) -> (String, Vec<String>) {
+pub(crate) fn instance_head_key(head: &TypeExpr) -> (String, Vec<String>) {
     let ctor = match head {
         TypeExpr::TName(n) => n.clone(),
         TypeExpr::TApp(h, _) => h.clone(),

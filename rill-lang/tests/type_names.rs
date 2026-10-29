@@ -302,6 +302,158 @@ fn a_type_synonym_may_name_a_parameterized_type() {
 }
 
 #[test]
+fn a_synonym_may_name_a_higher_kinded_constructor() {
+    // GHC 9.10.3 accepts `type B = []`, so `B` has kind `* -> *` and `B Int`
+    // is `[Int]`. A synonym's kind is its TARGET's kind, so an alias used as an
+    // application HEAD must expand to its target before the kind check.
+    let out = compile(
+        "type L = List;\nf :: L Int -> Int;\nf x = 0;\n\
+         main = f [1, 2];",
+    )
+    .expect("a synonym may name a higher-kinded constructor");
+    assert!(out.contains("Int(0)"), "got {out}");
+
+    // The registry agrees: the alias has the constructor's kind, and the
+    // value type it denotes is the target's.
+    let env = env_of("type L = List;");
+    assert_eq!(
+        env.kind_of("L"),
+        Some(rill_lang::types::ty::Kind::of_arity(1))
+    );
+    assert_eq!(
+        env.vty_of_expr(&TypeExpr::TApp(
+            "L".into(),
+            vec![TypeExpr::TName("Int".into())]
+        )),
+        Some(ValueTy::Con("List".into(), vec![ValueTy::Int]))
+    );
+
+    // A synonym of a PARTIALLY APPLIED target is `* -> *` too (`type F = Pair
+    // Int`), and applying it appends to the spine — so the argument lands in
+    // the SECOND position.
+    let env = env_of("type F = Pair Int;");
+    assert_eq!(
+        env.vty_of_expr(&TypeExpr::TApp(
+            "F".into(),
+            vec![TypeExpr::TName("Bool".into())]
+        )),
+        Some(ValueTy::Con(
+            "Pair".into(),
+            vec![ValueTy::Int, ValueTy::bool_ty()]
+        ))
+    );
+    let out = compile(
+        "data Box a b = { fst_: a, snd_: b };\ntype H = Box Int;\n\
+         f :: H Bool -> Bool;\nf x = x.snd_;\nmain = f (Box { fst_: 1, snd_: True })",
+    )
+    .expect("a partially applied synonym may be applied further");
+    assert!(out.contains("Sum(1"), "the field is `True`, got {out}");
+
+    // GHC's exact test case: `type B = []` (`List` is rill's spelling of the
+    // list constructor) and `B Int` = `[Int]`. A synonym of a bare constructor
+    // is a TYPE only when applied — the same rule as `[]` itself.
+    let out = compile("type B = List;\nf :: B Int -> Int;\nf x = 0;\nmain = f [7]")
+        .expect("`type B = List; f :: B Int -> Int` must compile");
+    assert!(out.contains("Int(0)"), "got {out}");
+    let err = compile_err("type B = List;\nf :: B -> Int;\nf x = 0; main = 1.0;");
+    assert!(
+        err.contains("has kind `* -> *`"),
+        "an unsaturated synonym in a `*` position is still a kind error, got: {err}"
+    );
+
+    // The expansion reaches a `data` FIELD converter too, and a synonym of an
+    // alias chain resolves at the head.
+    let out = compile(
+        "data Box a = Wrap a;\ntype B = Box;\ntype C = B;\ndata P = MkP (C Int);\n\
+         f :: P -> Int;\nf p = case p of { MkP w -> case w of { Wrap n -> n } };\n\
+         main = f (MkP (Wrap 6))",
+    )
+    .expect("a chained synonym head must resolve in a data field");
+    assert!(out.contains("Int(6)"), "got {out}");
+}
+
+#[test]
+fn a_synonym_is_transparent_in_an_instance_head() {
+    // GHC's canonical use of the feature: `type B = []; instance Functor B` is
+    // exactly `instance Functor []`. The instance must be keyed by the type the
+    // head EXPANDS to, or no dispatch by the real type could find it.
+    let out = compile(
+        "typeclass Slf f where { slf: f Int -> Int; };\ntype B = List;\n\
+         instance Slf B where { slf xs = length xs; };\nmain = slf [1, 2]",
+    )
+    .expect("a synonym head in an instance must dispatch");
+    assert!(out.contains("Int(2)"), "got {out}");
+
+    let out = compile(
+        "typeclass Slf a where { slf: a -> Int; };\ndata P = MkP;\ntype PAl = P;\n\
+         instance Slf PAl where { slf p = 1; };\nmain = slf MkP",
+    )
+    .expect("a synonym of a monotype in an instance must dispatch");
+    assert!(out.contains("Int(1)"), "got {out}");
+
+    // ... and the saturated spelling, unchanged.
+    let out = compile(
+        "typeclass Slf a where { slf: a -> Int; };\ntype LI = List Int;\n\
+         instance Slf LI where { slf xs = length xs; };\nmain = slf [1, 2]",
+    )
+    .expect("a saturated synonym head must dispatch");
+    assert!(out.contains("Int(2)"), "got {out}");
+}
+
+#[test]
+fn a_synonym_is_transparent_to_the_ffi_classifier() {
+    // A synonym is a spelling of its target, so a `foreign` signature that uses
+    // one must classify exactly like the target: a signal channel stays a
+    // signal channel, and an element alias stays its element. Without this the
+    // widened `type` syntax could name a parameter the classifier saw as an
+    // opaque record.
+    use rill_lang::types::ffi::FfiParam;
+
+    let env = env_of("type B = FixedBuffer Double; type E = Double; type L = List;");
+    let sig_te = TypeExpr::TFunc(
+        vec![
+            TypeExpr::TName("E".into()),
+            TypeExpr::TName("B".into()),
+            TypeExpr::TApp(
+                "L".into(),
+                vec![TypeExpr::TApp(
+                    "FixedBuffer".into(),
+                    vec![TypeExpr::TName("Double".into())],
+                )],
+            ),
+        ],
+        Box::new(TypeExpr::TApp("B".into(), vec![])),
+    );
+    let sig = ffi_sig_from_typeexpr(&env, "probe", &sig_te)
+        .expect("a synonym must not hide a signal signature");
+    assert_eq!(
+        sig.params,
+        vec![
+            FfiParam::Scalar,
+            FfiParam::Signal(ValueTy::Double),
+            FfiParam::VariadicSignal(ValueTy::Double),
+        ],
+        "a synonym must classify as its target"
+    );
+    assert_eq!(sig.signal_outs, 1);
+}
+
+#[test]
+fn a_synonym_may_name_a_user_higher_kinded_type() {
+    let out = compile(
+        "data Box a = Wrap a;\ntype B = Box;\nf :: B Int -> Int;\n\
+         f w = case w of { Wrap n -> n };\nmain = f (Wrap 3);",
+    )
+    .expect("a synonym may name a user higher-kinded type");
+    assert!(out.contains("Int(3)"), "got {out}");
+
+    // The saturated spelling is unaffected and still resolves to the same type.
+    let out = compile("type LI = List Int;\nf :: LI -> Int;\nf xs = length xs;\nmain = f [1, 2];")
+        .expect("a saturated synonym still works");
+    assert!(out.contains("Int(2)"), "got {out}");
+}
+
+#[test]
 fn a_cyclic_type_synonym_is_a_clean_error() {
     // A synonym cycle denotes no type. It must be a diagnostic — not a hang and
     // not a stack overflow: `type A = B; type B = A` (a bare-name cycle) and
@@ -475,29 +627,32 @@ fn the_registry_is_the_single_source() {
 #[test]
 fn a_synonym_target_is_still_a_type_position() {
     // Widening the syntax must not widen the TYPE CHECK: a lowercase name is a
-    // type variable, so `type A = a` names no type (GHC: `Not in scope`), and a
-    // bare constructor target still fails the kind rule.
+    // type variable, so `type A = a` names no type (GHC: `Not in scope`), an
+    // undeclared name is unknown, and an OVER-application has no kind at all
+    // (GHC: `Expected kind '* -> k0', but 'Maybe Int' has kind '*'`).
+    //
+    // A target that is merely UNSATURATED (`type A = List`, `type A = Pair
+    // Int`) is LEGAL — GHC 9.10.3 accepts `type B = []` — so it is not tested
+    // here; see `a_synonym_may_name_a_higher_kinded_constructor`.
     let err = compile_err("type A = a; main = 1.0;");
     assert!(
         err.contains("type A = a") || err.contains("`a`"),
         "got {err}"
     );
-    let err = compile_err("type A = List; main = 1.0;");
-    assert!(err.contains("has kind `* -> *`"), "got {err}");
     let err = compile_err("type A = Nope; main = 1.0;");
     assert!(err.contains("unknown type name `Nope`"), "got {err}");
-    let err = compile_err("type A = Pair Int; main = 1.0;");
-    assert!(err.contains("has kind `* -> *`"), "got {err}");
     let err = compile_err("data Box a = { v: a }; type A = Box Int Int; main = 1.0;");
+    assert!(err.contains("too many arguments"), "got {err}");
+    // Over-applying a synonym is the same error: `type L = List` is `* -> *`,
+    // so `L Int Int` supplies one argument too many.
+    let err = compile_err("type L = List; f :: L Int Int -> Int; f x = 1; main = 1.0;");
     assert!(err.contains("too many arguments"), "got {err}");
 }
 
 #[test]
 fn a_synonym_chain_through_an_alias_resolves() {
-    // A free `type` target must have kind `*`, so a synonym cannot be used as
-    // a constructor HEAD (`type B = List` is `type B = []`, rejected by GHC).
-    // The MEANINGFUL chain is name → name, where the final target is applied:
-    // `type IntList = List Int; type L = IntList` is `List Int`.
+    // A chain of synonyms resolves to the final applied target: `type IntList
+    // = List Int; type L = IntList` is `List Int`.
     let env = env_of("type IntList = List Int; type L = IntList;");
     assert_eq!(
         env.vty_of_name("L"),
@@ -508,9 +663,6 @@ fn a_synonym_chain_through_an_alias_resolves() {
     )
     .expect("a synonym chain ending in an application must resolve");
     assert!(out.contains("Int(1)"), "got {out}");
-    // And a bare-constructor target is still a kind error, unchanged.
-    let err = compile_err("type B = List; main = 1.0;");
-    assert!(err.contains("has kind `* -> *`"), "got {err}");
 }
 
 #[test]
