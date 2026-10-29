@@ -513,26 +513,98 @@ fn infer_method_under_given(
     let env = ctx.env.clone();
     let (param_tys, ret) =
         signature_param_and_result_tys_conv(&env, class_var, &cv_subst, sig, || ctx.fresh_vty());
-    if args.len() > param_tys.len() {
+    let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
+    apply_args_curried(ctx, &param_tys, &ret, args, span, "method")
+}
+
+/// THE application rule's ARITY judgement, split out so a caller can reject a
+/// surplus argument before doing its own signature conversion — the order each
+/// site's diagnostics had before the rule was shared.
+fn check_application_arity(
+    expected: usize,
+    got: usize,
+    span: Span,
+    what: &str,
+) -> Result<(), CompileError> {
+    if got > expected {
         return Err(CompileError::Type {
-            msg: format!(
-                "method expects {} argument(s), got {}",
-                param_tys.len(),
-                args.len()
-            ),
+            msg: format!("{what} expects {expected} argument(s), got {got}"),
             span,
         });
     }
-    for (i, a) in args.iter().enumerate() {
-        if let Some(pt) = param_tys.get(i) {
-            let at = infer_method_value_vty_expected(ctx, a, "argument", Some(pt.clone()))?;
-            unify_value(pt, &at, &mut ctx.subst, a.span())?;
+    Ok(())
+}
+
+/// THE application rule: apply a function type — `params` and `ret`, already
+/// converted from a signature — to a call's `args`.
+///
+/// Haskell 2010 §4.3.3: a function type is curried, so an application's first
+/// judgement is its arity. Fewer arguments than `params` is a PARTIAL
+/// application and yields the curried remainder (`a -> b -> r` applied to one
+/// argument is `b -> r`); exactly `params.len()` is a FULL application and
+/// yields `ret` — never the whole arrow; more arguments than parameters is a
+/// compile error naming the arity.
+///
+/// This is the application half of every SIGNATURE-driven call site in this
+/// module: the primitive-method paths, the source-instance dispatch, a method
+/// used as a first-class value, the runtime closure application, and a
+/// constrained definition's call. `what` is the subject the arity diagnostic
+/// names (`"expression"`, ``"`f`"``, ``"method `fromInteger` of `Num`"``),
+/// which is what keeps each site's existing wording byte-identical.
+///
+/// Callers keep their own signature conversion and substitution work: the
+/// parameters and result arrive already converted, and only the application
+/// half is shared.
+///
+/// Two families stay outside it, because their arity is not a signature's:
+/// user definitions and closure values count λ-parameters (`check_def_call_args`
+/// / `applied_result`), and the builtin and collection catalogs carry their own
+/// per-operation arities.
+///
+/// The result type is returned RESOLVED through the substitution, so a caller
+/// that pinned the result to an expected type (`pin_result_to_expected`, or a
+/// signature whose variables the arguments just solved) sees the concrete type
+/// it will produce, not the variable that stood for it.
+fn apply_args_curried(
+    ctx: &mut Ctx,
+    params: &[ValueTy],
+    ret: &ValueTy,
+    args: &[Expr],
+    span: Span,
+    what: &str,
+) -> Result<ArrowTy, CompileError> {
+    check_application_arity(params.len(), args.len(), span, what)?;
+    // Every supplied argument is unified against its parameter, so the call
+    // site — not the result — solves the signature's type variables.
+    //
+    // A parameter typed `Buffer` also accepts a signal computation
+    // (`fp i1` where `fp : Buffer -> Buffer` and `i1` is the program's Buffer
+    // input) as well as a Buffer value, so that one case is checked through the
+    // expression's own type instead of being re-inferred at the parameter type.
+    // The final unification is [`unify_method_arg`], whose one extra rule — a
+    // numeric literal in a `Buffer` parameter position is that buffer's
+    // constant, exactly what lowering's `buffer_operand` emits — is the rule
+    // every call site must apply identically.
+    for (a, pt) in args.iter().zip(params.iter()) {
+        if matches!(ctx.subst.resolve_value(pt), ValueTy::Buffer(_)) {
+            let at = infer_expr(ctx, a)?;
+            if at.arity_out() == 1 && matches!(at.vty, ValueTy::Buffer(_)) {
+                unify_value(&at.vty, pt, &mut ctx.subst, a.span())?;
+                continue;
+            }
         }
+        let at = infer_method_value_vty_expected(ctx, a, "argument", Some(pt.clone()))?;
+        unify_method_arg(ctx, pt, &at, a)?;
     }
-    let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
-    let rest: Vec<ValueTy> = param_tys[args.len().min(param_tys.len())..].to_vec();
     // A partial application keeps the remaining parameters as a function value
-    // (Haskell 2010 §4.3.3); a full application yields the result.
+    // (Haskell 2010 §4.3.3); a full application yields the result. Both are
+    // resolved through the substitution, so the caller sees the concrete call
+    // type rather than the variables the arguments just solved.
+    let ret = ctx.subst.resolve_value(ret);
+    let rest: Vec<ValueTy> = params[args.len()..]
+        .iter()
+        .map(|t| ctx.subst.resolve_value(t))
+        .collect();
     if rest.is_empty() {
         Ok(ArrowTy::value_channel(ret))
     } else {
@@ -1639,6 +1711,16 @@ pub(crate) fn signature_param_and_result_tys_conv(
     mut fresh: impl FnMut() -> ValueTy,
 ) -> (Vec<ValueTy>, Option<ValueTy>) {
     let mut vars: HashMap<String, ValueTy> = HashMap::new();
+    // A quantifier or context quantifies the WHOLE signature, so it is stripped
+    // here before the arrow is read. `TypeExpr::sig_arg_count` looks through the
+    // same two wrappers, so the parameter list built here and the arity the
+    // application rule reports can never disagree (`f: forall b. a -> b -> a` is
+    // arity 2, not the single `a -> b -> a` thunk).
+    let sig = match sig {
+        crate::ast::TypeExpr::TForall(_, inner) => inner,
+        crate::ast::TypeExpr::TConstrained(_, inner) => inner,
+        other => other,
+    };
     match sig {
         crate::ast::TypeExpr::TFunc(args, ret) if !args.is_empty() => {
             let params: Vec<ValueTy> = args
@@ -4659,7 +4741,8 @@ fn infer_ref_expected(
                         || it.next().unwrap_or(ValueTy::Double),
                     );
                     let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
-                    return Ok(ArrowTy::value(nest_thunk(&param_tys, vec![ret])));
+                    let what = format!("method `{name}` of `{class_name}`");
+                    return apply_args_curried(ctx, &param_tys, &ret, &[], span, &what);
                 }
                 let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                     Some(r) => r,
@@ -4732,7 +4815,8 @@ fn infer_ref_expected(
                             || it.next().unwrap_or(ValueTy::Double),
                         );
                         let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
-                        return Ok(ArrowTy::value(nest_thunk(&param_tys, vec![ret])));
+                        let what = format!("method `{name}` of `{class_name}`");
+                        return apply_args_curried(ctx, &param_tys, &ret, &[], span, &what);
                     }
                     let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                         Some(r) => r,
@@ -4778,11 +4862,16 @@ fn infer_ref_expected(
                         sig,
                         || ctx.fresh_vty(),
                     );
-                    let contract = match ret_ty {
-                        Some(ret) => nest_thunk(&arg_tys, vec![ret]),
-                        None => arg_tys.first().cloned().unwrap_or(ValueTy::Double),
-                    };
-                    return Ok(ArrowTy::value_channel(contract));
+                    // The method's contract is its curried signature: a
+                    // nullary method's single signature type stands alone, a
+                    // function-shaped one is the unapplied arrow.
+                    if let Some(ret) = ret_ty {
+                        let what = format!("method `{name}` of `{class_name}`");
+                        return apply_args_curried(ctx, &arg_tys, &ret, &[], span, &what);
+                    }
+                    return Ok(ArrowTy::value_channel(
+                        arg_tys.first().cloned().unwrap_or(ValueTy::Double),
+                    ));
                 }
             }
         }
@@ -4939,7 +5028,8 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
                     || it.next().unwrap_or(ValueTy::Double),
                 );
                 let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
-                return Ok(ArrowTy::value(nest_thunk(&param_tys, vec![ret])));
+                let what = format!("method `{name}` of `{class_name}`");
+                return apply_args_curried(ctx, &param_tys, &ret, &[], span, &what);
             }
             return Err(CompileError::Type {
                 msg: format!("method `{name}` of `{class_name}` requires an argument"),
@@ -5402,48 +5492,8 @@ fn infer_apply_expr(
             })
         }
     };
-    if args.len() > arg_tys.len() {
-        return Err(CompileError::Type {
-            msg: format!(
-                "expression expects {} argument(s), got {}",
-                arg_tys.len(),
-                args.len()
-            ),
-            span,
-        });
-    }
-    for (a, pt) in args.iter().zip(arg_tys.iter()) {
-        // A `Func` parameter typed `Buffer` accepts a signal computation
-        // (`fp i1` where `fp : Buffer -> Buffer` and `i1` is the program's
-        // Buffer input) as well as a Buffer value — mirroring the builtin-sig
-        // Buffer-param acceptance in `infer_apply_impl`.
-        if matches!(ctx.subst.resolve_value(pt), ValueTy::Buffer(_)) {
-            let at = infer_expr(ctx, a)?;
-            if at.arity_out() == 1 && matches!(at.vty, ValueTy::Buffer(_)) {
-                unify_value(&at.vty, pt, &mut ctx.subst, a.span())?;
-                continue;
-            }
-        }
-        // Thread the callee's parameter type as the argument's expected type
-        // (mirroring the user-def path): a result-directed/constructor-class
-        // method inside the argument selects its instance by the container the
-        // parameter demands.
-        let vt = infer_method_value_vty_expected(ctx, a, "argument", Some(pt.clone()))?;
-        unify_value(&vt, pt, &mut ctx.subst, a.span())?;
-    }
-    if args.len() < arg_tys.len() {
-        // Partial application of a closure-valued expression: the remaining λs
-        // stay as the value arguments of the leftover closure (kept nested, so
-        // a further application unifies against the real lambda type).
-        let remaining = &arg_tys[args.len()..];
-        return Ok(ArrowTy::value_channel(nest_thunk(
-            remaining,
-            ret_tys.clone(),
-        )));
-    }
-    Ok(ArrowTy::value_channel(
-        ret_tys.first().cloned().unwrap_or(ValueTy::Double),
-    ))
+    let ret = ret_tys.first().cloned().unwrap_or(ValueTy::Double);
+    apply_args_curried(ctx, &arg_tys, &ret, args, span, "expression")
 }
 
 /// Unify an application's RESULT type with the caller's expected type before the
@@ -5496,65 +5546,65 @@ fn infer_constrained_apply(
             span,
         });
     }
-    if args.len() > param_tys.len() {
-        return Err(CompileError::Type {
-            msg: format!(
-                "`{name}` expects {} argument(s), got {}",
-                param_tys.len(),
-                args.len()
-            ),
-            span,
-        });
-    }
-    // Pin the result to the caller's expected type BEFORE the arguments infer,
+    // Pin the result to the caller's expected type before the arguments infer,
     // so a result-directed method inside an argument resolves by the container
     // this call must produce (mirrors the plain function path).
+    //
+    // Arity comes FIRST: a surplus argument is the call's own arity error and
+    // must be reported before any argument's typing, exactly as before the
+    // application rule was shared.
+    let what = format!("`{name}`");
+    check_application_arity(param_tys.len(), args.len(), span, &what)?;
     pin_result_to_expected(ctx, &ret_ty, expected.as_ref(), span)?;
+    // PARK M9: a bare named function reference (`f` in `ixmap b f a`) infers as
+    // the EMPTY `Thunk([], [])` — a bare ref's arity resolves only when it is
+    // applied — so a function-shaped constrained parameter (`i -> j`) reports an
+    // opaque `Thunk … with Thunk …` mismatch. Name the parameter and point at the
+    // missing annotation (or a lambda literal) instead of dumping thunk shapes.
+    //
+    // This is a call-site diagnostic, not part of the application rule, so it
+    // stays here. It recognizes statically exactly the references that type as
+    // the empty `Thunk([], [])`: a definition with λ-parameters (which
+    // `infer_ref_inner` spells as the unapplied placeholder) or one whose scheme
+    // is already the empty thunk, and which no local shadows.
     for (i, (a, pt)) in args.iter().zip(param_tys.iter()).enumerate() {
-        let vt = infer_method_value_vty_expected(ctx, a, "argument", Some(pt.clone()))?;
-        // PARK M9: a bare named function reference (`f` in `ixmap b f a`) infers
-        // as the EMPTY `Thunk([], [])` — a bare ref's arity resolves only when it
-        // is applied — so a function-shaped constrained parameter (`i -> j`)
-        // reports an opaque `Thunk … with Thunk …` mismatch. Name the parameter
-        // and point at the missing annotation (or a lambda literal) instead of
-        // dumping thunk shapes.
-        let resolved_vt = ctx.subst.resolve_value(&vt);
-        if matches!(&resolved_vt, ValueTy::Thunk(c, r) if c.is_empty() && r.is_empty())
-            && matches!(pt, ValueTy::Thunk(..))
-        {
-            let pname = cd
-                .params
-                .get(i)
-                .map(|p| p.name.as_str())
-                .unwrap_or("<unnamed>");
-            return Err(CompileError::Type {
-                msg: format!(
-                    "`{name}` expects a function value for parameter `{pname}`; a bare \
-                     named function reference types as an unresolved thunk here — \
-                     annotate the parameter's type (or wrap the function in a lambda \
-                     literal)"
-                ),
-                span: a.span(),
-            });
+        if !matches!(pt, ValueTy::Thunk(..)) {
+            continue;
         }
-        unify_value(&vt, pt, &mut ctx.subst, a.span())?;
+        let Expr::Ref(rname, _) = a else { continue };
+        if ctx.locals.contains_key(rname) {
+            continue;
+        }
+        let unresolved_thunk = ctx.defs.get(rname).is_some_and(|s| {
+            s.lam_count > 0
+                || matches!(&s.ty.vty, ValueTy::Thunk(c, r) if c.is_empty() && r.is_empty())
+        });
+        if !unresolved_thunk {
+            continue;
+        }
+        let pname = cd
+            .params
+            .get(i)
+            .map(|p| p.name.as_str())
+            .unwrap_or("<unnamed>");
+        return Err(CompileError::Type {
+            msg: format!(
+                "`{name}` expects a function value for parameter `{pname}`; a bare \
+                 named function reference types as an unresolved thunk here — \
+                 annotate the parameter's type (or wrap the function in a lambda \
+                 literal)"
+            ),
+            span: a.span(),
+        });
     }
-    // The class variables as the call site solved them.
+    let ret = ctx.subst.resolve_value(&ret_ty);
+    let at = apply_args_curried(ctx, &param_tys, &ret, args, span, &what)?;
     let bindings: HashMap<String, ValueTy> = vars
         .iter()
         .map(|(k, v)| (k.clone(), ctx.subst.resolve_value(v)))
         .collect();
     discharge_def_constraints(&ctx.env, name, &cd.sig, &bindings, span)?;
-    let ret = ctx.subst.resolve_value(&ret_ty);
-    if args.len() < param_tys.len() {
-        // Partial application: the remaining parameters stay a function value.
-        let remaining: Vec<ValueTy> = param_tys[args.len()..]
-            .iter()
-            .map(|t| ctx.subst.resolve_value(t))
-            .collect();
-        return Ok(ArrowTy::value_channel(nest_thunk(&remaining, vec![ret])));
-    }
-    Ok(ArrowTy::value_channel(ret))
+    Ok(at)
 }
 
 /// Whether a call `name args…` must resolve to a DEFINITION rather than to a
@@ -6414,19 +6464,11 @@ fn infer_apply_impl(
                     // A kernel-backed method: its type IS the class signature
                     // with the class variable solved to the dispatch type. The
                     // arguments are unified against the parameter types so a
-                    // call like `(+) 1.0 2.0` solves `a := Double`.
-                    let param_tys = signature_param_tys(ctx, &class_var, &cv_subst, sig);
-                    for (i, a) in args.iter().enumerate() {
-                        if let Some(pt) = param_tys.get(i) {
-                            let at = infer_method_value_vty_expected(
-                                ctx,
-                                a,
-                                "argument",
-                                Some(pt.clone()),
-                            )?;
-                            unify_value(pt, &at, &mut ctx.subst, a.span())?;
-                        }
-                    }
+                    // call like `(+) 1.0 2.0` solves `a := Double`, and the
+                    // arity/currying judgement is the shared one (Haskell 2010
+                    // §4.3.3) — so `fromInteger 1 2` is the arity error GHC
+                    // reports ("No instance for `Num (t0 -> t1)`") instead of
+                    // silently typechecking as `Integer`.
                     let mut fresh_ids: Vec<ValueTy> = Vec::new();
                     for _ in 0..8 {
                         fresh_ids.push(ctx.fresh_vty());
@@ -6439,39 +6481,9 @@ fn infer_apply_impl(
                         sig,
                         || it.next().unwrap_or(ValueTy::Double),
                     );
-                    // A method is CURRIED (Haskell 2010 §4.3.3), so the
-                    // signature's arity is checked exactly as the guarded
-                    // primitive path below checks it. This branch sits inside
-                    // the result-directed block, which returns before that
-                    // guard, so it needs its own copy: without it a surplus
-                    // argument (`fromInteger 1 2`) was silently accepted —
-                    // returning the applied result made it typecheck as
-                    // `Integer`, where GHC reports "No instance for `Num (t0 ->
-                    // t1)`".
-                    if args.len() < n_sig_args {
-                        // Partial application yields the curried remainder.
-                        let ret_ty = ret.unwrap_or_else(|| ctx.fresh_vty());
-                        let rest: Vec<ValueTy> =
-                            sig_param_tys[args.len().min(sig_param_tys.len())..].to_vec();
-                        return Ok(ArrowTy::value(nest_thunk(&rest, vec![ret_ty])));
-                    }
-                    if args.len() > n_sig_args {
-                        return Err(CompileError::Type {
-                            msg: format!(
-                                "method `{name}` of `{class_name}` expects {n_sig_args} argument(s), got {}",
-                                args.len()
-                            ),
-                            span,
-                        });
-                    }
-                    // A FULL application yields the signature's RESULT type —
-                    // exactly what the source-instance path below returns (its
-                    // body's type). Returning `nest_thunk(&param_tys, …)` here
-                    // handed back the whole unapplied arrow: `(fromInteger 1)`
-                    // typed as `Thunk([Int], [Integer])` instead of the
-                    // `Integer` its annotation demands.
-                    let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
-                    return Ok(ArrowTy::value(ret));
+                    let ret_ty = ret.unwrap_or_else(|| ctx.fresh_vty());
+                    let what = format!("method `{name}` of `{class_name}`");
+                    return apply_args_curried(ctx, &sig_param_tys, &ret_ty, args, span, &what);
                 }
                 let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                     Some(r) => r,
@@ -6564,30 +6576,19 @@ fn infer_apply_impl(
                         sig,
                         || it.next().unwrap_or(ValueTy::Double),
                     );
-                    for (i, a) in args.iter().enumerate() {
-                        if let Some(pt) = param_tys.get(i) {
-                            let at = infer_method_value_vty_expected(
-                                ctx,
-                                a,
-                                "argument",
-                                Some(pt.clone()),
-                            )?;
-                            unify_value(pt, &at, &mut ctx.subst, a.span())?;
-                        }
-                    }
                     let ret_ty = ret.unwrap_or_else(|| ctx.fresh_vty());
-                    let rest: Vec<ValueTy> = param_tys[args.len().min(param_tys.len())..].to_vec();
-                    return Ok(ArrowTy::value(nest_thunk(&rest, vec![ret_ty])));
+                    let what = format!("method `{name}` of `{class_name}`");
+                    return apply_args_curried(ctx, &param_tys, &ret_ty, args, span, &what);
                 }
                 let _ = primitive;
-                if args.len() != n_sig_args {
-                    return Err(CompileError::Type {
-                        msg: format!(
-                            "method `{name}` of `{class_name}` expects {n_sig_args} argument(s), got {}",
-                            args.len()
-                        ),
-                        span,
-                    });
+                if args.len() > n_sig_args {
+                    // Over-application is the shared arity judgement. A FULL
+                    // application falls through to selector resolution, which
+                    // selects the instance from the argument types — that is
+                    // dispatch work, not application, and it unifies its own
+                    // arguments against the signature.
+                    let what = format!("method `{name}` of `{class_name}`");
+                    check_application_arity(n_sig_args, args.len(), span, &what)?;
                 }
                 // Selector: the argument whose signature type mentions the class
                 // variable AND which is not a bare nullary method ref — both
@@ -6746,24 +6747,12 @@ fn infer_apply_impl(
                     .map(|i| i.primitive)
                     .unwrap_or(false);
                 if is_primitive {
-                    let param_tys = signature_param_tys(ctx, &class_var, &cv_subst, sig);
-                    for (i, a) in args.iter().enumerate() {
-                        if let Some(pt) = param_tys.get(i) {
-                            let at = infer_method_value_vty_expected(
-                                ctx,
-                                a,
-                                "argument",
-                                Some(pt.clone()),
-                            )?;
-                            unify_method_arg(ctx, pt, &at, a)?;
-                        }
-                    }
                     let mut fresh_ids: Vec<ValueTy> = Vec::new();
                     for _ in 0..8 {
                         fresh_ids.push(ctx.fresh_vty());
                     }
                     let mut it = fresh_ids.into_iter();
-                    let (_, ret) = signature_param_and_result_tys_conv(
+                    let (param_tys, ret) = signature_param_and_result_tys_conv(
                         &ctx.env,
                         &class_var,
                         &cv_subst,
@@ -6778,11 +6767,8 @@ fn infer_apply_impl(
                     // unifies against (`f (n + 1.0)` checks `Double`, not the
                     // whole remaining signature).
                     let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
-                    let rest: Vec<ValueTy> = param_tys[args.len().min(param_tys.len())..].to_vec();
-                    if rest.is_empty() {
-                        return Ok(ArrowTy::value(nest_thunk(&[], vec![ret])));
-                    }
-                    return Ok(ArrowTy::value(nest_thunk(&rest, vec![ret])));
+                    let what = format!("method `{name}` of `{class_name}`");
+                    return apply_args_curried(ctx, &param_tys, &ret, args, span, &what);
                 }
                 let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                     Some(r) => r,

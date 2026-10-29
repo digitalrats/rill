@@ -190,3 +190,23 @@ fn higher_order_argument_is_checked() {
         "a matching String-returning closure must run"
     );
 }
+
+#[test]
+fn the_user_definition_family_keeps_its_own_arity_rule() {
+    // The one application rule covers every SIGNATURE-driven call site. A user
+    // definition's arity is its λ-parameter count, which is a different
+    // judgement with its own diagnostic, and these are the controls that pin
+    // the boundary: over-application is rejected, and a partial application is
+    // a function value (Haskell 2010 §4.3.3) — exactly as at the shared sites.
+    let over = rejection("f x y = x + y; main = f 1.0 2.0 3.0;");
+    assert!(
+        over.contains("`f`") && over.contains("2 argument(s), got 3"),
+        "the user-definition arity error must name the definition and the arity: {over}"
+    );
+    // A partial application of the same two-parameter definition is a value.
+    assert_eq!(
+        run_num("f x y = x + y; g :: Double -> Double; g = f 1.0; main = g 2.0;"),
+        3.0,
+        "a partial application must remain a callable function value"
+    );
+}

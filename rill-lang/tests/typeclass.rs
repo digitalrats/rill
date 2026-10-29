@@ -329,3 +329,103 @@ fn a_result_directed_primitive_method_checks_its_arity() {
         ValueTy::Double
     );
 }
+
+#[test]
+fn every_call_site_applies_the_same_curried_rule() {
+    use rill_lang::lexer::tokenize;
+    use rill_lang::parser::parse;
+    let ok = |src: &str| {
+        let toks = tokenize(src).expect("lex");
+        let prog = parse(&toks, src.as_bytes()).expect("parse");
+        rill_lang::types::infer::infer_program(&prog, Mode::Complete).is_ok()
+    };
+    // Under-application yields a function value; over-application is an error.
+    // GHC 9.10.3: `fromInteger 1 2` is "No instance for `Num (t0 -> t1)`".
+    assert!(ok("x :: Integer = fromInteger 1;\nmain = 0.0;"));
+    assert!(!ok("x :: Integer = fromInteger 1 2;\nmain = 0.0;"));
+    assert!(!ok("x :: Integer = fromInteger 1 2 3;\nmain = 0.0;"));
+    // A partial application of a TWO-parameter method is a function value, and
+    // applying it once more completes it — the property the copies disagreed on.
+    assert!(ok("h :: Double -> Double;\nh = (+) 1.0;\nmain = 0.0;"));
+    assert!(ok("x :: Double = (+) 1.0 2.0;\nmain = 0.0;"));
+    assert!(!ok("x :: Double = (+) 1.0 2.0 3.0;\nmain = 0.0;"));
+}
+
+#[test]
+fn a_routed_site_keeps_its_arity_wording() {
+    // Routing a site through the one application rule must not change what a
+    // user reads. Each message below is the wording the site had before the
+    // refactor: the shared function supplies only the subject (`what`).
+    let msg = |src: &str| match infer_err(src).expect("the program must be rejected") {
+        rill_lang::CompileError::Type { msg, .. } => msg,
+        other => panic!("expected a type error, got {other:?}"),
+    };
+    assert_eq!(
+        msg("x :: Integer = fromInteger 1 2;\nmain = 0.0;"),
+        "method `fromInteger` of `Num` expects 1 argument(s), got 2"
+    );
+    // The runtime-application path (`(\y -> y) 1.0 2.0`) names the EXPRESSION.
+    assert_eq!(
+        msg("x :: Double = (\\y -> y) 1.0 2.0;\nmain = 0.0;"),
+        "expression expects 1 argument(s), got 2"
+    );
+    // A source-instance method: the operator form's subject is the method.
+    assert_eq!(
+        msg("x :: Double = (<) 1.0 2.0 3.0;\nmain = 0.0;"),
+        "method `<` of `Ord` expects 2 argument(s), got 3"
+    );
+    // A source-instance method under its own name, over-applied.
+    assert_eq!(
+        msg("typeclass Add a where { add: a -> a -> a; }\n\
+             instance Add Double where { add x y = x + y; }\n\
+             x :: Double = add 1.0 2.0 3.0;\nmain = 0.0;"),
+        "method `add` of `Add` expects 2 argument(s), got 3"
+    );
+    // And a two-parameter source method is curried: a partial application is a
+    // function value, not an error (the property the drifted copies lost).
+    let hs = "\
+        typeclass Add a where { add: a -> a -> a; }\n\
+        instance Add Double where { add x y = x + y; }\n";
+    assert!(
+        infer_err(&format!(
+            "{hs}h :: Double -> Double;\nh = add 1.0;\nmain = 0.0;"
+        ))
+        .is_none(),
+        "a partial application of a source method must be a function value"
+    );
+    assert!(
+        infer_err(&format!("{hs}x :: Double = add 1.0 2.0;\nmain = 0.0;")).is_none(),
+        "a full application of a source method must yield its result"
+    );
+}
+
+#[test]
+fn a_forall_signature_reports_its_real_arity() {
+    // `sig_arg_count` looks through `forall`, so the parameter list the
+    // application rule compares against must too. Before the rule was shared,
+    // `signature_param_and_result_tys_conv` did not strip the quantifier, and
+    // the two disagreed: the arity message said 1 for a 2-argument method.
+    let src = "\
+        typeclass C a where { f: forall b. a -> b -> a; }\n\
+        instance C Int where { f x y = x; }\n\
+        x :: Int = f 1 2 3;\n\
+        main = 0.0;";
+    match infer_err(src).expect("over-applying a 2-argument method must be rejected") {
+        rill_lang::CompileError::Type { msg, .. } => assert_eq!(
+            msg, "method `f` of `C` expects 2 argument(s), got 3",
+            "the reported arity must be the signature's, through the quantifier"
+        ),
+        other => panic!("expected a type error, got {other:?}"),
+    }
+    // A partial application of the same quantified method is a function value.
+    let partial = "\
+        typeclass C a where { f: forall b. a -> b -> a; }\n\
+        instance C Int where { f x y = x; }\n\
+        h :: Int -> Int;\n\
+        h = f 1;\n\
+        main = 0.0;";
+    assert!(
+        infer_err(partial).is_none(),
+        "`f 1` at `Int -> Int` must type as the curried remainder"
+    );
+}
