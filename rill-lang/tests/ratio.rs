@@ -12,6 +12,28 @@ fn run(src: &str) -> String {
     prog.stdout().concat()
 }
 
+/// Run `src` expecting a FAILURE, and return its detail.
+///
+/// Both channels are accepted, because either is a loud, correct answer where
+/// GHC raises `Ratio has zero denominator` at run time: a compile error, or a
+/// program that compiles and then faults while running (rill's clean fault
+/// channel — the array surface documents the same policy instead of GHC's
+/// `error`/bottom). What is NOT accepted is a program that runs to completion:
+/// that is the silent `den = 0` wrong value this helper exists to catch.
+fn run_faults(src: &str) -> String {
+    let mut prog = match compile::<f32, 256>(src, ForeignRegistry::new()) {
+        Ok(p) => p,
+        Err(e) => return e.to_string(),
+    };
+    match prog.run() {
+        Ok(()) => panic!(
+            "must fault, but the program ran:\n{src}\ngot: {:?}",
+            prog.stdout()
+        ),
+        Err(e) => e.to_string(),
+    }
+}
+
 /// Assert `src` is rejected and that the error text names `reason`.
 ///
 /// `is_err()` alone is not evidence: an unknown name is also an error. The
@@ -200,6 +222,34 @@ fn ratio_division_and_recip_are_fractional() {
 }
 
 #[test]
+fn every_arithmetic_method_keeps_the_denominator_positive() {
+    // Sign normalisation is required of `+ - * /` (and `recip`), not just `/`:
+    // each can produce a negative denominator when an INPUT is negative, and a
+    // negative denominator is exactly what makes `Ord`/`signum` wrong. GHC's
+    // answers, measured: `1/2 + (-1)/2` is `0%1`; `1/2 - 3/(-2)` is `2%1`;
+    // `1/2 * ((-1)/2)` is `(-1)%4`; `1/2 / ((-3)/4)` is `(-2)%3`. Ours are
+    // unreduced (no `gcd` yet), so each is asserted as its sign-normalised
+    // unreduced pair — the invariant `den > 0` is what is being pinned, and it
+    // is the pair-with-the-same-VALUE that GHC prints. The `+` case is `0/4`,
+    // not GHC's `0%1`: GHC reduces, this task does not.
+    assert_eq!(
+        run("a = Ratio { num: (1 :: Integer), den: (2 :: Integer) };\nb = Ratio { num: (-1 :: Integer), den: (2 :: Integer) };\nmain = do { write (Just (show_integer ((a + b).num))) stdout; write (Just \"/\") stdout; write (Just (show_integer ((a + b).den))) stdout; return () };"),
+        "0/4"
+    );
+    assert_eq!(
+        run("a = Ratio { num: (1 :: Integer), den: (2 :: Integer) };\nb = Ratio { num: (3 :: Integer), den: (-2 :: Integer) };\nmain = do { write (Just (show_integer ((a - b).den))) stdout; return () };"),
+        "4"
+    );
+    // `1/2 * ((-1)/2)` = `-1/4`: the product's denominator is `-4` without
+    // normalisation, and `q > 0` would then answer `True` where the value is
+    // negative.
+    assert_eq!(
+        run("a = Ratio { num: (1 :: Integer), den: (2 :: Integer) };\nb = Ratio { num: (-1 :: Integer), den: (2 :: Integer) };\nq = a * b;\nzero = Ratio { num: (0 :: Integer), den: (1 :: Integer) };\nmain = do { write (Just (show_integer q.num)) stdout; write (Just \"/\") stdout; write (Just (show_integer q.den)) stdout; write (Just (show_bool (q > zero))) stdout; return () };"),
+        "-1/4False"
+    );
+}
+
+#[test]
 fn ratio_negate_and_signum_avoid_the_missing_kernels() {
     // The `negate`/`signum` KERNELS have no IR instruction yet ("kernel
     // `Signum`, which has no IR instruction yet", design §3.9) and a bare `abs`
@@ -276,6 +326,82 @@ fn the_polymorphic_head_beats_the_derived_structural_marker() {
 }
 
 #[test]
+fn division_normalises_the_sign() {
+    // GHC: `(1%2) / ((-3)%4)` is `(-2) % 3` — the sign lives on the numerator.
+    //
+    // This task has no `gcd`, so the pair is NOT reduced: what must hold is the
+    // H2010 invariant `den > 0`, which turns `4 / -6` into `-4 / 6`. The
+    // numerator/denominator are therefore GHC's cross-multipled by 2, the same
+    // value. `numerator`/`denominator` reporting the unreduced pair is Task 4's
+    // `%`/`gcd` work and is recorded in the report.
+    assert_eq!(
+        run("a = Ratio { num: (1 :: Integer), den: (2 :: Integer) };\nb = Ratio { num: (-3 :: Integer), den: (4 :: Integer) };\nq = a / b;\nmain = do { write (Just (show_integer q.num)) stdout; write (Just (show_integer q.den)) stdout; return () };"),
+        "-46"
+    );
+    assert_eq!(
+        run("a = Ratio { num: (-1 :: Integer), den: (2 :: Integer) };\nq = recip a;\nmain = do { write (Just (show_integer q.num)) stdout; write (Just (show_integer q.den)) stdout; return () };"),
+        "-21"
+    );
+    // The normalisation is written against the FIELDS (`d - d`, `d < z`,
+    // `z - n`), not against `Integer` literals, so it serves every field type:
+    // `(-1)/2` at `Ratio Int` gives `-1/2` with the denominator positive, and
+    // the fault branch's `error` types from the method's own result. An
+    // annotated `(0 :: Integer)` anywhere above would fail this assertion with
+    // "cannot unify value type Int with Integer".
+    assert_eq!(
+        run("a :: Ratio Int;\na = Ratio { num: -1, den: 2 };\nq = recip a;\nmain = do { write (Just (show_int q.num)) stdout; write (Just \"/\") stdout; write (Just (show_int q.den)) stdout; return () };"),
+        "-2/1"
+    );
+}
+
+#[test]
+fn ordering_is_correct_for_a_negative_denominator_input() {
+    // The value is 1/2 / (-3/4) = -2/3, so it is BELOW zero. A cross-multiplying
+    // `compare` on an unnormalised 4/-6 answers True — the silent wrong answer
+    // that sign normalisation removes.
+    assert_eq!(
+        run("a = Ratio { num: (1 :: Integer), den: (2 :: Integer) };\nb = Ratio { num: (-3 :: Integer), den: (4 :: Integer) };\nq = a / b;\nzero = Ratio { num: (0 :: Integer), den: (1 :: Integer) };\nmain = do { write (Just (show_bool (q > zero))) stdout; return () };"),
+        "False"
+    );
+}
+
+#[test]
+fn a_zero_denominator_faults() {
+    // GHC: "Ratio has zero denominator". Both accepted channels are loud (a
+    // compile error, or a run-time fault on rill's clean fault channel); what
+    // is rejected is a program that RUNS, which is the old `den = 0` answer.
+    // The message is asserted, not any failure: an unrelated fault would also
+    // stop the program.
+    let msg = run_faults("a = Ratio { num: (0 :: Integer), den: (1 :: Integer) };\nq = recip a;\nmain = do { write (Just (show_integer q.den)) stdout; return () };");
+    assert!(
+        msg.contains("Ratio has zero denominator"),
+        "expected the zero-denominator fault, got: {msg}"
+    );
+    // `(/)` reaches the same fault when the divisor's numerator is zero —
+    // `1/2 / 0/1` is GHC's `Ratio has zero denominator` too, not `4/0`.
+    let msg = run_faults("a = Ratio { num: (1 :: Integer), den: (2 :: Integer) };\nb = Ratio { num: (0 :: Integer), den: (1 :: Integer) };\nq = a / b;\nmain = do { write (Just (show_integer q.den)) stdout; return () };");
+    assert!(
+        msg.contains("Ratio has zero denominator"),
+        "expected the zero-denominator fault from `/`, got: {msg}"
+    );
+}
+
+#[test]
+fn a_user_error_definition_shadows_the_prelude_error() {
+    // The zero-denominator fault is spelled with Prelude §9.1's `error`, so
+    // `error` must remain an ordinary NAME: a Prelude binding is shadowable in
+    // Haskell 2010, and a program that defines its own `error` must get its own
+    // function, not a fault. This is the control that keeps the new builtin
+    // from behaving like a keyword.
+    assert_eq!(
+        run("error x = x + 1.0;\nmain = do { write (Just (show_double (error 1.0))) stdout; return () };"),
+        "2.0"
+    );
+    // A non-String message is a type error, not an ignored argument.
+    rejects_with("main = error 1.0;", "`error` expects a String message");
+}
+
+#[test]
 fn from_integer_is_deliberately_omitted_pending_the_integer_signature() {
     // `Num (Ratio a)` supplies no `fromInteger`, because the Prelude still
     // declares it `fromInteger : Int -> a`: a body would have to unify the `Int`
@@ -283,6 +409,19 @@ fn from_integer_is_deliberately_omitted_pending_the_integer_signature() {
     // Int with Integer". An omitted method fails LOUDLY at the call site
     // instead of silently building a wrong value; stage 7b corrects the
     // signature to `Integer -> a` and adds the body.
+    //
+    // The position is SIGNED, not inferred: `f :: Ratio Integer -> Ratio
+    // Integer; f x = fromInteger 2` fixes the method's result type from the
+    // signature, so the rejection is the missing instance itself and not a
+    // numeric-defaulting coincidence. (MEASURED: this belongs to the same
+    // diagnostic; the defaulting path reaches it too, which is exactly why the
+    // pin must not depend on defaulting.)
+    rejects_with(
+        "f :: Ratio Integer -> Ratio Integer;\nf x = fromInteger 2;\nmain = f (Ratio { num: (1 :: Integer), den: (2 :: Integer) });",
+        "no instance of `Num` for type `Ratio` and no default for `fromInteger`",
+    );
+    // The original inferred-position form, kept as the second measurement: it
+    // reaches the same diagnostic through the expected `Ratio` field type.
     rejects_with(
         "main = do { write (Just (show_integer (fromInteger 2).num)) stdout; return () };",
         "no instance of `Num` for type `Ratio` and no default for `fromInteger`",

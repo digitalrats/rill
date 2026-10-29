@@ -1844,6 +1844,26 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 "match is non-exhaustive at runtime (no arm matched)",
             ));
         }
+        ValueInstr::ValueFault { dst, src } => {
+            // `error msg` (Haskell 2010 §9.1): the value track's only
+            // source-level bottom. Read the message out of the operand (a
+            // `Value::String`) and latch it as the run's fault; `dst` is left
+            // unset because a faulting expression has no value — the same shape
+            // the absent-operand path uses, and the reason a downstream reader
+            // sees "absent" rather than a plausible `0`.
+            let msg = match world.value_regs.get(*src + base).copied().flatten() {
+                Some(r) => {
+                    let head = force(ir, world, r, drops);
+                    match world.arena.get(head) {
+                        Some(Value::String(s)) => s.clone(),
+                        _ => "error: the message is not a String".to_string(),
+                    }
+                }
+                None => "error: the message operand is absent".to_string(),
+            };
+            latch_fault(ir, world, &msg);
+            world.value_regs[*dst + base] = None;
+        }
         ValueInstr::ValueArrayHoleFault => {
             // The synthetic hole fragment's sole instruction: forcing an
             // unlisted position of an M8 array latches the clean fault (the

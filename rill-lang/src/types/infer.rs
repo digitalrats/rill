@@ -6094,6 +6094,29 @@ fn infer_apply_impl(
     if name == "param" {
         return infer_param(args, span);
     }
+    // `error :: String -> a` (Haskell 2010 Prelude §9.1). Its result type is a
+    // FRESH variable: it is bottom, so the call site's expectation decides it
+    // and a use in `Ratio a`'s field position types just as one at `Double`
+    // does. A non-`String` message is rejected here, before lowering. A USER
+    // definition of the name shadows it (a Prelude name is a binding, not a
+    // keyword), the same precedence every other builtin name follows.
+    if name == "error" && !ctx.locals.contains_key(name) && !ctx.defs.contains_key(name) {
+        if args.len() != 1 {
+            return Err(CompileError::Type {
+                msg: format!("`error` expects 1 argument, got {}", args.len()),
+                span,
+            });
+        }
+        let msg = infer_const_value(ctx, &args[0])?;
+        if ctx.subst.resolve_value(&msg) != ValueTy::String {
+            return Err(CompileError::Type {
+                msg: format!("`error` expects a String message, got {msg:?}"),
+                span: args[0].span(),
+            });
+        }
+        let ret = ctx.fresh_vty();
+        return Ok(ArrowTy::value_channel(ret));
+    }
     // Collection operations (value track): reserved names dispatched by the
     // interpreter's `ValueCallBuiltin`. They take precedence over user
     // definitions/builtins (mirrors lowering), so a collection op can never be

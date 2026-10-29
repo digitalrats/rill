@@ -1171,6 +1171,46 @@ impl<'a> Lowerer<'a> {
         Ok(self.finish_st_effect(effect, payload))
     }
 
+    /// Lower `error msg` — Haskell 2010 Prelude §9.1's `error :: String -> a`.
+    ///
+    /// The result is BOTTOM of whatever type the context wants, so the static
+    /// result is the call site's expectation when there is a concrete one
+    /// (a `Ratio a` field, a `Double`) and the runtime's default numeric value
+    /// type otherwise; `error` never RETURNS, so no consumer can observe a
+    /// guess here. It lowers to a fault instruction: the message operand is read
+    /// and latched as the run's clean fault, and no value is produced.
+    ///
+    /// Kept out of the `Apply` arm so `lower_value`'s stack frame does not grow
+    /// (a large inline branch has pushed a nested-array program over the stack
+    /// limit before).
+    fn lower_error_apply(
+        &mut self,
+        call_args: &[Expr],
+        span: &Span,
+        expected: Option<&ValueTy>,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        if call_args.len() != 1 {
+            return Err(CompileError::Type {
+                msg: format!("`error` expects 1 argument, got {}", call_args.len()),
+                span: *span,
+            });
+        }
+        let (src, ty) = self.lower_value(&call_args[0])?;
+        if ty != ValueTy::String {
+            return Err(CompileError::Type {
+                msg: format!("`error` expects a String message, got {ty:?}"),
+                span: call_args[0].span(),
+            });
+        }
+        let dst = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueFault { dst, src });
+        let ret = match expected {
+            Some(t) if is_concrete_ty(t) => t.clone(),
+            _ => ValueTy::Double,
+        };
+        Ok((dst, ret))
+    }
+
     /// Lower `e` as a LAZY argument: in complete mode, wrap it in a
     /// [`ValueInstr::ValueLazy`] thunk (a fragment computing `e` capturing its
     /// free variables), so the value is NOT forced at the call site — it is
@@ -2370,6 +2410,16 @@ impl<'a> Lowerer<'a> {
                     self.emit_value(ValueInstr::ValueNot { dst, src });
                     return Ok((dst, ValueTy::bool_ty()));
                 }
+                // `error msg` — Haskell 2010 Prelude §9.1's `error :: String ->
+                // a`. Out of line so this arm does not grow `lower_value`'s
+                // stack frame (a large inline branch has pushed a nested-array
+                // program over the limit before).
+                if name == "error"
+                    && !self.defs.contains_key(name)
+                    && !self.value_locals.iter().any(|s| s.contains_key(name))
+                {
+                    return self.lower_error_apply(call_args, span, expected);
+                }
                 // Collection operation (`length`, `cons`, `head`, `tail`, `map`,
                 // `fold`, `filter`, `list`, `insert`, `lookup`, `member`,
                 // `empty_map`, `empty_set`): a reserved name dispatched by
@@ -2984,17 +3034,18 @@ impl<'a> Lowerer<'a> {
                                 });
                             }
                             self.method_lifting.insert(key.clone());
-                            let param_tys = crate::types::infer::signature_param_tys_conv(
-                                self.env,
-                                &class_var,
-                                &cv_subst,
-                                sig,
-                                || {
-                                    let v = self.next_tyvar;
-                                    self.next_tyvar += 1;
-                                    ValueTy::Var(v)
-                                },
-                            );
+                            let (param_tys, res_ty) =
+                                crate::types::infer::signature_param_and_result_tys_conv(
+                                    self.env,
+                                    &class_var,
+                                    &cv_subst,
+                                    sig,
+                                    || {
+                                        let v = self.next_tyvar;
+                                        self.next_tyvar += 1;
+                                        ValueTy::Var(v)
+                                    },
+                                );
                             let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
                             let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
                             for (i, p) in params.iter().enumerate() {
@@ -3028,7 +3079,16 @@ impl<'a> Lowerer<'a> {
                             }
                             self.value_locals.push(scope);
                             self.value_local_ctors.push(ctor_scope);
-                            let res = self.lower_value(&body);
+                            // The inlined body is lowered against the METHOD's
+                            // own result type: a result-directed form inside it
+                            // (`error "…"`, which is bottom of any type) only
+                            // resolves through that expectation, exactly as it
+                            // would in the method's own signature.
+                            let body_expected = expected.cloned().or(res_ty);
+                            let res = match body_expected.as_ref() {
+                                Some(t) => self.lower_value_expected(&body, Some(t)),
+                                None => self.lower_value(&body),
+                            };
                             self.value_locals.pop();
                             self.value_local_ctors.pop();
                             self.method_lifting.remove(&key);
@@ -4100,6 +4160,10 @@ impl<'a> Lowerer<'a> {
                 name,
                 "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh" | "abs"
             )
+            // `error` is lowered to its own fault instruction (see the `Apply`
+            // arm), so it is a builtin op for capture purposes too — unless a
+            // user definition of the name shadows it.
+            || (name == "error" && !self.defs.contains_key(name))
     }
 
     fn value_builtin(&mut self, name: &str, nargs: usize) -> Option<ValueBuiltinOp> {
@@ -6731,6 +6795,10 @@ impl<'a> Lowerer<'a> {
     /// never a captured runtime value.
     fn resolves_at_lowering(&self, name: &str) -> bool {
         self.is_builtin_op(name)
+            // `error` is lowered directly (a fault instruction), so it is a
+            // compile-time primitive like the collection ops and must never be
+            // captured as a free variable — unless a user definition shadows it.
+            || (name == "error" && !self.defs.contains_key(name))
             || self.env.data_types.contains_key(name)
             || self.env.newtypes.contains_key(name)
             || self.sum_ctor(name).is_some()

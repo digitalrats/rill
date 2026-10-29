@@ -834,17 +834,52 @@ type Rational = Ratio Integer;
 --  rill — its stored parameter list is empty (the body is a λ-nest,
 --  `\x -> \y -> …`, and the λ parameters never receive the class signature's
 --  types), so `compare x y` inside the default fails with "cannot resolve
---  method `compare` of `Ord`: the argument type is not concrete". That is the
---  same recorded defect that makes `min`/`max` unusable on ANY user instance
---  (`min 1.0 2.0` on the primitive `Ord Double` reports "no kernel for method
---  `min`"); it is not specific to `Ratio`. Every method below is therefore
---  spelled out, and each one is SELF-CONTAINED: no instance body dispatches a
---  sibling method of its own class, the same reason `Ix (Pair Int Int)` inlines
---  its arithmetic.
+--  method `compare` of `Ord`: the argument type is not concrete". It is not
+--  specific to `Ratio` (a monomorphic user record hits it identically).
+--
+--  That defect is DISTINCT from the second way `Ord`'s `min`/`max` fail, and
+--  the two must not be recorded as one. `min 1.0 2.0` on the PRIMITIVE `Ord
+--  Double` never reaches a default body at all: a primitive instance has no
+--  source equations, so each of its methods must resolve to a compiler kernel,
+--  and `min`/`max` have none — it reports "primitive instance `Ord Double` has
+--  no kernel for method `min`". A USER instance that omits `min` fails on the
+--  other path (the unresolvable default). Both leave `min`/`max` unusable, but
+--  for different reasons and with different fixes, so a fix for one does not
+--  close the other.
+--
+--  Every method below is therefore spelled out, and each one is
+--  SELF-CONTAINED: no instance body dispatches a sibling method of its own
+--  class, the same reason `Ix (Pair Int Int)` inlines its arithmetic.
 instance Eq (Ratio a) where {
     (==) x y = x.num * y.den == y.num * x.den;
     (/=) x y = if x.num * y.den == y.num * x.den then False else True;
 }
+
+--  SIGN NORMALISATION. H2010's `Ratio` invariant is `den > 0`: `Data.Ratio`'s
+--  `%` divides by `gcd` and moves any sign onto `num`, and every operation
+--  inherits that invariant. `Ord`'s cross-multiplication and `signum` ASSUME it
+--  — `n1/d1 < n2/d2` is `n1*d2 < n2*d1` only when both denominators are
+--  positive, because multiplying an inequality by a negative flips it.
+--  `Eq` does not need it (cross-multiplication is sign-safe).
+--
+--  This task has no `gcd` yet, so nothing REDUCES, but it must still keep the
+--  denominator non-negative: a record literal may spell `Ratio { num: 1, den:
+--  -2 }`, and `(/ x y)` divides by `y.num`, which is negative whenever `y` is.
+--  Without normalisation `(1/2) / ((-3)/4)` produced `4/(-6)` and `q > 0`
+--  answered `True` (GHC: `-2/3`, so `False`) — a silent WRONG VALUE, not a
+--  cosmetic difference.
+--
+--  Every producing method therefore ends with the same three steps: compute the
+--  numerator and denominator, build a zero from the fields (`n - n`, so the
+--  method stays payload-generic — an annotated `(0 :: Integer)` would pin it to
+--  `Integer`, the same reason `negate` builds its zero this way), and if the
+--  denominator is negative negate BOTH fields with the payload's own binary
+--  `-`. `(+)` needs it only because an INPUT may violate the invariant; `*`,
+--  `-`, `/` and `recip` can produce a negative denominator themselves.
+--
+--  Reduction is deliberately absent: `1/2 + 1/3` stays `5/6` and
+--  `numerator`/`denominator` of an unreduced intermediate report the
+--  unreduced pair. `gcd` is Task 4's work and needs `Integral`.
 
 --  `Ord` encodes an order as `-1`/`0`/`1` (see the class declaration above).
 --  `compare` is the class's own method; `<`, `<=`, `>`, `>=`, `min` and `max`
@@ -885,11 +920,16 @@ instance Ord (Ratio a) where {
 --  complete when the routing is fixed.
 --
 --  `signum` spells its `1` as `(1 :: Integer)`, so that method alone is typed
---  at an `Integer` field — the value `Rational` needs. A field-typed one cannot
---  be built without `fromInteger`, which is exactly what this task omits (next
---  paragraph); the instance therefore answers `signum` for `Ratio Integer` and
---  reports "cannot unify value type Int with Integer" for `Ratio Int`. That is
---  a loud, local limit, not a wrong value.
+--  at an `Integer` field. This is a TASK 7b GAP, NOT a consequence of A2: A2 is
+--  about `Ratio a` carrying no `Integral a =>` context, and it has nothing to
+--  do with this. GHC accepts `signum :: Ratio Int -> Ratio Int` and answers
+--  `signum (3 % 4) = 1 % 1` at `Ratio Int`; the reason rill cannot is that a
+--  field-typed `1` needs `fromInteger :: Integer -> a`, which this task omits
+--  (next paragraph) because the Prelude still declares the signature `Int -> a`.
+--  So the instance answers `signum` for `Ratio Integer` and reports "cannot
+--  unify value type Int with Integer" for `Ratio Int` — a loud, local limit,
+--  and a separate row under Task 7b. Adding `fromInteger` removes it; relaxing
+--  or correcting the signature cannot.
 --
 --  `fromInteger` is DELIBERATELY OMITTED. The Prelude still declares it
 --  `fromInteger : Int -> a`, so `fromInteger n = Ratio { num: n, den: 1 }`
@@ -902,9 +942,9 @@ instance Ord (Ratio a) where {
 --  the wrong value. Stage 7b's `fromInteger : Integer -> a` corrects the
 --  signature and adds the body.
 instance Num (Ratio a) where {
-    (+) x y = Ratio { num: x.num * y.den + y.num * x.den, den: x.den * y.den };
-    (-) x y = Ratio { num: x.num * y.den - y.num * x.den, den: x.den * y.den };
-    (*) x y = Ratio { num: x.num * y.num, den: x.den * y.den };
+    (+) x y = let n = x.num * y.den + y.num * x.den in let d = x.den * y.den in let z = d - d in if d < z then Ratio { num: z - n, den: z - d } else Ratio { num: n, den: d };
+    (-) x y = let n = x.num * y.den - y.num * x.den in let d = x.den * y.den in let z = d - d in if d < z then Ratio { num: z - n, den: z - d } else Ratio { num: n, den: d };
+    (*) x y = let n = x.num * y.num in let d = x.den * y.den in let z = d - d in if d < z then Ratio { num: z - n, den: z - d } else Ratio { num: n, den: d };
     negate x = let z = x.num - x.num in Ratio { num: z - x.num, den: x.den };
     abs x = Ratio { num: let z = x.num - x.num in if x.num < z then z - x.num else x.num, den: let z = x.den - x.den in if x.den < z then z - x.den else x.den };
     signum x = Ratio { num: let z = x.num - x.num in let one = z + (1 :: Integer) in if x.num < z then z - one else if x.num > z then one else z, den: (1 :: Integer) };
@@ -912,11 +952,17 @@ instance Num (Ratio a) where {
 
 --  `(/)` multiplies by the reciprocal: `(n1/d1) / (n2/d2) = (n1*d2)/(d1*n2)`.
 --  `recip` swaps the fields (the `Recip` KERNEL has no IR instruction either).
+--  Both NORMALISE THE SIGN and FAULT on a zero denominator — see the
+--  normalisation note above; a zero denominator is a fault because H2010's
+--  `Ratio` is a partial construction (GHC: "Ratio has zero denominator").
+--  `error` is Prelude §9.1's `error :: String -> a`, so the fault arm has the
+--  method's own type and the branch typechecks as it does in GHC.
+--
 --  No `fromRational` here: the class does not declare that method yet (stage
 --  7b adds it together with the literal rule that needs it).
 instance Fractional (Ratio a) where {
-    (/) x y = Ratio { num: x.num * y.den, den: x.den * y.num };
-    recip x = Ratio { num: x.den, den: x.num };
+    (/) x y = let n = x.num * y.den in let d = x.den * y.num in let z = d - d in if d == z then error "Ratio has zero denominator" else if d < z then Ratio { num: z - n, den: z - d } else Ratio { num: n, den: d };
+    recip x = let d = x.num in let z = d - d in if d == z then error "Ratio has zero denominator" else if d < z then Ratio { num: z - x.den, den: z - d } else Ratio { num: x.den, den: d };
 }
 
 --  A buffer is an ordinary value and a NUMERIC one: `Buffer` is a subclass of

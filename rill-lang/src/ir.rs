@@ -612,6 +612,18 @@ pub enum ValueInstr {
     /// non-exhaustive). The run fails when the latch is consumed by the
     /// entry-fragment runner.
     ValueSetError,
+    /// `error msg` — Haskell 2010 Prelude §9.1's `error :: String -> a`, the
+    /// value track's only source-level BOTTOM. The register `src` holds the
+    /// message as a `Value::String`; the instruction latches the run's fault
+    /// with that text (the same clean channel the array holes use) and leaves
+    /// `dst` unset, because a faulting expression has no value. It allocates
+    /// nothing on the successful path — there is no successful path.
+    ValueFault {
+        /// Destination value register (left unset — never read).
+        dst: usize,
+        /// Value register holding the message.
+        src: usize,
+    },
     /// Latches the clean "array: undefined array element" fault. The only
     /// ever-instantiated copy lives in the program's synthetic hole fragment
     /// (see [`Ir::array_hole_frag`]) — forcing an unlisted position of an
