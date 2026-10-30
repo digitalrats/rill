@@ -250,12 +250,11 @@ fn every_arithmetic_method_keeps_the_denominator_positive() {
 }
 
 #[test]
-fn ratio_negate_and_signum_avoid_the_missing_kernels() {
-    // The `negate`/`signum` KERNELS have no IR instruction yet ("kernel
-    // `Signum`, which has no IR instruction yet", design §3.9) and a bare `abs`
-    // call is routed to the buffer unary path ("`abs` signal argument must be a
-    // Buffer"). The instance's own equations therefore spell the results with
-    // `-`, `+` and `<`, which Integer has.
+fn ratio_negate_and_signum_use_the_instances_own_equations() {
+    // A `Ratio` is a two-`Integer` record, so H2010's `negate`/`abs`/`signum`
+    // for it are ordinary equations over its fields — not the primitive
+    // kernels (those serve `Int`/`Integer`/`Double`/`Buffer`). The instance
+    // spells the results with `-`, `+` and `<`, which `Integer` has.
     assert_eq!(
         run("r = Ratio { num: (3 :: Integer), den: (4 :: Integer) };\nmain = do { write (Just (show_integer ((negate r).num))) stdout; write (Just \"/\") stdout; write (Just (show_integer ((negate r).den))) stdout; return () };"),
         "-3/4"

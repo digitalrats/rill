@@ -853,171 +853,138 @@ fn every_fragment_slot_takes_its_methods_arguments() {
 }
 
 // ---------------------------------------------------------------------------
-// §3.9: the missing kernels are visible
+// §3.9: the six kernels are implemented, so the report is EMPTY
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_unimplemented_kernel_list_is_exactly_the_six_design_names() {
-    // `Num Int` legitimately declares `signum`, `fromInteger`, … so the
-    // dictionary MUST be built with those slots. The stage reports them rather
-    // than hiding them; stage 7's checklist is this list, pinned so it cannot
-    // drift.
+fn the_section_3_9_gap_list_is_empty_because_every_kernel_executes() {
+    // Design §3.9's six kernels (`Ord.compare`, `Num.negate`, scalar `Num.abs`,
+    // `Num.signum`, `Num.fromInteger`, `Fractional.recip`) now all have IR
+    // instructions, so nothing is reported. The dictionary slots are still
+    // BUILT — they are the same `DictSlot::Kernel` entries, they just execute.
     let ir = ir_of("div a b :: Double -> Double -> Double = (/) a b;\nmain = div 1.0 2.0;");
     let missing = missing_kernels(&ir);
-    let mut kernels: Vec<KernelId> = missing.iter().map(|m| m.kernel).collect();
-    kernels.sort();
-    kernels.dedup();
-    // `KernelId`'s declaration order IS this list's order.
     assert_eq!(
-        kernels,
-        vec![
-            KernelId::Compare,
-            KernelId::Negate,
-            KernelId::Abs,
-            KernelId::Signum,
-            KernelId::FromInteger,
-            KernelId::Recip,
-        ],
-        "dividing once reaches every one of design §3.9's six missing kernels \
-         (`Ord.compare`, `Num.negate`, scalar `Num.abs`, `Num.signum`, \
-         `Num.fromInteger`, `Fractional.recip`); missing = {missing:?}"
+        missing,
+        Vec::<MissingKernel>::new(),
+        "design §3.9's gap list is empty: every kernel has an instruction"
     );
-    assert_eq!(missing.len(), 6, "one hole per §3.9 name: {missing:?}");
-    // Every reported entry names the class, type and METHOD the hole belongs to,
-    // so stage 4 can never return a silent hole.
-    for m in &missing {
-        assert!(
-            m.class == "Num" || m.class == "Ord" || m.class == "Fractional",
-            "unexpected class in the report: {m:?}"
-        );
-        assert_eq!(
-            m.ty_key, "Double",
-            "the report names the instance key: {m:?}"
-        );
-        assert!(
-            ["compare", "negate", "abs", "signum", "fromInteger", "recip"]
-                .contains(&m.method.as_str()),
-            "unexpected method in the report: {m:?}"
-        );
-        // The slot index must address the method the report names.
-        let desc = ir
-            .dicts
-            .iter()
-            .find(|d| d.class == m.class && d.ty_key == m.ty_key)
-            .unwrap();
-        assert_eq!(
-            desc.method_names.get(m.slot).map(String::as_str),
-            Some(m.method.as_str()),
-            "the reported slot index must address its method: {m:?}"
-        );
-        assert_eq!(desc.methods.get(m.slot), Some(&DictSlot::Kernel(m.kernel)));
-    }
-    // The slots ARE in the built table: a report of a hole that was not built
-    // would be lying about the dictionary.
+    // The slots ARE in the built table, and each names the kernel the class
+    // declares. A "no holes" report that came from DROPPING the slots would be
+    // lying — this is the assertion that separates the two.
     let num = ir
         .dicts
         .iter()
         .find(|d| d.class == "Num" && d.ty_key == "Double")
         .expect("`Num Double` dictionary");
+    for kernel in [
+        KernelId::Negate,
+        KernelId::Abs,
+        KernelId::Signum,
+        KernelId::FromInteger,
+    ] {
+        assert!(
+            num.methods.contains(&DictSlot::Kernel(kernel)),
+            "`{kernel:?}` is a kernel slot of `Num Double`, not a hole and not absent"
+        );
+    }
+    let ord = ir
+        .dicts
+        .iter()
+        .find(|d| d.class == "Ord" && d.ty_key == "Double")
+        .expect("`Ord Double` dictionary");
     assert!(
-        num.methods.contains(&DictSlot::Kernel(KernelId::Signum)),
-        "the `signum` slot must exist so §3.9's gap is visible, not dropped"
+        ord.methods.contains(&DictSlot::Kernel(KernelId::Compare)),
+        "`compare` is a kernel slot of `Ord Double`"
     );
+    // `Ord`'s default-body methods are still FRAGMENTS, never kernels: they have
+    // real bodies, which is why implementing `compare` did not absorb them.
+    let min_slot = ord
+        .method_names
+        .iter()
+        .position(|m| m == "min")
+        .expect("`min` is an `Ord` method");
     assert!(
-        num.methods
-            .contains(&DictSlot::Kernel(KernelId::FromInteger)),
-        "`fromInteger` must exist for literal elaboration (design §3.6)"
+        matches!(ord.methods[min_slot], DictSlot::Fragment { .. }),
+        "`min` is a default body, so its slot is a fragment"
     );
 }
 
 #[test]
-fn the_recip_and_compare_holes_appear_on_the_classes_that_declare_them() {
-    // `Recip` belongs to `Fractional`, `Compare` to `Ord` — so a program that
-    // divides and compares reports both, each under its own class. This is the
-    // assertion that a hole cannot be attributed to the wrong dictionary.
+fn the_recip_and_compare_kernels_are_attributed_to_their_own_classes() {
+    // `Recip` belongs to `Fractional`, `Compare` to `Ord`. Implementing them must
+    // not have moved either slot to another dictionary — the assertion that the
+    // kernel still sits under the class that declares it.
     let ir = ir_of(
         "div a b :: Double -> Double -> Double = (/) a b;\n\
          le a b :: Double -> Double -> Bool = (<) a b;\n\
          main = div 1.0 2.0;",
     );
-    let missing = missing_kernels(&ir);
-    let recip = missing
-        .iter()
-        .find(|m| m.method == "recip")
-        .expect("`Fractional`'s `recip` must be reported");
-    assert_eq!(recip.class, "Fractional");
-    assert_eq!(recip.kernel, KernelId::Recip);
-    let compare = missing
-        .iter()
-        .find(|m| m.method == "compare")
-        .expect("`Ord`'s `compare` must be reported");
-    assert_eq!(compare.class, "Ord");
-    assert_eq!(compare.kernel, KernelId::Compare);
-    // `Ord`'s default-body methods are NOT holes: they are real fragments.
     assert!(
-        !missing
-            .iter()
-            .any(|m| m.method == "min" || m.method == "max"),
-        "`min`/`max` are default bodies, not missing kernels: {missing:?}"
+        missing_kernels(&ir).is_empty(),
+        "every `Fractional`/`Ord` kernel executes now"
+    );
+    let frac = ir
+        .dicts
+        .iter()
+        .find(|d| d.class == "Fractional" && d.ty_key == "Double")
+        .expect("`Fractional Double` dictionary");
+    assert!(
+        frac.methods.contains(&DictSlot::Kernel(KernelId::Recip)),
+        "`recip` is `Fractional`'s kernel"
+    );
+    let ord = ir
+        .dicts
+        .iter()
+        .find(|d| d.class == "Ord" && d.ty_key == "Double")
+        .expect("`Ord Double` dictionary");
+    assert!(
+        ord.methods.contains(&DictSlot::Kernel(KernelId::Compare)),
+        "`compare` is `Ord`'s kernel"
     );
     // Dividing once yields the whole numeric chain, so the exposed world table
-    // reports the same holes.
+    // reports no holes either.
     let world = eval("", "(/) 1.0 2.0").expect("runs");
     assert_eq!(world.dicts_len(), 4, "Eq, Ord, Num, Fractional");
     assert_eq!(
-        world
-            .missing_kernels()
-            .into_iter()
-            .map(|m| m.method)
-            .collect::<Vec<_>>(),
-        missing.iter().map(|m| m.method.clone()).collect::<Vec<_>>(),
+        world.missing_kernels(),
+        Vec::<MissingKernel>::new(),
         "the world's report must equal the IR's"
     );
 }
 
 #[test]
-fn scalar_abs_is_the_one_partial_kernel_and_buffers_have_it() {
-    // `abs` exists for buffers (`ValueBufferUn`) but not for scalars, so it is
-    // in the report for a scalar instance and absent for a buffer one. This is
-    // the assertion that keeps `has_instruction` honest about operand kinds.
+fn scalar_and_buffer_abs_both_have_an_instruction_now() {
+    // `abs` was the one PARTIAL kernel (`ValueBufferUn` for buffers, nothing for
+    // scalars). The single `ValueAbs` instruction serves both, because it
+    // dispatches on the OPERAND — so neither instance reports a hole, and the
+    // buffer `Num` dictionary is still keyed by its applied head.
     let scalar = ir_of("f x :: Double -> Double = abs x;\nmain = 1.0;");
-    let scalar_missing: Vec<KernelId> = missing_kernels(&scalar)
-        .into_iter()
-        .map(|m| m.kernel)
-        .collect();
     assert!(
-        scalar_missing.contains(&KernelId::Abs),
-        "scalar `abs` has no instruction; report = {scalar_missing:?}"
+        missing_kernels(&scalar).is_empty(),
+        "scalar `abs` executes now; report = {:?}",
+        missing_kernels(&scalar)
     );
 
-    // The same operation over a buffer: `abs` is implemented there.
     let buffer = ir_of("f x :: FixedBuffer Double -> FixedBuffer Double = abs x;\nmain = 1.0;");
-    let buffer_missing: Vec<KernelId> = missing_kernels(&buffer)
-        .into_iter()
-        .map(|m| m.kernel)
-        .collect();
     assert!(
-        !buffer_missing.contains(&KernelId::Abs),
-        "buffer `abs` IS implemented, so it must not be reported; report = {buffer_missing:?}"
+        missing_kernels(&buffer).is_empty(),
+        "buffer `abs` executes too, through the same instruction; report = {:?}",
+        missing_kernels(&buffer)
     );
     assert!(
         has(&buffer, "Num", "FixedBuffer Double"),
         "the buffer `Num` dictionary is keyed by its applied head, table = {:?}",
         table(&buffer)
     );
-    // `Negate` is missing for buffers too: no primitive instance binds
-    // `UnOp::Neg`, so the slot could not execute even though the instruction
-    // exists for a different operation family.
-    assert!(
-        buffer_missing.contains(&KernelId::Negate),
-        "buffer `negate` is still unimplemented; report = {buffer_missing:?}"
-    );
 }
 
 #[test]
-fn the_report_has_one_entry_per_slot_not_per_call_site() {
-    // Many `signum` call sites and one dictionary: the report describes the
-    // TABLE, so each hole appears once, at the slot index its class declares.
+fn the_report_has_no_entries_at_all_now() {
+    // Many `signum` call sites and one dictionary. The report describes the
+    // TABLE, and the table has no holes: implementing the kernel closed the one
+    // entry three call sites used to share. A per-CALL-SITE report would have
+    // been three entries, so this also pins that the shape is per-slot.
     let ir = ir_of(
         r#"
 a x :: Double -> Double = signum x;
@@ -1027,21 +994,26 @@ main = 1.0;
 "#,
     );
     let missing = missing_kernels(&ir);
-    let signum: Vec<&MissingKernel> = missing.iter().filter(|m| m.method == "signum").collect();
     assert_eq!(
-        signum.len(),
-        1,
-        "three call sites, one dictionary, one hole; missing = {missing:?}"
+        missing,
+        Vec::<MissingKernel>::new(),
+        "three call sites, one dictionary, no holes; missing = {missing:?}"
     );
+    // The `signum` slot still exists in the table at its declared index.
     let desc = ir
         .dicts
         .iter()
         .find(|d| d.class == "Num" && d.ty_key == "Double")
         .expect("`Num Double`");
+    let signum = desc
+        .method_names
+        .iter()
+        .position(|m| m == "signum")
+        .expect("`signum` is a `Num` method");
     assert_eq!(
-        desc.method_names.get(signum[0].slot).map(String::as_str),
-        Some("signum"),
-        "the reported slot index must address the method it names"
+        desc.methods.get(signum),
+        Some(&DictSlot::Kernel(KernelId::Signum)),
+        "the slot is still built; it simply executes now"
     );
 }
 

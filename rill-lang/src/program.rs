@@ -678,12 +678,12 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
     }
 
     /// Every `(class, type, method)` in the table whose slot names a kernel with
-    /// no IR instruction yet (design §3.9), in table order.
+    /// no IR instruction, in table order.
     ///
-    /// A primitive instance may legitimately declare such a method (`Num Int`
-    /// has `signum`), so the dictionary is built with the slot; this report is
-    /// how the gap stays visible instead of becoming a silent hole at slot
-    /// projection. Stage 7's checklist is exactly this list.
+    /// Empty for every program today: design §3.9's six kernels all execute, so
+    /// there is no hole to report. The report is kept because a *future* kernel
+    /// may again be partial — stage 4 (slot projection) must never return such a
+    /// slot as if it worked.
     pub fn missing_kernels(&self) -> Vec<crate::kernels::MissingKernel> {
         crate::kernels::missing_kernels_in(&self.dict_descs)
     }

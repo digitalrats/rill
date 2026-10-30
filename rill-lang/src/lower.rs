@@ -229,6 +229,12 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueListLit { .. }
             | ValueInstr::ValueMapLit { .. }
             | ValueInstr::ValueCompare { .. }
+            | ValueInstr::ValueCompare3 { .. }
+            | ValueInstr::ValueNegate { .. }
+            | ValueInstr::ValueAbs { .. }
+            | ValueInstr::ValueSignum { .. }
+            | ValueInstr::ValueRecip { .. }
+            | ValueInstr::ValueFromInteger { .. }
             | ValueInstr::ValueNot { .. }
             | ValueInstr::ValueCallBuiltin { .. }
             | ValueInstr::ValueLazy { .. }
@@ -2451,8 +2457,21 @@ impl<'a> Lowerer<'a> {
                     let y = self.emit_smooth(x, ms);
                     return Ok((y, self.env.buffer_vty()));
                 }
-                // Unary math over a Buffer (`abs _`, `sin i1`): a Buffer-typed operand
-                // lowers to `ValueBufferUn`.
+                // Unary math over a Buffer (`sin i1`, `sqrt x`). These remain
+                // BY NAME for now: they are `Floating` methods in Haskell 2010
+                // (§6.4.4), and this stage adds the `Ord`/`Num`/`Fractional`
+                // kernels but no `Floating` class — so there is no
+                // `sin :: Floating a => a -> a` to resolve through and the
+                // branch is the only surface they have.
+                //
+                // OPEN DEFECT (recorded, with a reproduction): the same shape
+                // this task fixed for `abs`. `sin 1.0` is rejected with "`sin`
+                // signal argument must be a Buffer" where GHC returns `0.841…`,
+                // because a by-name branch in lowering is a buffer branch in
+                // operator lowering (`AGENTS.md` forbids it). The fix is the
+                // `Floating` class plus `Floating` kernels whose execution
+                // dispatches on the operand, at which point this arm is deleted —
+                // exactly what `abs` did here. Owner: the `Floating`-class stage.
                 if let Some(op) = match name.as_str() {
                     "sin" => Some(UnOp::Sin),
                     "cos" => Some(UnOp::Cos),
@@ -2461,7 +2480,6 @@ impl<'a> Lowerer<'a> {
                     "exp" => Some(UnOp::Exp),
                     "ln" => Some(UnOp::Ln),
                     "tanh" => Some(UnOp::Tanh),
-                    "abs" => Some(UnOp::Abs),
                     _ => None,
                 } {
                     if call_args.len() != 1 {
@@ -6344,26 +6362,134 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ret))
             }
-            // `abs` over a buffer is `ValueBufferUn`; the SCALAR form has no
-            // instruction yet (design §3.9).
-            KernelId::Abs if self.env.instance_key_is_buffer(ty_name) => {
+            // The unary numeric kernels: `negate`, `abs`, `signum` and `recip`.
+            // ONE instruction each, whose EXECUTION dispatches on the operand
+            // kind — the same shape `+` has. A buffer operand lowers to the same
+            // instruction (the interpreter runs the whole-block slice path); no
+            // branch on the instance's kind is needed, and the by-name `abs`
+            // branch is gone.
+            unary @ (KernelId::Negate | KernelId::Abs | KernelId::Signum | KernelId::Recip) => {
                 if arg_regs.is_empty() {
                     return Err(CompileError::Type {
-                        msg: format!("`{name}` expects 1 argument"),
+                        msg: format!("`{name}` expects 1 argument, got 0"),
                         span,
                     });
                 }
-                let a = self.buffer_operand(arg_regs[0], &arg_tys[0])?;
+                let (src, src_ty) = (arg_regs[0], &arg_tys[0]);
+                // A buffer instance's operand is a buffer; `buffer_operand`
+                // materializes a scalar into a constant block when the register
+                // arrived without a buffer handle, so the instruction always
+                // receives a real `Value::Buffer`.
+                let src = if self.env.instance_key_is_buffer(ty_name) {
+                    self.buffer_operand(src, src_ty)?
+                } else {
+                    src
+                };
+                // `recip` is `Fractional`'s: its result is a `Double` (there is
+                // no `Fractional Int`/`Integer`), and a buffer `Fractional`
+                // instance does not exist yet, so a buffer operand here is a
+                // type error rather than a silent scalar.
+                let ret = if matches!(unary, KernelId::Recip) {
+                    ValueTy::Double
+                } else {
+                    // The result keeps the OPERAND's track, and a buffer's track
+                    // is the buffer.
+                    match src_ty {
+                        ValueTy::Int => ValueTy::Int,
+                        ValueTy::Integer => ValueTy::Integer,
+                        ValueTy::Buffer(_) => self.env.buffer_vty(),
+                        _ => ValueTy::Double,
+                    }
+                };
+                // The instance key is the authority for a buffer: the solved
+                // instance fixes the type, and `arg_tys` may be a `Var` the
+                // lowering could not resolve. `instance_key_is_buffer` asks the
+                // registry, so no spelling list lives here.
+                let ret = if self.env.instance_key_is_buffer(ty_name)
+                    && !matches!(unary, KernelId::Recip)
+                {
+                    self.env.buffer_vty()
+                } else {
+                    ret
+                };
                 let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueBufferUn {
-                    dst,
-                    op: crate::ir::UnOp::Abs,
-                    src: a,
+                self.emit_value(match unary {
+                    KernelId::Negate => ValueInstr::ValueNegate { dst, src },
+                    KernelId::Abs => ValueInstr::ValueAbs { dst, src },
+                    KernelId::Signum => ValueInstr::ValueSignum { dst, src },
+                    KernelId::Recip => ValueInstr::ValueRecip { dst, src },
+                    _ => unreachable!("only the unary numeric kernels reach here"),
                 });
-                Ok((dst, self.env.buffer_vty()))
+                Ok((dst, ret))
             }
-            // A kernel with no IR instruction yet (design §3.9). Reported, never
-            // executed, and named so the gap cannot be mistaken for a typo.
+            // `compare a b`: the three-way order as an `Int` (recorded
+            // divergence A8 — Haskell 2010 returns `Ordering`, which rill does
+            // not have yet).
+            KernelId::Compare => {
+                if arg_regs.len() < 2 {
+                    return Err(CompileError::Type {
+                        msg: format!("`{name}` expects 2 arguments, got {}", arg_regs.len()),
+                        span,
+                    });
+                }
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueCompare3 {
+                    dst,
+                    a: arg_regs[0],
+                    b: arg_regs[1],
+                });
+                Ok((dst, ValueTy::Int))
+            }
+            // `fromInteger n`: widen `n` to the instance's type. The instance
+            // decided the type, so `ty_name` is authoritative — an unbound `dst`
+            // could not tell `Integer` from `Double` from a buffer.
+            //
+            // `Int` is NOT served by the kernel: the argument is already an
+            // `Int` (its literals were truncated at their own `ValueConstInt`
+            // site through `literal_to_i64`, the ONE truncation boundary), so
+            // the conversion is the identity and a copy is emitted. A `Ratio`
+            // target is not served either: its `fromInteger` is a SOURCE
+            // equation, so it never reaches a kernel-backed instance.
+            KernelId::FromInteger => {
+                if arg_regs.is_empty() {
+                    return Err(CompileError::Type {
+                        msg: format!("`{name}` expects 1 argument, got 0"),
+                        span,
+                    });
+                }
+                let src = arg_regs[0];
+                let dst = self.fresh_value_reg();
+                let is_buffer = self.env.instance_key_is_buffer(ty_name);
+                let target = if is_buffer {
+                    Some(crate::ir::ValueTyTag::Buffer)
+                } else {
+                    match ty_name.split(' ').next().unwrap_or(ty_name) {
+                        "Int" => None,
+                        "Integer" => Some(crate::ir::ValueTyTag::Integer),
+                        _ => Some(crate::ir::ValueTyTag::Double),
+                    }
+                };
+                let ret = match target {
+                    None => ValueTy::Int,
+                    Some(crate::ir::ValueTyTag::Integer) => ValueTy::Integer,
+                    Some(crate::ir::ValueTyTag::Buffer) => self.env.buffer_vty(),
+                    Some(crate::ir::ValueTyTag::Double) => ValueTy::Double,
+                };
+                match target {
+                    // The identity: `fromInteger :: Int -> Int`. No conversion,
+                    // no second truncation site.
+                    None => self.emit_value(ValueInstr::ValueCopy { dst, src }),
+                    Some(target) => {
+                        self.emit_value(ValueInstr::ValueFromInteger { dst, src, target })
+                    }
+                }
+                Ok((dst, ret))
+            }
+            // A kernel with no IR instruction. There is none today — this arm
+            // exists so a future `KernelId` variant is REPORTED here rather than
+            // silently mis-lowered, and `has_instruction`'s exhaustive match
+            // means such a variant also fails to compile until it is classified.
+            #[allow(unreachable_patterns)]
             other => Err(CompileError::Type {
                 msg: format!(
                     "primitive method `{class_name}.{name}` for `{ty_name}` selects kernel \
@@ -9461,6 +9587,36 @@ impl<'a> Lowerer<'a> {
             });
             return Ok(vec![dst]);
         }
+        // Unary numeric CLASS methods (`abs`, `negate`, `signum`) in a signal
+        // position: emit the SAME value-track kernel instruction the value track
+        // emits, so the OPERAND dispatch decides the behaviour (a `Buffer` →
+        // the whole-block `abs_slice` / element-wise path, a scalar → the scalar
+        // operation). The lookup is the ONE `(class, method) → kernel` table, not
+        // a spelling list — which is what keeps `abs` from being a
+        // buffer-specific name branch in THIS lowering path too.
+        if let Some(kernel) = crate::kernels::kernel_for_method("Num", name) {
+            if matches!(
+                kernel,
+                crate::arena::KernelId::Abs
+                    | crate::arena::KernelId::Negate
+                    | crate::arena::KernelId::Signum
+            ) {
+                if args.len() != 1 {
+                    return Err(CompileError::Type {
+                        msg: format!("`{name}` expects 1 argument, got {}", args.len()),
+                        span: crate::error::Span::new(0, 0),
+                    });
+                }
+                let dst = self.fresh_value_reg();
+                let src = args[0];
+                self.emit_value(match kernel {
+                    crate::arena::KernelId::Abs => ValueInstr::ValueAbs { dst, src },
+                    crate::arena::KernelId::Negate => ValueInstr::ValueNegate { dst, src },
+                    _ => ValueInstr::ValueSignum { dst, src },
+                });
+                return Ok(vec![dst]);
+            }
+        }
         let un = match name {
             "sin" => Some(UnOp::Sin),
             "cos" => Some(UnOp::Cos),
@@ -9469,7 +9625,6 @@ impl<'a> Lowerer<'a> {
             "exp" => Some(UnOp::Exp),
             "ln" => Some(UnOp::Ln),
             "tanh" => Some(UnOp::Tanh),
-            "abs" => Some(UnOp::Abs),
             _ => None,
         };
         if let Some(op) = un {

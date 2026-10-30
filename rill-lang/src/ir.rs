@@ -283,6 +283,35 @@ pub enum CmpOp {
     Ge,
 }
 
+/// The numeric TRACK a [`ValueInstr::ValueFromInteger`] builds its result on.
+///
+/// `fromInteger`'s instance decides the type, and an unbound `dst` register
+/// cannot, so the target travels with the instruction.
+///
+/// **There is deliberately no `Int` variant.** `Int` is the one type whose
+/// conversion from `Integer` is a TRUNCATION, and Haskell 2010's truncation
+/// lives in exactly one place: `literal_to_i64` (design §2.5: "Two places doing
+/// the same conversion would be the dual representation §0 forbids"). Lowering
+/// therefore never asks this kernel for an `Int`: the argument of
+/// `fromInteger :: Int -> a` applied at `Int` is already an `Int`, so the
+/// instruction is just a copy (`ValueCopy`) and no conversion happens at all.
+///
+/// **There is no `Ratio` variant either**, for the same "one representation"
+/// reason: `Ratio`'s `fromInteger` is a SOURCE equation
+/// (`fromInteger n = Ratio { num: n, den: 1 }`), so a `Ratio` target is built
+/// from ordinary record construction, never from this instruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueTyTag {
+    /// `Integer`: arbitrary precision, exact — never through `f64`.
+    Integer,
+    /// `Double`: correctly rounded (`Int as f64`, or the correctly rounded
+    /// decimal parse of an `Integer`).
+    Double,
+    /// A buffer type (`FixedBuffer elem`): the whole block filled with the
+    /// value, i.e. the `Num (FixedBuffer e)` instance's `fromInteger`.
+    Buffer,
+}
+
 /// A straight-line run of value instructions ending in a terminator.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValueBlock {
@@ -470,6 +499,98 @@ pub enum ValueInstr {
         a: usize,
         /// Right operand value register.
         b: usize,
+    },
+    /// `negate x`: the additive inverse, on the operand's own numeric track.
+    ///
+    /// Dispatches on the OPERAND, never on the method name (the shape `+`
+    /// already has): an `Int` computes `0i64.wrapping_sub(x)` and yields an
+    /// `Int`, an `Integer` computes exactly and yields an `Integer`, a `Double`
+    /// negates and yields a `Double`, and a `Buffer` negates the whole block
+    /// element-wise through the `UnOp::Neg` slice path.
+    ///
+    /// A `Ratio` never reaches here: its `negate` is a source equation
+    /// (Haskell 2010's `negate (x :% y) = (-x) :% y`).
+    ValueNegate {
+        /// Destination value register (the result, on the operand's track).
+        dst: usize,
+        /// Operand value register.
+        src: usize,
+    },
+    /// `abs x`: the magnitude, on the operand's own numeric track.
+    ///
+    /// Dispatches on the OPERAND: `Int` wraps (`abs i64::MIN` stays
+    /// `i64::MIN`, which is what GHC 9.10.3 prints), `Integer` stays exact,
+    /// `Double` is `f64::abs`, and a `Buffer` runs the SAME
+    /// `abs_slice::<T, 4, ScalarVector4<T>>` the by-name branch used — the
+    /// function is a `ScalarVector4` loop, so routing it from this instruction
+    /// is byte-identical to routing it from lowering's buffer branch.
+    ValueAbs {
+        /// Destination value register (the result, on the operand's track).
+        dst: usize,
+        /// Operand value register.
+        src: usize,
+    },
+    /// `signum x`: `-1`, `0` or `1` of the operand's OWN type (Haskell 2010
+    /// §6.4.4).
+    ///
+    /// Dispatches on the OPERAND: `Int` yields an `Int`, `Integer` an exact
+    /// `Integer` (no `f64` round-trip — a bignum would lose every digit past
+    /// 2^53), `Double` an `f64` (so `signum (-0.0) = -0.0` and `signum NaN =
+    /// NaN`, exactly as GHC prints them), and a `Buffer` the element-wise
+    /// result over the block.
+    ValueSignum {
+        /// Destination value register (the result, on the operand's track).
+        dst: usize,
+        /// Operand value register.
+        src: usize,
+    },
+    /// `recip x`: `1 / x`, always on the `Double` track.
+    ///
+    /// `Fractional` has no `Int`/`Integer` instance (Haskell 2010 §6.4.4), so
+    /// every reachable operand is a `Double` or a `Buffer`; an `Int` or
+    /// `Integer` operand is a lowering bug and latches a fault rather than
+    /// silently truncating `1/x`.
+    ValueRecip {
+        /// Destination value register (a `Double`, or a `Buffer`).
+        dst: usize,
+        /// Operand value register.
+        src: usize,
+    },
+    /// `compare a b`: the three-way order as an `Int` (`-1`/`0`/`1`).
+    ///
+    /// The order is [`value_cmp_ref`](crate::backend::interp::value_cmp_ref) —
+    /// the SAME structural total order `==`/`<` and the `Map`/`Set` binary
+    /// search use, so `compare a b < 0` can never disagree with `a < b`. A
+    /// `Double` therefore sorts NaN greatest and treats NaN as equal to NaN
+    /// (a genuine total order), and two values of different kinds compare by
+    /// `kind_rank`.
+    ///
+    /// **Recorded divergence (A8):** Haskell 2010 returns `Ordering`; rill has
+    /// no `Ordering` type yet, so `Ord.compare :: a -> a -> Int`.
+    ValueCompare3 {
+        /// Destination value register (an `Int`).
+        dst: usize,
+        /// Left operand value register.
+        a: usize,
+        /// Right operand value register.
+        b: usize,
+    },
+    /// `fromInteger n`: widen `n` to the instance's type — Haskell 2010
+    /// §6.4.1's `fromInteger :: Integer -> a`.
+    ///
+    /// `target` is REQUIRED: the instance decides the type and an unbound `dst`
+    /// register cannot (see [`ValueTyTag`]). The instruction accepts an `Int`
+    /// OR an `Integer` payload for the source, because the Prelude currently
+    /// declares `fromInteger : Int -> a`; Task 7 re-pins the signature at
+    /// `Integer` and the `Int` arm becomes unreachable rather than removed, so
+    /// both declaration generations are served by one instruction.
+    ValueFromInteger {
+        /// Destination value register.
+        dst: usize,
+        /// The source value register (an `Int` or an `Integer`).
+        src: usize,
+        /// The numeric track to build.
+        target: ValueTyTag,
     },
     /// Construct a record: alloc + write field refs.
     ValueConstructRecord {

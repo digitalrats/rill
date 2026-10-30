@@ -1126,6 +1126,338 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
     world.value_regs[dst] = alloc_owned(ir, world, Value::Double(result));
 }
 
+/// The unary numeric operation of a [`ValueInstr::ValueNegate`]-family
+/// instruction — the scalar half of the operand dispatch.
+///
+/// The four operations share one executor because they share one rule: the
+/// operation acts on the operand's OWN numeric track and never widens. The
+/// buffer half lives in [`exec_value_buffer_un`] and dispatches on
+/// `Value::Buffer` before this function is reached.
+#[derive(Debug, Clone, Copy)]
+enum ValueUnOp {
+    Negate,
+    Abs,
+    Signum,
+    Recip,
+}
+
+/// Whether `op` produces a `Double` regardless of the operand's track.
+fn value_un_yields_double(op: ValueUnOp) -> bool {
+    // `recip` is `Fractional`'s, and `Fractional` has no `Int`/`Integer`
+    // instance (Haskell 2010 §6.4.4), so every legal operand is a `Double`.
+    matches!(op, ValueUnOp::Recip)
+}
+
+/// Execute `ValueNegate`/`ValueAbs`/`ValueSignum`/`ValueRecip` on a SCALAR
+/// operand and store the result in `dst`.
+///
+/// Each track keeps its identity:
+///
+/// - `Int`: `negate`/`abs` wrap (`i64::MIN` is its own negation, exactly as GHC
+///   9.10.3 prints it) and `signum` yields an `Int`;
+/// - `Integer`: all three are exact — a bignum never round-trips through `f64`;
+/// - `Double`: `f64`'s own semantics, so `signum (-0.0) = -0.0`, `signum NaN =
+///   NaN`, `abs (-0.0) = 0.0` and `negate (-0.0) = 0.0`, matching GHC;
+/// - `recip` yields a `Double` on every reachable path.
+///
+/// A `Buffer` operand is handled by the caller; an ABSENT or non-numeric
+/// operand latches a fault rather than substituting a plausible number, the
+/// same policy [`exec_value_arith`] applies.
+fn exec_value_unary<T: Transcendental, const BUF: usize>(
+    ir: &Ir,
+    world: &mut WorldState<T, BUF>,
+    op: ValueUnOp,
+    dst: usize,
+    src: usize,
+    drops: &mut Vec<ArenaRef>,
+) {
+    let v = arithmetic_operand(ir, world, src, drops);
+    // Release the previous `dst` occupant AFTER the operand is read/forced, so
+    // `dst` may alias `src` (hand-written IR) without losing its value.
+    if let Some(r) = world.value_regs.get_mut(dst).and_then(|r| r.take()) {
+        drops.push(r);
+    }
+    if matches!(v, ArithmeticOperand::Bottom) {
+        world.value_regs[dst] = alloc_owned(ir, world, Value::Bottom);
+        return;
+    }
+    let result = match v {
+        ArithmeticOperand::Bottom => unreachable!("bottom is handled above"),
+        ArithmeticOperand::Absent => {
+            latch_fault(
+                ir,
+                world,
+                "unary numeric operand is absent (it produced no value)",
+            );
+            world.value_regs[dst] = None;
+            return;
+        }
+        ArithmeticOperand::Int(i) => {
+            if value_un_yields_double(op) {
+                // Unreachable for a well-lowered program (`Fractional Int` does
+                // not exist); a fault beats a silent `1/x ≈ 0`.
+                latch_fault(ir, world, "`recip` on an Int operand");
+                world.value_regs[dst] = None;
+                return;
+            }
+            let out = match op {
+                ValueUnOp::Negate => 0i64.wrapping_sub(i),
+                // `i64::MIN` has no positive counterpart; GHC's `abs` returns
+                // it unchanged, and `wrapping_abs` reproduces exactly that.
+                ValueUnOp::Abs => i.wrapping_abs(),
+                ValueUnOp::Signum => i.signum(),
+                ValueUnOp::Recip => unreachable!("checked above"),
+            };
+            Value::Int(out)
+        }
+        ArithmeticOperand::Integer(i) => {
+            if value_un_yields_double(op) {
+                latch_fault(ir, world, "`recip` on an Integer operand");
+                world.value_regs[dst] = None;
+                return;
+            }
+            // EXACT: no `f64` round-trip, which would lose every digit past
+            // 2^53 (`abs (10^28 :: Integer)` would print a rounded number).
+            // `num-bigint`'s `abs`/`signum` live on `num_traits::Signed`, which
+            // is not a direct dependency of this crate, so the sign is read off
+            // the `Sign` enum instead — the same source of truth `BigInt`'s own
+            // `Ord` uses.
+            let out = match op {
+                ValueUnOp::Negate => -i,
+                ValueUnOp::Abs => {
+                    if i.sign() == num_bigint::Sign::Minus {
+                        -i
+                    } else {
+                        i
+                    }
+                }
+                ValueUnOp::Signum => match i.sign() {
+                    num_bigint::Sign::Minus => BigInt::from(-1),
+                    num_bigint::Sign::NoSign => BigInt::from(0),
+                    num_bigint::Sign::Plus => BigInt::from(1),
+                },
+                ValueUnOp::Recip => unreachable!("checked above"),
+            };
+            Value::Integer(out)
+        }
+        ArithmeticOperand::Double(f) => Value::Double(match op {
+            ValueUnOp::Negate => -f,
+            ValueUnOp::Abs => f.abs(),
+            ValueUnOp::Signum => signum_f64(f),
+            ValueUnOp::Recip => 1.0 / f,
+        }),
+    };
+    world.value_regs[dst] = alloc_owned(ir, world, result);
+}
+
+/// Whether a value register holds a whole-buffer value, AFTER forcing it.
+fn reg_is_buffer<T: Transcendental, const BUF: usize>(
+    ir: &Ir,
+    world: &mut WorldState<T, BUF>,
+    reg: usize,
+    drops: &mut Vec<ArenaRef>,
+) -> Option<usize> {
+    let r = forced_operand(ir, world, reg, drops)?;
+    match world.arena.get(r) {
+        Some(Value::Buffer(idx)) => Some(*idx),
+        _ => None,
+    }
+}
+
+/// Execute a [`ValueInstr::ValueNegate`]-family instruction over a whole
+/// `Buffer` operand (identified by its handle index).
+///
+/// The block is copied out of the source handle into a stack scratch (the
+/// destination handle may alias the source), then transformed through
+/// [`apply_un_slice`], so the `Abs` case runs the SAME
+/// `abs_slice::<T, 4, ScalarVector4<T>>` the by-name buffer branch used.
+/// `signum`/`recip` have no `UnOp` of their own — they are the element-wise
+/// scalar operations over the block, which is the identical arithmetic.
+fn exec_value_buffer_unary<T: Transcendental, const BUF: usize>(
+    ir: &Ir,
+    world: &mut WorldState<T, BUF>,
+    op: ValueUnOp,
+    dst: usize,
+    src_idx: usize,
+) {
+    let n = world.block_len;
+    let di = buffer_index(ir, world, dst, 0);
+    let mut scratch = [T::ZERO; BUF];
+    world.buffers[src_idx].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
+    world.buffers[di].with_data_mut(|b| match op {
+        ValueUnOp::Negate => apply_un_slice(UnOp::Neg, &scratch[..n], &mut b[..n]),
+        ValueUnOp::Abs => apply_un_slice(UnOp::Abs, &scratch[..n], &mut b[..n]),
+        ValueUnOp::Signum => {
+            for (o, &x) in b[..n].iter_mut().zip(scratch[..n].iter()) {
+                *o = signum_sample(x);
+            }
+        }
+        ValueUnOp::Recip => {
+            for (o, &x) in b[..n].iter_mut().zip(scratch[..n].iter()) {
+                *o = T::ONE / x;
+            }
+        }
+    });
+    world.value_regs[dst] = alloc_owned(ir, world, Value::Buffer(di));
+}
+
+/// Haskell 2010's `signum` for a floating operand (§6.4.4), which is **not**
+/// Rust's `f64::signum`.
+///
+/// GHC 9.10.3, measured: `signum 0.0 = 0.0`, `signum (-0.0) = -0.0`, `signum
+/// NaN = NaN`, `signum INFINITY = 1.0`, `signum (-INFINITY) = -1.0`. Rust's
+/// `f64::signum` answers `1.0` for `+0.0` and `-1.0` for `-0.0`, which would
+/// make `signum 0.0` print `1.0` — a silent wrong value.
+///
+/// The shape is GHC's own:
+/// `x < 0 → -1; x == 0 → x; x > 0 → 1; otherwise → x` (the `otherwise` arm is
+/// NaN, which must stay NaN rather than becoming `1`).
+fn signum_f64(x: f64) -> f64 {
+    if x < 0.0 {
+        -1.0
+    } else if x > 0.0 {
+        1.0
+    } else {
+        // Zero keeps its sign bit (`-0.0` stays `-0.0`) and NaN stays NaN.
+        x
+    }
+}
+
+/// [`signum_f64`] on the generic sample type, so the buffer path agrees with
+/// the scalar path element for element (the `f32::signum` Rust provides would
+/// answer `1.0` for a zero sample).
+fn signum_sample<T: Transcendental>(x: T) -> T {
+    if x < T::ZERO {
+        T::ZERO - T::ONE
+    } else if x > T::ZERO {
+        T::ONE
+    } else {
+        x
+    }
+}
+
+/// Execute one value-track unary numeric instruction, dispatching on the
+/// OPERAND kind.
+///
+/// A `Buffer` operand runs the whole-block path
+/// ([`exec_value_buffer_unary`]); every other operand is a scalar on its own
+/// numeric track ([`exec_value_unary`]). The branch is on the VALUE, not on the
+/// method name: `abs` is one instruction for `Int`, `Integer`, `Double` and
+/// `Buffer`, exactly as `+` is one instruction for all four.
+///
+/// The operand is FORCED first: in lazy mode a buffer-typed binding is a thunk
+/// whose register holds a `ThunkCell`, and inspecting the register without
+/// forcing would misclassify it as a non-numeric scalar (a fault). Registers are
+/// ABSOLUTE here (`dst`/`src` already carry `+ base`).
+fn exec_value_unary_instr<T: Transcendental, const BUF: usize>(
+    ir: &Ir,
+    world: &mut WorldState<T, BUF>,
+    op: ValueUnOp,
+    dst: usize,
+    src: usize,
+    drops: &mut Vec<ArenaRef>,
+) {
+    // Force exactly as the scalar path would, then decide. `force` is
+    // idempotent (a memoized thunk is already a plain ref), so the scalar path
+    // re-reading the operand costs nothing.
+    if let Some(src_idx) = reg_is_buffer(ir, world, src, drops) {
+        exec_value_buffer_unary(ir, world, op, dst, src_idx);
+        return;
+    }
+    exec_value_unary(ir, world, op, dst, src, drops);
+}
+
+/// Execute a [`ValueInstr::ValueFromInteger`] conversion and store the result
+/// in `dst`.
+///
+/// `target` names the numeric track to build; the source is an `Int` or an
+/// `Integer` and never a `Double` (a `fromInteger` with a float argument is a
+/// lowering bug, not a rounding request).
+fn exec_value_from_integer<T: Transcendental, const BUF: usize>(
+    ir: &Ir,
+    world: &mut WorldState<T, BUF>,
+    dst: usize,
+    src: usize,
+    target: crate::ir::ValueTyTag,
+    drops: &mut Vec<ArenaRef>,
+) {
+    let v = arithmetic_operand(ir, world, src, drops);
+    // Release the previous `dst` occupant AFTER the operand is read.
+    if let Some(r) = world.value_regs.get_mut(dst).and_then(|r| r.take()) {
+        drops.push(r);
+    }
+    if matches!(v, ArithmeticOperand::Bottom) {
+        world.value_regs[dst] = alloc_owned(ir, world, Value::Bottom);
+        return;
+    }
+    // The exact `BigInt`/`i64` the target needs, computed WITHOUT an `f64`
+    // round-trip on the `Integer`/`Buffer` tracks.
+    match target {
+        crate::ir::ValueTyTag::Integer => {
+            let out = match v {
+                ArithmeticOperand::Int(i) => BigInt::from(i),
+                ArithmeticOperand::Integer(i) => i,
+                _ => {
+                    latch_fault(
+                        ir,
+                        world,
+                        "`fromInteger` needs an integer operand (an Int or an Integer)",
+                    );
+                    world.value_regs[dst] = None;
+                    return;
+                }
+            };
+            world.value_regs[dst] = alloc_owned(ir, world, Value::Integer(out));
+        }
+        crate::ir::ValueTyTag::Double => {
+            let out = match v {
+                ArithmeticOperand::Int(i) => i as f64,
+                // Correctly rounded, saturating outside `f64`'s range — the
+                // same conversion `literal_to_f64` performs at lowering time,
+                // so a literal and a computed `Integer` agree. `num_bigint`'s
+                // `to_f64` truncates the mantissa instead of rounding.
+                ArithmeticOperand::Integer(ref i) => i
+                    .to_str_radix(10)
+                    .parse::<f64>()
+                    .expect("decimal integer text always parses as f64"),
+                _ => {
+                    latch_fault(
+                        ir,
+                        world,
+                        "`fromInteger` needs an integer operand (an Int or an Integer)",
+                    );
+                    world.value_regs[dst] = None;
+                    return;
+                }
+            };
+            world.value_regs[dst] = alloc_owned(ir, world, Value::Double(out));
+        }
+        crate::ir::ValueTyTag::Buffer => {
+            let out = match v {
+                ArithmeticOperand::Int(i) => T::from_f64(i as f64),
+                ArithmeticOperand::Integer(ref i) => T::from_f64(
+                    i.to_str_radix(10)
+                        .parse::<f64>()
+                        .expect("decimal integer text always parses as f64"),
+                ),
+                _ => {
+                    latch_fault(
+                        ir,
+                        world,
+                        "`fromInteger` needs an integer operand (an Int or an Integer)",
+                    );
+                    world.value_regs[dst] = None;
+                    return;
+                }
+            };
+            let n = world.block_len;
+            let di = buffer_index(ir, world, dst, 0);
+            world.buffers[di].with_data_mut(|b| b[..n].fill(out));
+            world.value_regs[dst] = alloc_owned(ir, world, Value::Buffer(di));
+        }
+    }
+}
+
 /// Allocate a fresh `Value::Bottom` slot. `None` on arena exhaustion (a
 /// build-time budget bug — `debug_assert!` flags it; the caller falls back to
 /// a value it already holds).
@@ -1315,6 +1647,45 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             *b + base,
             drops,
         ),
+        ValueInstr::ValueNegate { dst, src } => exec_value_unary_instr(
+            ir,
+            world,
+            ValueUnOp::Negate,
+            *dst + base,
+            *src + base,
+            drops,
+        ),
+        ValueInstr::ValueAbs { dst, src } => {
+            exec_value_unary_instr(ir, world, ValueUnOp::Abs, *dst + base, *src + base, drops)
+        }
+        ValueInstr::ValueSignum { dst, src } => exec_value_unary_instr(
+            ir,
+            world,
+            ValueUnOp::Signum,
+            *dst + base,
+            *src + base,
+            drops,
+        ),
+        ValueInstr::ValueRecip { dst, src } => {
+            exec_value_unary_instr(ir, world, ValueUnOp::Recip, *dst + base, *src + base, drops)
+        }
+        ValueInstr::ValueCompare3 { dst, a, b } => {
+            let (ar, br) = (
+                forced_operand(ir, world, *a + base, drops),
+                forced_operand(ir, world, *b + base, drops),
+            );
+            let res = match (ar, br) {
+                (Some(x), Some(y)) => match (world.arena.get(x), world.arena.get(y)) {
+                    (Some(Value::Bottom), _) | (_, Some(Value::Bottom)) => Some(Value::Bottom),
+                    _ => Some(Value::Int(i64::from(value_cmp(&world.arena, x, y)))),
+                },
+                _ => None,
+            };
+            world.value_regs[*dst + base] = res.and_then(|v| alloc_owned(ir, world, v));
+        }
+        ValueInstr::ValueFromInteger { dst, src, target } => {
+            exec_value_from_integer(ir, world, *dst + base, *src + base, *target, drops)
+        }
         ValueInstr::ValueConstructRecord { dst, fields } => {
             world.value_regs[*dst + base] =
                 if let Some(refs) = read_field_refs(ir, world, fields, base) {

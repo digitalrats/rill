@@ -62,7 +62,7 @@ pub mod program_serde;
 
 pub use arena::{Arena, ArenaError, ArenaRef, DictSlot, KernelId, ThunkState, Value, ValueKind};
 pub use error::{CompileError, Span};
-pub use ir::{Ir, ValueFunc, ValueInstr, ValueLayout};
+pub use ir::{Ir, ValueFunc, ValueInstr, ValueLayout, ValueTyTag};
 pub use program::{WorldConfig, WorldState};
 pub use program_runner::{run_on_stack, ProgramRunner};
 pub use serde_def::{compile_def, RillLangDef};

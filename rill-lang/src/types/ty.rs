@@ -939,19 +939,17 @@ instance Ord (Ratio a) where {
 --  (`negate` on `Ratio Int` works; the reduced methods above do not).
 --
 --  `negate`/`abs`/`signum` are written against `<`, `-` and `+` over the fields
---  (the Report's equations, expanded) because their KERNELS have no IR
---  instruction yet ("kernel `Signum`, which has no IR instruction yet", design
---  §3.9).
+--  (the Report's equations, expanded) rather than routed through the kernels:
+--  a `Ratio` is a two-`Integer` record, and H2010's `negate`/`abs`/`signum`
+--  for it are ordinary equations, not primitive operations. (The KERNELS for
+--  these three now exist for the numeric leaf types and for buffers; a
+--  `Ratio` is deliberately not one of their operand kinds — it has a real
+--  source body, which is exactly what the class system is for.)
 --
---  `abs` is supplied because the class declares it, but NO value-track call
---  site can reach it today: a bare `abs` is routed to the buffer unary path
---  before class dispatch, so `abs r` and even `f x = abs x` with
---  `f :: Ratio Integer -> Ratio Integer` both report "`abs` signal argument
---  must be a Buffer" (MEASURED, in Strict and Complete mode alike). That is a
---  pre-existing routing defect, not a `Ratio` one — `abs (-3.0 :: Double)` is
---  rejected the same way — and it means the body below is CORRECT BY THE
---  REPORT but UNEXERCISED. It is kept rather than dropped so the instance is
---  complete when the routing is fixed.
+--  `abs` is now REACHABLE: `abs` resolves through `Num.abs` like every other
+--  method, so `abs r` inlines the body below. Before that routing fix a bare
+--  `abs` was intercepted by name in lowering and required a Buffer, so the
+--  body was correct by the Report but unexercised.
 --
 --  `signum` spells its `1` as `(1 :: Integer)`, so that method alone is typed
 --  at an `Integer` field. This is a TASK 7b GAP, NOT a consequence of A2: A2 is
@@ -985,11 +983,10 @@ instance Num (Ratio a) where {
 }
 
 --  `(/)` multiplies by the reciprocal: `(n1/d1) / (n2/d2) = (n1*d2)/(d1*n2)`.
---  `recip` swaps the fields (the `Recip` KERNEL has no IR instruction either).
---  Both go through `__ratio_percent`, so both REDUCE, keep `den > 0`, and fault
---  on a zero denominator — see the normalisation note above; a zero denominator
---  is a fault because H2010's `Ratio` is a partial construction (GHC: "Ratio
---  has zero denominator").
+--  `recip` swaps the fields. Both go through `__ratio_percent`, so both REDUCE,
+--  keep `den > 0`, and fault on a zero denominator — see the normalisation note
+--  above; a zero denominator is a fault because H2010's `Ratio` is a partial
+--  construction (GHC: "Ratio has zero denominator").
 --
 --  The fault is spelled `__fault`, NOT `error`. `error` is Prelude §9.1's
 --  ordinary, SHADOWABLE binding, and an instance body is inlined BY NAME, so

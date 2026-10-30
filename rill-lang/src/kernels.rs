@@ -15,9 +15,11 @@
 //! mapping is a different (and unavoidable) relation: one instruction serves a
 //! whole kernel, and it lives where the instruction is emitted.
 //!
-//! Design §3.9: some kernels have **no IR instruction yet**. Those are
-//! *reported*, never silently dropped — see [`has_instruction`] and
-//! [`missing_kernels`].
+//! Design §3.9's six missing kernels (`Compare`, `Negate`, scalar `Abs`,
+//! `Signum`, `FromInteger`, `Recip`) now all have IR instructions. The
+//! report machinery is kept because a *future* kernel may again be partial —
+//! [`has_instruction`] and [`missing_kernels`] surface such a gap instead of
+//! silently dropping the slot.
 
 use crate::arena::KernelId;
 use crate::ir::Ir;
@@ -63,25 +65,15 @@ pub fn kernel_for_method(class: &str, method: &str) -> Option<KernelId> {
 /// Whether `kernel` can be executed for an instance of a scalar or a buffer
 /// type.
 ///
-/// Most kernels are implemented for both operand kinds. The exceptions are the
-/// design §3.9 gaps, and one of them is *partial*:
-///
-/// * [`KernelId::Abs`] exists for buffers (`ValueBufferUn`/`UnOp::Abs`) but
-///   **not** for scalars, so it is the one kernel whose answer depends on the
-///   instance's type — `is_buffer` is the instance's kind, derived from the
-///   same registry key that selects the instance.
-/// * [`KernelId::Negate`] has no instruction for either kind: lowering has
-///   never emitted a negation *kernel*, so a buffer `negate` is unimplemented
-///   too (`UnOp::Neg` exists, but no primitive instance binds it).
-///
-/// The remaining four — [`KernelId::Compare`], [`KernelId::Signum`],
-/// [`KernelId::FromInteger`], [`KernelId::Recip`] — have no instruction at all.
-///
-/// This predicate is what keeps §3.9 **visible**: a primitive instance may
-/// legitimately declare (for example) `signum`, so the dictionary must be built
-/// with that slot; the report from [`missing_kernels`] is how the gap is
-/// surfaced instead of being hidden.
-pub fn has_instruction(kernel: KernelId, is_buffer: bool) -> bool {
+/// Every kernel is implemented for both operand kinds, and every one of them
+/// has an IR instruction — design §3.9's gap list is **empty**. The `is_buffer`
+/// parameter is kept because the report's shape still passes the instance kind
+/// through ([`MissingKernel`]), and because a future kernel may again be
+/// partial; today no argument changes the answer.
+pub fn has_instruction(kernel: KernelId, _is_buffer: bool) -> bool {
+    // Exhaustive so a new `KernelId` cannot be added without deciding whether
+    // it is executable: adding a variant here fails to compile until it is
+    // classified.
     match kernel {
         KernelId::Eq
         | KernelId::Ne
@@ -89,23 +81,24 @@ pub fn has_instruction(kernel: KernelId, is_buffer: bool) -> bool {
         | KernelId::Gt
         | KernelId::Le
         | KernelId::Ge
+        | KernelId::Compare
         | KernelId::Add
         | KernelId::Sub
         | KernelId::Mul
-        | KernelId::Div => true,
-        KernelId::Abs => is_buffer,
-        KernelId::Compare
+        | KernelId::Div
         | KernelId::Negate
+        | KernelId::Abs
         | KernelId::Signum
         | KernelId::FromInteger
-        | KernelId::Recip => false,
+        | KernelId::Recip => true,
     }
 }
 
-/// One dictionary slot whose kernel has no IR instruction yet.
+/// One dictionary slot whose kernel has no IR instruction.
 ///
-/// Machine-readable on purpose: stage 7's checklist is exactly this list, and
-/// stage 4 (slot projection) must never return such a slot as if it worked.
+/// Empty today (design §3.9's six kernels all execute), and machine-readable on
+/// purpose: a future partial kernel appears here, and stage 4 (slot projection)
+/// must never return such a slot as if it worked.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MissingKernel {
     /// The class whose dictionary owns the slot.
@@ -211,12 +204,11 @@ mod tests {
     }
 
     #[test]
-    fn exactly_the_six_section_3_9_kernels_lack_an_instruction() {
-        // Pinned so a new kernel cannot be added without deciding whether it
-        // is executable — and so stage 7's checklist cannot drift. The list is
-        // design §3.9's six names in `KernelId` declaration order; `Abs` is
-        // last-unimplemented only for scalars, which is why the filter takes
-        // the union over both operand kinds.
+    fn every_kernel_now_has_an_instruction() {
+        // Design §3.9's six gaps are CLOSED: `Compare`, `Negate`, scalar `Abs`,
+        // `Signum`, `FromInteger` and `Recip` all execute. The list is pinned
+        // (rather than asserting `is_empty` on a filtered slice) so a kernel
+        // added to `KernelId` without an instruction shows up here by name.
         let gaps: Vec<KernelId> = [
             KernelId::Eq,
             KernelId::Ne,
@@ -240,22 +232,16 @@ mod tests {
         .collect();
         assert_eq!(
             gaps,
-            vec![
-                KernelId::Compare,
-                KernelId::Negate,
-                KernelId::Abs,
-                KernelId::Signum,
-                KernelId::FromInteger,
-                KernelId::Recip,
-            ],
-            "design §3.9's missing kernels, in `KernelId` declaration order"
+            Vec::<KernelId>::new(),
+            "design §3.9's list is empty: every kernel has an IR instruction"
         );
-        // `abs` is the one PARTIAL kernel: implemented for buffers, not for
-        // scalars. That asymmetry is why the report must know the instance kind.
-        assert!(!has_instruction(KernelId::Abs, false));
+        // `abs` is no longer PARTIAL: the same instruction serves a scalar and a
+        // buffer because it dispatches on the OPERAND, not on the name.
+        assert!(has_instruction(KernelId::Abs, false));
         assert!(has_instruction(KernelId::Abs, true));
-        // `negate` is missing for buffers too: no primitive instance binds
-        // `UnOp::Neg`, so nothing would execute the slot.
-        assert!(!has_instruction(KernelId::Negate, true));
+        // `negate` now exists for buffers too (`UnOp::Neg` through the same
+        // operand dispatch).
+        assert!(has_instruction(KernelId::Negate, true));
+        assert!(has_instruction(KernelId::Negate, false));
     }
 }

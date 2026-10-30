@@ -278,8 +278,8 @@ fn an_applied_primitive_method_has_its_result_type() {
     // [Integer]) with Integer".
     //
     // This is asserted at the INFERENCE layer because it is an inference defect:
-    // `fromInteger`'s VALUE needs the `FromInteger` IR instruction (design §3.9,
-    // Task 5), so running the program would report an unrelated lowering gap.
+    // the assertion is about the inferred SCHEME, and running the program would
+    // measure the kernel instead.
     // Two targets of the SAME polymorphic method, so the answer comes from the
     // instance and not from a defaulted variable.
     assert_eq!(

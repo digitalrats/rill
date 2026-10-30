@@ -119,14 +119,14 @@ pub enum DictSlot {
 /// dispatches on its operand kinds, so `Add` serves `Num Double` and
 /// `Num (FixedBuffer a)` alike.
 ///
-/// **Implementation status.** `Eq`/`Ne`/`Lt`/`Gt`/`Le`/`Ge` are executable today
-/// (they map to the existing `ValueCompare` instruction), and `Add`/`Sub`/`Mul`/
-/// `Div` map to the existing `ValueAdd` family and `ValueBufferBin`. `Abs` exists
-/// for buffers only (`ValueBufferUn`). `Compare`, `Negate`, `Signum`,
-/// `FromInteger` and `Recip` have **no IR instruction yet** — design §3.9 puts
-/// those instructions in scope for the dictionary model, and the task that
-/// implements the kernels adds them; declaring the variants here does not
-/// pretend they run.
+/// **Implementation status.** Every variant is executable. `Eq`/`Ne`/`Lt`/`Gt`/
+/// `Le`/`Ge` map to `ValueCompare`, `Add`/`Sub`/`Mul`/`Div` to the `ValueAdd`
+/// family and `ValueBufferBin`, `Compare` to `ValueCompare3`, `FromInteger` to
+/// `ValueFromInteger`, and `Negate`/`Abs`/`Signum`/`Recip` to the
+/// `ValueNegate`/`ValueAbs`/`ValueSignum`/`ValueRecip` family — each of which
+/// dispatches on its OPERAND (scalar track or whole buffer), so one instruction
+/// serves `Num Double` and `Num (FixedBuffer a)` alike. Design §3.9's gap list
+/// is therefore empty ([`has_instruction`](crate::kernels::has_instruction)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum KernelId {
     /// `(==)`: structural equality (`ValueCompare`/`CmpOp::Eq`).
@@ -142,8 +142,7 @@ pub enum KernelId {
     /// `(>=)`: ordering predicate (`ValueCompare`/`CmpOp::Ge`).
     Ge,
     /// `compare`: the three-way order as an `Int` (`-1`/`0`/`1`) over the same
-    /// total order the predicates use. **No IR instruction yet** (design §3.9
-    /// `ValueCompare3`).
+    /// total order the predicates use (`ValueCompare3`).
     Compare,
     /// `(+)`: addition, scalar or whole-buffer element-wise.
     Add,
@@ -153,19 +152,16 @@ pub enum KernelId {
     Mul,
     /// `(/)`: division, scalar or whole-buffer element-wise.
     Div,
-    /// `negate`: unary minus. **No scalar IR instruction yet** (design §3.9);
-    /// buffers already have `UnOp::Neg`.
+    /// `negate`: unary minus, scalar or whole-buffer (`ValueNegate`).
     Negate,
-    /// `abs`: absolute value. Buffers already have `UnOp::Abs`; the **scalar**
-    /// form has no instruction yet (design §3.9).
+    /// `abs`: absolute value, scalar or whole-buffer (`ValueAbs`).
     Abs,
-    /// `signum`: sign as `-1`/`0`/`1` of the same type. **No IR instruction
-    /// yet** (design §3.9).
+    /// `signum`: sign as `-1`/`0`/`1` of the same type (`ValueSignum`).
     Signum,
-    /// `fromInteger`: widen an `Int` literal/operand to the instance's type.
-    /// **No IR instruction yet** (design §3.9) — literal elaboration needs it.
+    /// `fromInteger`: widen an `Int`/`Integer` operand to the instance's type
+    /// (`ValueFromInteger`). Literal elaboration needs it.
     FromInteger,
-    /// `recip`: `1 / x`. **No IR instruction yet** (design §3.9).
+    /// `recip`: `1 / x` (`ValueRecip`).
     Recip,
 }
 
