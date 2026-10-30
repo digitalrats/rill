@@ -160,18 +160,40 @@ pub struct Token {
     pub span: Span,
 }
 
-/// Width, in DECIMAL digits, of the exact band around zero.
+/// Allocation budget for the EXACT payload, in DECIMAL digits.
 ///
-/// A literal whose decimal magnitude lies outside `[10^-1000, 10^1000]` is
-/// past `f64`'s whole range (`f64`'s finite non-zero values live in
-/// `[5e-324, 1.8e308]`), so no `Double` consumer can tell such a value from
-/// `0` or `INFINITY`. For those the exponent is CLAMPED instead of rejected:
-/// the mantissa digits are kept exactly and only the exponent moves to the
-/// nearest value that keeps the same `f64` image and a bounded allocation.
-/// This is GHC's behaviour — `1e4294967296 :: Double` is `Infinity`, and
-/// `0.01e-9223372036854775807 :: Double` is `0.0` — and it keeps a
-/// four-billion exponent from allocating a four-gigabyte power of ten.
-const MAX_EXACT_MAG: i64 = 1000;
+/// The budget bounds the WORK a literal may demand — the significand's own
+/// digits plus the magnitude of the power of ten that scales it — not the
+/// value's magnitude. That distinction is the whole point: an earlier version
+/// banded `|value|` at `[10^-1000, 10^1000]`, which silently turned `1e2000`
+/// into `10^1000` (1001 numerator digits where GHC's `1e2000 :: Rational` has
+/// 2001) even though nothing about `1e2000` is expensive. `10^2000` is 2 KB of
+/// decimal digits; only a pathological exponent (`1e4294967296`, which would
+/// be 4 GB of digits) has to be bounded.
+///
+/// So: a literal whose total digit demand fits the budget keeps its EXACT
+/// decimal value, whatever its exponent — `1e2000`, `1e-2000` and `1e5000`
+/// are all exact. A literal that exceeds the budget is CLAMPED (see
+/// [`decimal_rational`]), which changes the AST payload; that residue is a
+/// recorded open defect (OD-F5 in the Task 6 report), owned by the
+/// `fromRational` stage, not an invisible implementation detail. The `f64`
+/// image is the same either way, because every clamped literal is far outside
+/// `f64`'s range (`[5e-324, 1.8e308]`) in the direction of its clamp — that
+/// is GHC's behaviour: `1e4294967296 :: Double` is `Infinity`,
+/// `0.01e-9223372036854775807 :: Double` is `0.0`.
+const EXACT_DIGIT_BUDGET: i64 = 100_000;
+
+/// Decimal magnitude beyond which a value is CERTAINLY outside `f64`'s range.
+///
+/// `f64`'s finite values live in `[5e-324, 1.8e308]`, so `|value| > 10^400`
+/// is always `INFINITY` and `|value| < 10^-400` is always `0.0` — with margin
+/// on both sides, so no arithmetic here has to reason about the exact edges of
+/// the `f64` range.
+const F64_CERTAIN_MAG: i64 = 400;
+
+/// Scale a CLAMPED literal is moved to: still certainly outside `f64`'s range
+/// (so the image is unchanged), and ~1 KB of digits rather than gigabytes.
+const CLAMPED_SCALE: i64 = 1000;
 
 /// Parse an exponent, SATURATING at `i64`'s bounds.
 ///
@@ -204,10 +226,12 @@ fn parse_exponent(text: &str) -> Option<i64> {
 /// one or more digits — so BOTH runs are non-empty and `1.` / `1.e3` are not
 /// literals (GHC rejects them too) — plus `exponent → (e|E) [+|-] decimal`.
 ///
-/// Every step is checked or saturating: an exponent near `i64`'s bounds, or a
-/// magnitude outside the exact band, clamps (see [`MAX_EXACT_MAG`]) rather
-/// than overflowing the scale arithmetic or building an unrepresentable power
-/// of ten.
+/// Every step is checked or saturating: an exponent near `i64`'s bounds
+/// saturates, and a literal whose EXACT payload would demand more than
+/// [`EXACT_DIGIT_BUDGET`] decimal digits is clamped (see that constant) rather
+/// than overflowing the scale arithmetic or materialising a
+/// gigabyte-wide power of ten. Clamping is invisible to the `f64` image and
+/// visible in the AST payload; it is recorded as OD-F5 in the Task 6 report.
 ///
 /// `None` for text the scanner should never have produced; the caller turns it
 /// into a lex error rather than a silent value.
@@ -240,20 +264,33 @@ pub(crate) fn decimal_rational(text: &str) -> Option<BigRational> {
     // overflow the scale ("attempt to subtract with overflow") through the
     // public API.
     let scale = exp.saturating_sub(frac_part.len() as i64);
-    // `|value|` lies in `[10^(mag-1), 10^mag)`, so `mag` alone decides which
-    // side of the exact band the literal is on.
-    let mag = scale.saturating_add(ndigits);
-    let scale = if mag > MAX_EXACT_MAG {
-        // Certainly overflowing (`numer * 10^1000 >= 10^1000`). The exponent
-        // is clamped to the smallest one that is still an `f64::INFINITY`;
-        // the mantissa digits are untouched.
-        MAX_EXACT_MAG
-    } else if mag < -MAX_EXACT_MAG {
-        // Certainly underflowing (`numer / 10^(1000 + ndigits) < 10^-1000`,
-        // far below the smallest subnormal), and still an exact ratio.
-        MAX_EXACT_MAG.saturating_add(ndigits).saturating_neg()
-    } else {
+    // The exact payload is `numer * 10^scale` (or `numer / 10^-scale`), so the
+    // work it demands is the significand's digits plus the power's magnitude —
+    // NOT the value's magnitude. Bounding this total is what keeps `1e2000`
+    // (2001 digits) exact while still refusing `1e4294967296` (4 billion).
+    let demanded = ndigits.saturating_add(scale.saturating_abs());
+    let scale = if demanded <= EXACT_DIGIT_BUDGET {
         scale
+    } else {
+        // Over budget: this is the ONLY place a literal's exact payload is
+        // altered, and only a literal demanding more than 100 000 digits of
+        // allocation gets here. `|value|` lies in `[10^(mag-1), 10^mag)`.
+        let mag = scale.saturating_add(ndigits);
+        if mag > F64_CERTAIN_MAG {
+            // Certainly `f64::INFINITY`. Every power beyond 10^400 is
+            // indistinguishable in `f64`, so the smallest cheap one is used.
+            CLAMPED_SCALE
+        } else if mag < -F64_CERTAIN_MAG {
+            // Certainly `0.0`: `numer / 10^(1000 + ndigits) < 10^-1000`.
+            CLAMPED_SCALE.saturating_add(ndigits).saturating_neg()
+        } else {
+            // A colossal MANTISSA with an in-range magnitude (`2·10^5` digits
+            // times `10^-200000`). Clamping the exponent here would change the
+            // `f64` image, and the work is proportional to the input text
+            // anyway, so the value stays EXACT. OD-F3 already owns the
+            // superlinear cost of a huge significand.
+            scale
+        }
     };
     // `BigInt::pow` takes a `u32`. In-band the power is bounded by the input's
     // own digit count; only an input too long to address at all can fall out,
@@ -805,7 +842,9 @@ mod tests {
     fn an_out_of_range_exponent_clamps_instead_of_rejecting() {
         // An exponent past `f64`'s range is NOT an error: GHC's
         // `1e4294967296 :: Double` is `Infinity`, so the literal keeps a value
-        // with the same `f64` image and a bounded exact payload.
+        // with the same `f64` image. `1e400` is still `INFINITY` but is now
+        // EXACT (401 digits fits the budget), which is the point of budgeting
+        // digits rather than banding magnitude.
         for text in ["1e4294967296", "1e9223372036854775808", "1e400"] {
             let toks = tokenize(text).unwrap_or_else(|e| panic!("`{text}` must lex: {e}"));
             match &toks[0].tok {
@@ -837,10 +876,27 @@ mod tests {
                 other => panic!("expected a fractional token for `{text}`, got {other:?}"),
             }
         }
-        // The clamping is bounded: a four-billion exponent would need a
-        // four-gigabyte power of ten if it were materialised.
-        let exact = decimal_rational("1e4294967296").unwrap();
-        assert!(format!("{exact}").len() < 2000, "the payload stays bounded");
+        // Only the ALLOCATION is bounded, and only above the digit budget: a
+        // four-billion exponent would need a four-gigabyte power of ten, so it
+        // clamps, while a 2000-digit exponent does not (GHC's `1e2000 ::
+        // Rational` has 2001 numerator digits — the band this replaced
+        // truncated that to 1001).
+        let clamped = decimal_rational("1e4294967296").unwrap();
+        assert_eq!(
+            format!("{}", clamped.numer()).len(),
+            1001,
+            "the four-billion exponent clamps to the allocation budget"
+        );
+        assert_eq!(
+            format!("{}", decimal_rational("1e2000").unwrap().numer()).len(),
+            2001,
+            "`1e2000` demands 2001 digits, which the budget allows, so it is EXACT"
+        );
+        assert_eq!(
+            format!("{}", decimal_rational("1e-2000").unwrap().denom()).len(),
+            2001,
+            "and so is `1e-2000`"
+        );
     }
 
     #[test]

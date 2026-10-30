@@ -47,6 +47,20 @@ fn main_literal_value(src: &str) -> BigRational {
     }
 }
 
+/// Decimal digits of the AST payload's numerator (sign excluded).
+fn numerator_digit_count(literal: &str) -> usize {
+    let value = main_literal_value(&format!("main = {literal}"));
+    value.numer().to_string().trim_start_matches('-').len()
+}
+
+/// Decimal digits of the AST payload's denominator.
+fn denominator_digit_count(literal: &str) -> usize {
+    main_literal_value(&format!("main = {literal}"))
+        .denom()
+        .to_string()
+        .len()
+}
+
 /// Compile and run `src`, returning the concatenated stdout.
 fn run(src: &str) -> String {
     let mut prog = compile::<f32, 256>(src, ForeignRegistry::new())
@@ -197,6 +211,43 @@ fn the_lowered_double_is_the_nearest_f64_to_the_exact_value() {
         run("main = do { write (Just (show_double 1.2345678901234567890123)) stdout; return () };"),
         "1.2345678901234567"
     );
+}
+
+#[test]
+fn a_large_exponent_stays_exact_within_the_budget() {
+    // GHC 9.10.3: `numerator (1e2000 :: Rational)` has 2001 decimal digits.
+    // A magnitude-banded clamp (`|value| <= 10^1000`) silently truncated this
+    // to 1001, so the AST payload was `10^1000`, not `1e2000`.
+    let digits = numerator_digit_count("1e2000");
+    assert_eq!(digits, 2001, "`1e2000` must be exactly 10^2000");
+    // In-band exactness must not be band-dependent: `1e500` was already exact
+    // under the band, and `1e2000` must agree with it digit for digit.
+    let digits500 = numerator_digit_count("1e500");
+    assert_eq!(
+        digits500, 501,
+        "in-band exactness must not be band-dependent"
+    );
+    // The same value, checked as a value rather than a count.
+    assert_eq!(
+        main_literal_value("main = 1e2000"),
+        BigRational::from_integer(BigInt::from(10).pow(2000)),
+        "the payload is `10^2000`, not its clamped representative"
+    );
+}
+
+#[test]
+fn a_negative_exponent_stays_exact_within_the_budget() {
+    // GHC 9.10.3: `numerator (1e-500 :: Rational)` is 1 and
+    // `denominator (1e-500 :: Rational)` is 10^500 — 501 decimal digits.
+    let digits = denominator_digit_count("1e-500");
+    assert_eq!(digits, 501, "`1e-500` must be exactly 10^-500");
+    assert_eq!(
+        numerator_digit_count("1e-500"),
+        1,
+        "`1e-500` reduces to `1 / 10^500`, so the numerator is `1`"
+    );
+    // Far outside the old band, still exactly representable within budget.
+    assert_eq!(denominator_digit_count("1e-2000"), 2001);
 }
 
 #[test]

@@ -773,6 +773,7 @@ mod type_expr_tests {
     use super::*;
 
     #[test]
+    #[cfg(target_pointer_width = "64")]
     fn the_fractional_payload_stays_boxed() {
         // `Expr` and `Pattern` must keep the sizes they had BEFORE the exact
         // fraction arrived. A bare `BigRational` is 64 bytes, which makes them
@@ -781,6 +782,10 @@ mod type_expr_tests {
         // overflows the 2 MiB test-thread stack inside
         // `lower_value_expected`'s recursion (SIGSEGV, 9 nested frames).
         // Unboxing the payload is therefore not a local change.
+        //
+        // 64-bit only: the absolute byte counts are the ones measured on the
+        // x86-64 CI target. The POINT is that the payload costs one pointer,
+        // and `a_bare_bigrational_would_not_fit` below states that portably.
         assert_eq!(
             std::mem::size_of::<Expr>(),
             72,
@@ -790,6 +795,23 @@ mod type_expr_tests {
             std::mem::size_of::<Pattern>(),
             48,
             "a larger `Pattern` re-arms the same recursion overflow"
+        );
+    }
+
+    #[test]
+    fn a_bare_bigrational_would_not_fit() {
+        // The portable form of the guard above: whatever the target's pointer
+        // width, an `Expr` must not be large enough to HOLD a `BigRational`
+        // inline. On 64-bit that means 72 < 64 + …, on 32-bit 48; the ratio
+        // holds either way, so this fails if the payload is ever unboxed.
+        assert!(
+            std::mem::size_of::<Expr>() < std::mem::size_of::<BigRational>() * 2,
+            "an unboxed payload adds a whole `BigRational`; got {} for `Expr`",
+            std::mem::size_of::<Expr>()
+        );
+        assert!(
+            std::mem::size_of::<Pattern>() <= std::mem::size_of::<Expr>(),
+            "`Pattern` must not outgrow `Expr`"
         );
     }
 
