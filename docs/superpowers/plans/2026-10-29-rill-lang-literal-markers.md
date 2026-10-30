@@ -1096,6 +1096,46 @@ fn stage_3_does_not_fire_inside_a_signature_constrained_body() {
 }
 
 #[test]
+fn stage_3_fires_only_where_the_variable_is_ambiguous() {
+    // Measured GHC 9.10.3 with `default ()` (defaulting OFF): every form that
+    // FIXES the variable by unification still compiles, and only the genuinely
+    // ambiguous one fails. So the boundary is ambiguity, not "is a literal".
+    //
+    // rill has no user `default (...)` (assumption A11), so the boundary is
+    // pinned through the CONSEQUENCE instead: a signature-fixed literal must
+    // need no default, and an ambiguous one must take the default.
+    assert_eq!(
+        run("f :: Integer;\nf = 42;\nmain = do { write (Just (show f)) stdout; return () };"),
+        "42",
+        "a signature fixes the variable, so defaulting plays no part"
+    );
+    assert_eq!(
+        run("g :: Integer -> String;\ng x = show x;\nmain = do { write (Just (g 42)) stdout; return () };"),
+        "42",
+        "a typed parameter fixes it too"
+    );
+    assert_eq!(
+        run("main = do { write (Just (show (42 :: Integer))) stdout; return () };"),
+        "42",
+        "an annotation fixes it"
+    );
+    // The ambiguous case: `show 42` with nothing to fix `a` — GHC defaults it to
+    // Integer (first in `default (Integer, Double)`), and so must rill.
+    assert_eq!(
+        run("main = do { write (Just (show 42)) stdout; return () };"),
+        "42",
+        "an ambiguous numeric variable takes the default (Integer)"
+    );
+    // A NON-numeric ambiguity gets no default: `show` alone is not enough.
+    // GHC: "Ambiguous type variable" because no numeric class is involved.
+    let e = err("main = do { write (Just (show (read \"42\"))) stdout; return () };");
+    assert!(
+        e.contains("mbiguous") || e.contains("cannot resolve"),
+        "a non-numeric ambiguity must not default, got: {e}"
+    );
+}
+
+#[test]
 fn a_literal_takes_the_type_of_its_context() {
     assert_eq!(run("main = do { write (Just (show_int 3)) stdout; return () };"), "3");
     assert_eq!(run("main = do { write (Just (show_integer 3)) stdout; return () };"), "3");
