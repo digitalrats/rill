@@ -773,6 +773,27 @@ mod type_expr_tests {
     use super::*;
 
     #[test]
+    fn the_fractional_payload_stays_boxed() {
+        // `Expr` and `Pattern` must keep the sizes they had BEFORE the exact
+        // fraction arrived. A bare `BigRational` is 64 bytes, which makes them
+        // 104 and 88 — and that alone re-arms the SIGABRT this task hit:
+        // `tests/ix.rs::two_dimensional_assocs_pairs_each_cell_with_its_row_major_element`
+        // overflows the 2 MiB test-thread stack inside
+        // `lower_value_expected`'s recursion (SIGSEGV, 9 nested frames).
+        // Unboxing the payload is therefore not a local change.
+        assert_eq!(
+            std::mem::size_of::<Expr>(),
+            72,
+            "a larger `Expr` re-arms the stack overflow in `lower_value_expected`"
+        );
+        assert_eq!(
+            std::mem::size_of::<Pattern>(),
+            48,
+            "a larger `Pattern` re-arms the same recursion overflow"
+        );
+    }
+
+    #[test]
     fn type_expr_variants_construct() {
         let t = TypeExpr::TFunc(
             vec![TypeExpr::TName("a".into())],

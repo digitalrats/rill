@@ -160,43 +160,106 @@ pub struct Token {
     pub span: Span,
 }
 
+/// Width, in DECIMAL digits, of the exact band around zero.
+///
+/// A literal whose decimal magnitude lies outside `[10^-1000, 10^1000]` is
+/// past `f64`'s whole range (`f64`'s finite non-zero values live in
+/// `[5e-324, 1.8e308]`), so no `Double` consumer can tell such a value from
+/// `0` or `INFINITY`. For those the exponent is CLAMPED instead of rejected:
+/// the mantissa digits are kept exactly and only the exponent moves to the
+/// nearest value that keeps the same `f64` image and a bounded allocation.
+/// This is GHC's behaviour — `1e4294967296 :: Double` is `Infinity`, and
+/// `0.01e-9223372036854775807 :: Double` is `0.0` — and it keeps a
+/// four-billion exponent from allocating a four-gigabyte power of ten.
+const MAX_EXACT_MAG: i64 = 1000;
+
+/// Parse an exponent, SATURATING at `i64`'s bounds.
+///
+/// The shape is validated first (an optional sign, then at least one ASCII
+/// digit), so `1e`, `1e+` and `1e5e5` are still rejected rather than mistaken
+/// for a huge exponent. A magnitude beyond `i64` saturates: the value is out
+/// of `f64`'s range either way, and the clamp above then decides inf/0.
+fn parse_exponent(text: &str) -> Option<i64> {
+    let digits = match text.as_bytes().first() {
+        Some(b'+') | Some(b'-') => &text[1..],
+        _ => text,
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(text.parse().unwrap_or(if text.starts_with('-') {
+        i64::MIN
+    } else {
+        i64::MAX
+    }))
+}
+
 /// The EXACT rational value a fractional literal's decimal text denotes.
 ///
 /// Haskell 2010 §6.4.1: a fractional literal is `fromRational` of the decimal
 /// fraction it spells, so this builds the ratio from the DIGITS — never from
 /// an `f64`, whose rounding would turn `0.1` into
 /// `3602879701896397/36028797018963968`. The grammar accepted here is the
-/// Report's `decimal → digits . digits [exponent]` (either digit run may be
-/// empty, as in `1.` or `1.e3`), with `exponent → (e|E) [+|-] decimal`.
+/// Report's `float → decimal . decimal [exponent]` (§2.5), where `decimal` is
+/// one or more digits — so BOTH runs are non-empty and `1.` / `1.e3` are not
+/// literals (GHC rejects them too) — plus `exponent → (e|E) [+|-] decimal`.
+///
+/// Every step is checked or saturating: an exponent near `i64`'s bounds, or a
+/// magnitude outside the exact band, clamps (see [`MAX_EXACT_MAG`]) rather
+/// than overflowing the scale arithmetic or building an unrepresentable power
+/// of ten.
 ///
 /// `None` for text the scanner should never have produced; the caller turns it
 /// into a lex error rather than a silent value.
 pub(crate) fn decimal_rational(text: &str) -> Option<BigRational> {
     let (mantissa, exp) = match text.find(['e', 'E']) {
-        Some(at) => {
-            let exp: i64 = text[at + 1..].parse().ok()?;
-            (&text[..at], exp)
-        }
+        Some(at) => (&text[..at], parse_exponent(&text[at + 1..])?),
         None => (text, 0),
     };
-    let (int_part, frac_part) = match mantissa.find('.') {
-        Some(at) => (&mantissa[..at], &mantissa[at + 1..]),
-        None => (mantissa, ""),
+    let (int_part, frac_part, has_dot) = match mantissa.find('.') {
+        Some(at) => (&mantissa[..at], &mantissa[at + 1..], true),
+        None => (mantissa, "", false),
     };
-    if int_part.is_empty() && frac_part.is_empty() {
+    // §2.5 `float → decimal . decimal`: a dot needs digits on BOTH sides.
+    if int_part.is_empty() || (has_dot && frac_part.is_empty()) {
         return None;
     }
     // The fraction is `(int ‖ frac) / 10^len(frac)`, scaled by `10^exp`: an
     // exact power of ten in each direction, so no rounding is involved.
     let digits = format!("{int_part}{frac_part}");
-    let numer: BigInt = digits.parse().ok()?;
-    let scale = exp - frac_part.len() as i64;
-    let ten = BigInt::from(10);
-    // `BigInt::pow` takes a `u32`. A scale that does not fit is not a
-    // representable literal — an exact value would need more digits than the
-    // address space holds — so it is a LOUD rejection rather than a silently
-    // truncated exponent (`1e4294967296` must never become `1e0`).
+    // Leading zeros are not significant digits, and they would corrupt the
+    // magnitude below (`0.001` has ONE significant digit, not four).
+    let significant = digits.trim_start_matches('0');
+    if significant.is_empty() {
+        return Some(BigRational::from_integer(BigInt::from(0)));
+    }
+    let numer: BigInt = significant.parse().ok()?;
+    let ndigits = significant.len() as i64;
+    // `saturating_sub`/`saturating_add`: the exponent is already clamped to
+    // `i64`, and a literal like `0.01e-9223372036854775807` would otherwise
+    // overflow the scale ("attempt to subtract with overflow") through the
+    // public API.
+    let scale = exp.saturating_sub(frac_part.len() as i64);
+    // `|value|` lies in `[10^(mag-1), 10^mag)`, so `mag` alone decides which
+    // side of the exact band the literal is on.
+    let mag = scale.saturating_add(ndigits);
+    let scale = if mag > MAX_EXACT_MAG {
+        // Certainly overflowing (`numer * 10^1000 >= 10^1000`). The exponent
+        // is clamped to the smallest one that is still an `f64::INFINITY`;
+        // the mantissa digits are untouched.
+        MAX_EXACT_MAG
+    } else if mag < -MAX_EXACT_MAG {
+        // Certainly underflowing (`numer / 10^(1000 + ndigits) < 10^-1000`,
+        // far below the smallest subnormal), and still an exact ratio.
+        MAX_EXACT_MAG.saturating_add(ndigits).saturating_neg()
+    } else {
+        scale
+    };
+    // `BigInt::pow` takes a `u32`. In-band the power is bounded by the input's
+    // own digit count; only an input too long to address at all can fall out,
+    // and that is a lex error rather than a silently truncated exponent.
     let power = u32::try_from(scale.unsigned_abs()).ok()?;
+    let ten = BigInt::from(10);
     Some(if scale >= 0 {
         BigRational::from_integer(numer * ten.pow(power))
     } else {
@@ -730,9 +793,54 @@ mod tests {
             }
             other => panic!("expected a lex error, got {other}"),
         }
-        // An exponent too large for the exact value is a LOUD rejection, not a
-        // silently wrapped one.
-        assert!(tokenize("1e4294967296").is_err());
+        // §2.5 `float → decimal . decimal` needs digits on BOTH sides of the
+        // dot, so a bare trailing dot is not a float (`1.` would otherwise be
+        // `1` followed by unrelated `.` uses, and `1.e3` is not a literal
+        // either — GHC rejects both with "Lexical error").
+        assert!(tokenize("1.").is_err());
+        assert!(tokenize("1.e3").is_err());
+    }
+
+    #[test]
+    fn an_out_of_range_exponent_clamps_instead_of_rejecting() {
+        // An exponent past `f64`'s range is NOT an error: GHC's
+        // `1e4294967296 :: Double` is `Infinity`, so the literal keeps a value
+        // with the same `f64` image and a bounded exact payload.
+        for text in ["1e4294967296", "1e9223372036854775808", "1e400"] {
+            let toks = tokenize(text).unwrap_or_else(|e| panic!("`{text}` must lex: {e}"));
+            match &toks[0].tok {
+                Tok::FractionalLit(v, kept) => {
+                    assert_eq!(kept, text, "the source spelling is kept");
+                    let f = num_traits::ToPrimitive::to_f64(v).unwrap();
+                    assert_eq!(f, f64::INFINITY, "`{text}` must be an f64 infinity");
+                }
+                other => panic!("expected a fractional token for `{text}`, got {other:?}"),
+            }
+        }
+        // ...and the mirror image: a huge NEGATIVE exponent underflows to 0
+        // instead of overflowing the scale arithmetic or rejecting.
+        for text in [
+            "0.01e-9223372036854775807",
+            "1e-4294967296",
+            "1e-9223372036854775808",
+        ] {
+            let toks = tokenize(text).unwrap_or_else(|e| panic!("`{text}` must lex: {e}"));
+            match &toks[0].tok {
+                Tok::FractionalLit(v, _) => {
+                    assert_eq!(
+                        num_traits::ToPrimitive::to_f64(v).unwrap(),
+                        0.0,
+                        "`{text}` must underflow to zero"
+                    );
+                    assert!(v.numer() != &BigInt::from(0), "the mantissa digits survive");
+                }
+                other => panic!("expected a fractional token for `{text}`, got {other:?}"),
+            }
+        }
+        // The clamping is bounded: a four-billion exponent would need a
+        // four-gigabyte power of ten if it were materialised.
+        let exact = decimal_rational("1e4294967296").unwrap();
+        assert!(format!("{exact}").len() < 2000, "the payload stays bounded");
     }
 
     #[test]

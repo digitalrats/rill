@@ -198,3 +198,44 @@ fn the_lowered_double_is_the_nearest_f64_to_the_exact_value() {
         "1.2345678901234567"
     );
 }
+
+#[test]
+fn an_out_of_range_exponent_becomes_infinity_like_ghc() {
+    // GHC 9.10.3: `print (1e4294967296 :: Double)` is `Infinity`; the baseline
+    // accepted it, so rejecting it is a regression. rill's `show_double`
+    // spells infinity `inf`, NOT `Infinity` — a separately recorded defect
+    // (open defect OD-F4 in the task report), so this asserts rill's spelling
+    // and does not widen the scope here.
+    assert_eq!(
+        run("main = do { write (Just (show_double 1e4294967296)) stdout; return () };"),
+        "inf"
+    );
+}
+
+#[test]
+fn an_underflowing_exponent_becomes_zero_not_a_panic() {
+    // The scale computation must not overflow `i64`: `0.01e-9223372036854775807`
+    // panicked "attempt to subtract with overflow" through the public API.
+    assert_eq!(
+        run(
+            "main = do { write (Just (show_double 0.01e-9223372036854775807)) stdout; return () };"
+        ),
+        "0.0"
+    );
+}
+
+#[test]
+fn a_fractional_pattern_matches_at_run_time() {
+    // The exact value has to reach the match TEST, not only the AST: the first
+    // arm compares the scrutinee against `3.5` and must be taken, while a
+    // different scrutinee falls through to the wildcard.
+    let first = "main = do { write (Just (show_double (case 3.5 of { 3.5 -> 111.0; _ -> 222.0 }))) stdout; return () };";
+    assert_eq!(run(first), "111.0");
+    let other = "main = do { write (Just (show_double (case 3.25 of { 3.5 -> 111.0; _ -> 222.0 }))) stdout; return () };";
+    assert_eq!(run(other), "222.0");
+    // The literal is exact end to end: `0.1` is `1/10`, whose nearest double
+    // is the same one the pattern compares against, so the arm is taken even
+    // though `0.1 + 0.2` (not a literal) is not exactly `0.3`.
+    let tenth = "main = do { write (Just (show_double (case 0.1 of { 0.1 -> 111.0; _ -> 222.0 }))) stdout; return () };";
+    assert_eq!(run(tenth), "111.0");
+}
