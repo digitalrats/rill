@@ -742,26 +742,41 @@ fn from_integer_is_deliberately_omitted_pending_the_integer_signature() {
 // the name. MEASURED at HEAD: `gcd 12 18` answered `99`.
 //
 // The fix binds the operation to an `Expr::Kernel` node at PARSE time, so there
-// is no name for any pass to look up. The tests below pin each pass by name, and
-// every one uses the SIGNED user definition — the shape that defeated the
-// spelling guard. A future pass that resolves names must still keep these green;
-// if it does not, the node is the thing to extend, not another name list.
+// is no name for any pass to look up. Every test below uses the SIGNED user
+// definition — the shape that defeated the spelling guard.
+//
+// NAMING NOTE (fix round 2): these were called `<pass>_pass_...` and claimed to
+// pin `infer`, `reduce` and `lower` SEPARATELY. They do not — measured under
+// mutation, the three fail and pass TOGETHER. The β-reduction they originally
+// targeted can no longer occur (`reduce` sees a node, not a name), and with one
+// shared node every pass that used to compare a spelling is now bypassed by the
+// same single mechanism, so no per-pass mutation can distinguish them. The names
+// now say what they actually pin: that no signed user spelling of a kernel can
+// change the answer, checked at three different operand pairs.
 
 #[test]
-fn infer_pass_reserved_gcd_spelling_survives_a_signed_user_definition() {
-    // The `infer` pass. `infer_apply_impl` used to compare the literal
-    // spelling here; a signed user `__gcd` was typed as the user's function
-    // because this comparison only recognised the UNRESOLVED Prelude body.
+fn a_signed_user_kernel_spelling_cannot_change_gcd() {
+    // The signed user definition is the shape `reduce` β-reduced before the node
+    // existed, and the shape that made the `infer`/`lower` spelling comparisons
+    // resolve against the user's body. Three operand pairs, so an answer that
+    // coincides with a small literal cannot pass by luck.
     //
-    // GHC has no `__gcd`; the Prelude's `gcd` answers 6. The kernel node makes
-    // the spelling invisible to inference entirely.
+    // GHC has no `__gcd`; the Prelude's `gcd` answers these.
     assert_eq!(
         run("__gcd :: Integer -> Integer -> Integer;\n__gcd a b = 99;\nmain = do { write (Just (show_integer (gcd (12 :: Integer) (18 :: Integer)))) stdout; return () };"),
         "6"
     );
-    // The kernel applied DIRECTLY must also reach the kernel, not the user's
-    // function — otherwise the Prelude's own `gcd` definition would compute
-    // against the user's body.
+    assert_eq!(
+        run("__gcd :: Integer -> Integer -> Integer;\n__gcd a b = 99;\nmain = do { write (Just (show_integer (gcd (144 :: Integer) (60 :: Integer)))) stdout; return () };"),
+        "12"
+    );
+    assert_eq!(
+        run("__gcd :: Integer -> Integer -> Integer;\n__gcd a b = 99;\nmain = do { write (Just (show_integer (gcd (0 :: Integer) (7 :: Integer)))) stdout; return () };"),
+        "7"
+    );
+    // The kernel reached from INSIDE a definition body must also be the kernel,
+    // not the user's function — otherwise the Prelude's own `gcd` definition
+    // would compute against the user's body.
     assert_eq!(
         run("__gcd :: Integer -> Integer -> Integer;\n__gcd a b = 99;\nf x y = gcd x y;\nmain = do { write (Just (show_integer (f (12 :: Integer) (18 :: Integer)))) stdout; return () };"),
         "6"
@@ -769,46 +784,11 @@ fn infer_pass_reserved_gcd_spelling_survives_a_signed_user_definition() {
 }
 
 #[test]
-fn reduce_pass_reserved_gcd_spelling_survives_a_signed_user_definition() {
-    // The `reduce` pass — the one that was missing, and the reason the two
-    // earlier rounds did not hold. β-reduction inlines a definition whose
-    // lambda count matches the call's arguments; a SIGNED user `__gcd` is
-    // exactly that shape (`reduce`'s `annotate_formal_arg_types` keeps the
-    // signature's formal types on the substituted literals, which is why the
-    // unsigned form happened to survive).
-    //
-    // MEASURED before the node existed: this program printed 99.
-    assert_eq!(
-        run("__gcd :: Integer -> Integer -> Integer;\n__gcd a b = 99;\nmain = do { write (Just (show_integer (gcd (12 :: Integer) (18 :: Integer)))) stdout; return () };"),
-        "6"
-    );
-    // A larger pair keeps the answer from coinciding with a small literal.
-    assert_eq!(
-        run("__gcd :: Integer -> Integer -> Integer;\n__gcd a b = 99;\nmain = do { write (Just (show_integer (gcd (144 :: Integer) (60 :: Integer)))) stdout; return () };"),
-        "12"
-    );
-}
-
-#[test]
-fn lower_pass_reserved_gcd_spelling_survives_a_signed_user_definition() {
-    // The `lower` pass. `lower_value_expected` compared the literal spelling
-    // first; a program that reached it with a signed user `__gcd` in scope
-    // resolved against the user's definition instead. The node arm has no name
-    // to compare, so the ordering the earlier rounds relied on cannot regress.
-    assert_eq!(
-        run("__gcd :: Integer -> Integer -> Integer;\n__gcd a b = 99;\nmain = do { write (Just (show_integer (gcd (0 :: Integer) (7 :: Integer)))) stdout; return () };"),
-        "7"
-    );
-}
-
-#[test]
-fn reduce_pass_reserved_ratio_percent_spelling_survives_a_signed_user_definition() {
-    // The same attack against the OTHER integer kernel, through the `reduce`
-    // pass (the one that was missing). `3 % 6` must still be `1/2`: the signa-
-    // ture makes the user `__ratio_percent` β-reducible, so a name-based guard
-    // would have let `7/1` through.
-    //
-    // MEASURED before the node existed: this program printed 7.
+fn a_signed_user_ratio_percent_spelling_cannot_change_the_normalisation() {
+    // The same attack against the OTHER integer kernel. `3 % 6` must still be
+    // `1/2`: the signature makes the user `__ratio_percent` β-reducible, so a
+    // name-based guard let `7/1` through. MEASURED before the node existed:
+    // this program printed 7.
     assert_eq!(
         run("__ratio_percent :: Integer -> Integer -> Ratio Integer;\n__ratio_percent a b = Ratio { num: 7, den: 1 };\nmain = do { write (Just (show_integer (numerator ((3 :: Integer) % (6 :: Integer))))) stdout; write (Just \"/\") stdout; write (Just (show_integer (denominator ((3 :: Integer) % (6 :: Integer))))) stdout; return () };"),
         "1/2"
@@ -822,10 +802,18 @@ fn reduce_pass_reserved_ratio_percent_spelling_survives_a_signed_user_definition
 }
 
 #[test]
-fn reduce_pass_reserved_fault_spelling_survives_a_signed_user_definition() {
+fn a_signed_user_fault_spelling_cannot_replace_the_language_bottom() {
     // `__fault` has the same shape and therefore the same hole, so it is pinned
     // under the same attack. The signed user binding must not replace the
     // language's own bottom: `recip (0/1)` still faults with GHC's message.
+    //
+    // SCOPE OF THIS TEST (fix round 2): it pins the NODE PATH only. The PRELUDE
+    // no longer contains a `__fault` call SITE — the Ratio fault is emitted
+    // inline by lowering — so nothing here exercises a kernel node reached from
+    // prelude source. What it does pin is that the `__fault` NODE built by
+    // `parser::curry_expr` from the program's own spelling is the language's
+    // bottom, and that a signed user definition of that spelling cannot be
+    // substituted into the `Ratio` instance body.
     //
     // MEASURED before the node existed: `recip (0/1)` compiled against the
     // user's `__fault`, whose body was β-reduced into the instance body.
@@ -909,5 +897,71 @@ fn every_bare_operator_name_a_section_can_name_has_an_infix_op() {
     assert_eq!(
         run("f = (1 /=);\nmain = do { write (Just (show_bool (f 2))) stdout; return () };"),
         "True"
+    );
+}
+
+// --- Every expression walker visits a kernel's ARGUMENTS (fix round 2) ------
+//
+// `Expr::Kernel` has no callee name — that is what makes it interception-proof.
+// The cost is that a walker with a `_ => {}` catch-all silently stops at the
+// node and never sees its children. Measured at `e16de37`: the `let`-bound
+// helper below was dropped by `reduce`'s binding-pruning step ("unknown `g` in
+// value lowering") while the `where` spelling of the same program survived.
+//
+// The walkers that visit expression children are `lower::collect_def_ref_names`
+// — which ALSO backs `lower::compute_recursive_locals` and
+// `lower::body_carries_class_demand` — and `infer::collect_ref_names` (the
+// complete-mode recursion re-rate). Every test here uses a binding reachable
+// ONLY from inside a kernel argument, so a walker that stops at the node
+// answers wrong.
+//
+// Two of the four have NO public-surface discriminator, measured, and are
+// pinned by a unit test beside the walker instead of a golden value:
+//
+// - `lower::compute_recursive_locals`: every program whose only path to a local
+//   self-reference runs through a kernel argument fails EARLIER, in inference,
+//   for unrelated `Int`/`Integer` reasons (a local `f n = case n == 0 of …`
+//   gets a `Double` λ-parameter, so `gcd (f …)` is an OD-24 type error). The
+//   cycle detection never runs on a shape that would expose it.
+//   → `lower::tests::compute_recursive_locals_sees_a_kernel_argument`
+// - `infer::collect_ref_names`: a mutual-recursion partner reachable only
+//   through a kernel argument compiles and runs IDENTICALLY with and without
+//   the arm (verified by mutation over the whole suite plus 20 hand-built
+//   partner shapes) — the re-rate's effect is masked by later instantiation.
+//   → `types::infer::tests::collect_ref_names_walks_a_kernel_arguments`
+
+#[test]
+fn a_let_bound_helper_used_only_inside_a_kernel_argument_survives() {
+    // `gcd`'s argument is an `Expr::Kernel` node; a walker that ignores the
+    // node's children thinks `g` is unreferenced and `reduce` drops the binding.
+    // GHC: 6.
+    assert_eq!(
+        run("main = let { g x = (12 :: Integer); } in do { write (Just (show_integer (gcd (g 0) (18 :: Integer)))) stdout; return () };"),
+        "6"
+    );
+}
+
+#[test]
+fn a_where_bound_helper_used_only_inside_a_kernel_argument_survives() {
+    // The same program in `where` spelling. This one happened to survive at
+    // `e16de37`, which is why it is pinned BESIDE the `let` form: the two
+    // spellings must not disagree.
+    assert_eq!(
+        run("f x = gcd (g x) (18 :: Integer);\ng y = (12 :: Integer);\nmain = do { write (Just (show_integer (f 0))) stdout; return () };"),
+        "6"
+    );
+}
+
+#[test]
+fn a_class_method_demand_inside_a_kernel_argument_is_seen() {
+    // `body_carries_class_demand` decides whether a signature-less curried def
+    // needs per-call-site specialization. The `Ix` demand below (`a ! i`)
+    // lives ONLY in `gcd`'s argument. When the walker sees it, a bare
+    // reference is rejected as a class-constrained definition that must be
+    // applied; when it does not, the body is lowered as an ordinary value and
+    // dies in the `Ix` dispatch with an opaque missing-default message.
+    rejects_with(
+        "at a i = gcd (a ! i) (16 :: Integer);\ng = at;\nmain = do { write (Just (show_integer (g (listArray (Pair { first: 0, second: 2 }) [(8 :: Integer), (8 :: Integer), (3 :: Integer)]) 1))) stdout; return () };",
+        "cannot use class-constrained definition `at` without applying it",
     );
 }

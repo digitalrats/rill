@@ -3437,6 +3437,17 @@ fn collect_ref_names(e: &Expr, out: &mut HashSet<String>) {
                 collect_ref_names(a, out);
             }
         }
+        // A kernel contributes no NAME (there is no callee to resolve), but an
+        // argument may reference a top-level def whose value-rate
+        // re-registration this walk feeds (`infer_def_body`'s complete-mode
+        // retry). Stopping at the node left a mutual-recursion partner on its
+        // signal-rate placeholder, so a value-demanding site inside the
+        // kernel argument failed.
+        Expr::Kernel { args, .. } => {
+            for a in args {
+                collect_ref_names(a, out);
+            }
+        }
         Expr::ApplyExpr { callee, args, .. } => {
             collect_ref_names(callee, out);
             for a in args {
@@ -9230,5 +9241,37 @@ mod tests {
         // it recorded a cyclic binding and overflowed the stack).
         let res = ty_of(r"main = \f -> f f");
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn collect_ref_names_walks_a_kernel_arguments() {
+        // `collect_ref_names` feeds the complete-mode value-`rerate` of the
+        // top-level defs a body REFERENCES. A kernel node has no callee name —
+        // there is nothing to collect for the node itself — but its ARGUMENTS
+        // are ordinary expressions that can name a def. An arm that stops at
+        // the node leaves that def on its signal-rate placeholder.
+        //
+        // MEASURED: no program in the suite discriminates this at the public
+        // surface (a partner reachable only through a kernel argument compiles
+        // and runs identically with and without the arm, because the retry only
+        // re-rates schemes a later instantiation would have freshened anyway).
+        // The walk is pinned here instead of pretending a golden value covers it.
+        // The body must contain a real `Expr::Kernel`: the PRELUDE's `gcd` is
+        // an ordinary definition over `__gcd`, so a program-level `gcd` call is
+        // still a name-based application. `__gcd` is the reserved spelling the
+        // parser binds to the node.
+        let src = r"f = __gcd (h 1) (h 2); h x = x; main = f";
+        let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
+        let body = p.defs.iter().find(|d| d.name() == "f").unwrap().body();
+        let mut refs = HashSet::new();
+        collect_ref_names(body, &mut refs);
+        assert!(
+            refs.contains("h"),
+            "a name used only inside a kernel argument must be collected: {refs:?}"
+        );
+        assert!(
+            !refs.contains(&crate::ir::GCD_PRIMITIVE.to_string()),
+            "the kernel itself is not a name and must not be collected: {refs:?}"
+        );
     }
 }

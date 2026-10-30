@@ -9860,6 +9860,18 @@ pub(crate) fn collect_def_ref_names(e: &Expr, out: &mut HashSet<String>) {
                 collect_def_ref_names(a, out);
             }
         }
+        // A kernel has NO callee name — that is what makes it
+        // interception-proof — but its ARGUMENTS are ordinary expressions that
+        // can name a binding. Without this arm the walk stops at the node, so
+        // `reduce`'s binding pruning believes a `let`-bound helper reachable
+        // only from `gcd`'s argument is unreferenced and drops it ("unknown
+        // `g` in value lowering"), and `compute_recursive_locals` misses a
+        // self-reference reachable only through a kernel argument.
+        Expr::Kernel { args, .. } => {
+            for a in args {
+                collect_def_ref_names(a, out);
+            }
+        }
         Expr::ApplyExpr { callee, args, .. } => {
             collect_def_ref_names(callee, out);
             for a in args {
@@ -10545,6 +10557,36 @@ mod tests {
     fn has_instr(ir: &Ir, pred: impl Fn(&ValueInstr) -> bool) -> bool {
         let in_blocks = |blocks: &[ValueBlock]| blocks.iter().any(|b| b.instrs.iter().any(&pred));
         in_blocks(&ir.value_blocks) || ir.fragments.iter().any(|f| in_blocks(&f.value_blocks))
+    }
+
+    #[test]
+    fn compute_recursive_locals_sees_a_kernel_argument() {
+        // `compute_recursive_locals` asks `collect_def_ref_names` whether a def's
+        // body references it. A kernel node has no callee name, but its
+        // ARGUMENTS can carry the self-reference — and a def that participates in
+        // a cycle needs a SHARED CELL, or forcing the cycle reads an unbound
+        // register instead of yielding `Bottom`.
+        //
+        // MEASURED: no program in the suite distinguishes this at the public
+        // surface (the local-recursion + kernel-argument shapes all fail earlier,
+        // in inference, for unrelated `Int`/`Integer` reasons), so the walker is
+        // pinned directly rather than through a golden value.
+        let src = r"main = let { f = __gcd f 1; } in f";
+        let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
+        let defs: HashMap<String, Def> = {
+            let main = p.defs.iter().find(|d| d.name() == "main").unwrap();
+            let Expr::Let { defs, .. } = main.body() else {
+                panic!("main body must be a let");
+            };
+            defs.iter()
+                .map(|d| (d.name().to_string(), d.clone()))
+                .collect()
+        };
+        let recursive = Lowerer::compute_recursive_locals(&defs);
+        assert!(
+            recursive.contains("f"),
+            "a self-reference inside a kernel argument must be detected: {recursive:?}"
+        );
     }
 
     #[test]
