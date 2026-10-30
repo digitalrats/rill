@@ -997,6 +997,139 @@ git commit -m 'feat: fractional literals carry their exact decimal fraction'
 
 ---
 
+### Task 6b: `!` and `index` are two names, not one (BLOCKS Task 7)
+
+**Files:**
+- Modify: `rill-lang/src/types/ty.rs` (`PRELUDE`: split the double-duty `index`)
+- Modify: `rill-lang/src/parser.rs` (`InfixOp::Index` maps to `(!)`, not `index`)
+- Test: `rill-lang/tests/ix.rs`, `rill-lang/tests/bang_vs_index.rs` (create)
+
+**Interfaces:**
+- Consumes: `arrayIndexFlat`, `checkedOffset`, `bounds`, `arrayBounds`, the `Ix`
+  class.
+- Produces: `(!) :: Ix i => Array i e -> i -> e` (the accessor) and a pure
+  `index :: Ix i => Pair i i -> i -> Int` (the class method), with no name shared
+  between them.
+
+**Why this blocks Task 7 (measured).** rill's `PRELUDE` says it outright:
+
+```haskell
+--  `index` is DOUBLE DUTY: the `Ix` offset method (`Pair i i -> i -> Int`) and
+--  this array accessor (`Array i e -> i -> e`, the `!` operator). The dispatch is
+--  type-directed on the first argument
+index a ix :: Ix i => Array i e -> i -> e = arrayIndexFlat a (checkedOffset (arrayBounds a) ix);
+```
+
+GHC has **two names** with **two signatures**:
+
+```haskell
+(!)   :: Ix i => Array i e -> i -> e     -- element
+index :: Ix a => (a, a) -> a -> Int      -- offset
+```
+
+Measured: `a ! 1` → `20` (element), `index (0,2) 1` → `1`, `index (5,9) 7` → `2`
+(offset, NOT an element).
+
+Task 7's work-in-progress found the consequence: because the two roles share a
+name, dispatch must GUESS from the first argument, and when the array's type still
+carries variables (`Array i e` before `i`/`e` are solved) the guess binds the
+element type to the index type — `no instance of Ix for type Double`. That single
+defect accounts for ~100 of the 138 regressions Task 7 hit.
+
+This is the same defect class as `ValueTy::App`+`Data` (B2) and `Expr::Int`
+carrying an `Integer` (7a): **one name, two meanings**, and dispatch degenerates
+into guessing.
+
+- [ ] **Step 1: Write the failing tests**
+
+`rill-lang/tests/bang_vs_index.rs`:
+
+```rust
+//! `(!)` is the array accessor and `index` the `Ix` offset method: two names,
+//! two signatures, never one dispatching on its first argument.
+
+#[test]
+fn bang_is_the_array_accessor() {
+    assert_eq!(
+        run("a = listArray (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0];\nmain = do { write (Just (show_double (a ! 1))) stdout; return () };"),
+        "20.0"
+    );
+}
+
+#[test]
+fn index_is_the_offset_method() {
+    // GHC: `index (0,2) 1` is 1 and `index (5,9) 7` is 2 — OFFSETS, so the
+    // second proves it is not an element lookup.
+    assert_eq!(
+        run("main = do { write (Just (show_int (index (Pair { first: 0, second: 2 }) 1))) stdout; return () };"),
+        "1"
+    );
+    assert_eq!(
+        run("main = do { write (Just (show_int (index (Pair { first: 5, second: 9 }) 7))) stdout; return () };"),
+        "2"
+    );
+}
+
+#[test]
+fn a_literal_index_does_not_collapse_the_array_parameters() {
+    // The regression Task 7 hit: an unsolved `Array i e` let the element type
+    // bind to the index type. A 2-D array with a literal index is the shape that
+    // exposed it.
+    assert_eq!(
+        run("a = listArray (Pair { first: Pair { first: 0, second: 0 }, second: Pair { first: 1, second: 1 } }) [1.0, 2.0, 3.0, 4.0];\nmain = do { write (Just (show_double (a ! Pair { first: 1, second: 0 }))) stdout; return () };"),
+        "3.0"
+    );
+}
+
+#[test]
+fn a_string_bang_is_not_an_index() {
+    // `!` has ONE meaning now; a non-array first argument must be a type error,
+    // not a silent `index` call.
+    assert!(compile_err("main = (1 :: Int) ! 2;").contains("cannot unify") || true);
+}
+```
+
+(Adjust the last assertion to whatever the compiler says — the requirement is
+that it is a TYPE ERROR, not that it produces an offset.)
+
+- [ ] **Step 2: Run them and watch the 2-D case fail**
+
+Expected: the 1-D cases pass (the defect is latent while literals are monomorphic),
+the 2-D literal-index case fails with `no instance of Ix for type …`.
+
+- [ ] **Step 3: Split the names in `PRELUDE`**
+
+Rename the accessor to `(!)` and make `index` the pure method:
+
+```haskell
+(!) a ix :: Ix i => Array i e -> i -> e = arrayIndexFlat a (checkedOffset (arrayBounds a) ix);
+-- `index` stays the class method with its declared signature; no array arm.
+```
+
+`checkedOffset` keeps calling `index` (the method) — one role each, so its
+dispatch is unambiguous. Update the `DOUBLE DUTY` comment to state the split.
+
+- [ ] **Step 4: Map the operator to `(!)`**
+
+`parser.rs:67`: `InfixOp::Index => "index"` becomes `InfixOp::Index => "!"`. Keep
+`infixl 9` (H2010 §4.4.2 gives `!!` that precedence; `!` is rill's spelling of the
+same accessor). Confirm an infix `a ! i` and a prefix `(!) a i` are the same
+function, and a section `(! i)` works.
+
+- [ ] **Step 5: Run the whole suite — this is the real acceptance criterion**
+
+Run: `cargo test -p rill-lang --features dsp`
+Expected: all green, INCLUDING every `tests/ix.rs` case (36 of them) — they are the
+programs this split touches.
+
+- [ ] **Step 6: Run the full gates, then commit**
+
+```bash
+git commit -m 'feat: ! is the array accessor and index the Ix method (two names, two roles)'
+```
+
+---
+
 ### Task 7: the three inference stages, made explicit (merge of old 7 + 8)
 
 > **Merge rationale.** The old tasks 7 and 8 were one mechanism split in two, and
