@@ -52,14 +52,18 @@ The failure modes most likely to bite, each with the task that pins its test:
    and `3602879701896397 % 36028797018963968` must never appear. → Tasks 6, 7.
 2. **A literal in a position whose type the compiler guesses.** After this plan
    no position may guess; an untypable literal is a compile error. → Task 7
-   (deletion criterion), Task 5.
+   (deletion criterion + the three stages), Task 5.
 3. **Defaulting firing in the wrong place** — inside a signature-constrained
-   body, or not at all for `main = 1 + 2`. → Task 8.
+   body, or not at all for `main = 1 + 2`. → Task 7 (stage 3).
 4. **`Ratio` comparing structurally** — `1/2 == 2/4` must be `True`,
    `Ratio{1,2} > Ratio{1,3}` must be `True`. → Task 3.
 5. **One concept, two representations** — two places truncating `Integer → Int`,
    a `Ratio`-shaped type at compile time and a leaf at runtime. → Tasks 5, 7.
-6. **A `Ratio` instance written before the `fromInteger` signature is fixed.**
+6. **Collapsing the three inference stages.** A missing instance must be reported
+   as "no instance of …", never as "cannot unify"; and defaulting must not fire
+   inside a signature-constrained body. Three different errors, three different
+   causes — Task 7 pins one program per stage.
+7. **A `Ratio` instance written before the `fromInteger` signature is fixed.**
    Measured: `fromInteger n = Ratio { num: n, den: 1 }` fails while the method is
    `Int -> a`, and an unannotated literal field (`num: 1`) fails the same way.
    Task 3 must omit `fromInteger` from the instance and Task 7 must add it. A
@@ -993,41 +997,104 @@ git commit -m 'feat: fractional literals carry their exact decimal fraction'
 
 ---
 
-### Task 7: literals become `fromInteger`/`fromRational`; delete the 46 heuristics
+### Task 7: the three inference stages, made explicit (merge of old 7 + 8)
+
+> **Merge rationale.** The old tasks 7 and 8 were one mechanism split in two, and
+> the split made task 7's acceptance criterion IMPOSSIBLE: with a literal typed as
+> `fromInteger`/`fromRational` but no defaulting, `1 == 1.0` has no caller to fix
+> `a`, so it can only report "argument type is not concrete" — the same defect that
+> made stage 3b's criterion unachievable. The user's instruction: merge them, and
+> **separate the inference STAGES explicitly**, because mixing them is what has
+> cost this project six review rounds.
 
 **Files:**
 - Modify: `rill-lang/src/ast.rs` (`Expr::Int` → `Expr::IntegerLit`,
   `Pattern::LitInt` → `Pattern::IntegerLit`)
 - Modify: `rill-lang/src/types/ty.rs` (`fromInteger : Integer -> a`;
-  `fromRational` on `Fractional`)
-- Modify: `rill-lang/src/types/infer.rs` (literal typing; delete
-  `int_literal_widens_to`, `def_arg_widens_to`'s literal arm, the `Expr::Annot`
-  literal special case)
-- Modify: `rill-lang/src/lower.rs` (emit the application; delete
-  `annotate_formal_arg_types`, `scheme_pinned_params`, `declared_binding_ty`,
-  `closure_param_tys`'s placeholder, `is_int_literal`, `numeric_leaf_of`)
-- Modify: `rill-lang/src/reduce.rs` (delete `annotate_formal_arg_types` if
-  measurement shows the type now arrives)
+  `fromRational` on `Fractional`; `Ratio`'s `fromInteger`/`fromRational` bodies)
+- Modify: `rill-lang/src/types/infer.rs` (the three stages below; delete the
+  heuristics)
+- Modify: `rill-lang/src/lower.rs`, `reduce.rs` (delete the heuristics)
 - Test: `rill-lang/tests/literal_polymorphism.rs` (create)
 
 **Interfaces:**
-- Consumes: Tasks 1-6. **Cannot start before Task 2** — `int_literal_widens_to`
-  is today the only reason `show_double 2` compiles (`infer.rs:5844`), and seven
-  GHC-conformant tests depend on it.
-- Produces: literal typing with no per-position heuristics.
+- Consumes: Tasks 1–6.
+- Produces: literal typing with no per-position heuristics, and a THREE-STAGE
+  inference with a named boundary between them.
 
-**Deletion criterion (the task's definition of done):**
+#### The three stages (this is the part to get right)
 
+Measured in GHC 9.10.3 — each stage fails with a DIFFERENT error, and rill must
+too, because collapsing them is what produced six rounds of wrong fixes:
+
+| Stage | What it does | Its own error |
+|---|---|---|
+| **1. Unify** | solve type equations; the literal's variable meets the context | `cannot unify value type Int with Double` |
+| **2. Discharge** | for every class constraint on a now-concrete variable, find the instance | `no instance of \`Fractional\` for type \`Int\`` |
+| **3. Default** | for variables STILL unresolved at a binding's close, try `default (Integer, Double)` in order | `Ambiguous type variable \`a0\`` (when no numeric class applies) |
+
+Measured GHC behaviour that pins the boundary:
+
+```haskell
+1 == 1.0                  → True      -- stage 3 picks Double
+1 + 2                     → 3         -- stage 3 picks Integer (first in the list)
+x :: Int; x == 1.0        → No instance for 'Fractional Int'   (stage 2, NOT stage 1)
+(1::Int) == (2::Integer)  → Couldn't match 'Int' with 'Integer' (stage 1)
 ```
-grep -c 'is_int_literal\|int_literal_widens_to\|annotate_formal_arg_types\|scheme_pinned_params\|declared_binding_ty\|numeric_leaf_of' rill-lang/src -r
-```
-is **0**.
 
-- [ ] **Step 1: Write the failing test**
+Note the third row: unification SUCCEEDS (`a := Int` from `x`), and the failure is
+the instance search. That is why "No instance" and "cannot unify" must not be
+conflated — rill currently reports the first as the second.
 
-`rill-lang/tests/literal_polymorphism.rs` — GHC-measured:
+**Today rill has these stages tangled**: defaulting lives INSIDE
+`infer_apply_impl` (`types/infer.rs:6876-6910`) and hardcodes `Double`
+(`unify_value(&vty, &ValueTy::Double, …)` at `:6905`), so `1 + 2` becomes `Double`
+instead of `Integer`, and `1 == 1.0` fails at the *dispatch* step before any
+defaulting could run.
+
+- [ ] **Step 1: Write the failing tests — one per stage**
+
+`rill-lang/tests/literal_polymorphism.rs`:
 
 ```rust
+//! The three inference stages, each pinned by a program that fails at ITS stage.
+
+fn run(src: &str) -> String { /* compile + run, concatenated stdout */ }
+fn err(src: &str) -> String { /* compile error text, panic if it compiles */ }
+
+#[test]
+fn stage_1_unification_decides_a_concrete_type() {
+    // GHC: `1 + (2 :: Int)` is Int and runs; nothing defaults.
+    assert_eq!(run("main = do { write (Just (show_int (1 + (2 :: Int)))) stdout; return () };"), "3");
+    // GHC: two CONCRETE types cannot unify — a stage-1 error.
+    assert!(err("main = (1 :: Int) + (2 :: Integer);").contains("cannot unify"));
+}
+
+#[test]
+fn stage_2_discharge_reports_a_missing_instance_not_a_unification_failure() {
+    // GHC: "No instance for 'Fractional Int'" — unification SUCCEEDS (a := Int
+    // comes from the annotation) and the INSTANCE search fails.
+    let e = err("main = (1 :: Int) + 1.0;");
+    assert!(e.contains("no instance") || e.contains("No instance"), "got: {e}");
+    assert!(!e.contains("cannot unify"), "a missing instance must not be reported as a unification failure: {e}");
+}
+
+#[test]
+fn stage_3_defaulting_picks_integer_then_double() {
+    // GHC: `1 + 2` is Integer (first in `default (Integer, Double)`).
+    assert_eq!(run("main = do { write (Just (show_integer (1 + 2))) stdout; return () };"), "3");
+    // GHC: `1 + 1.0` is Double, because Integer has no Fractional instance.
+    assert_eq!(run("main = do { write (Just (show_double (1 + 1.0))) stdout; return () };"), "2.0");
+    // GHC: `1 == 1.0` is True — this is the row the old task 7 could not reach.
+    assert_eq!(run("main = do { write (Just (show_bool (1 == 1.0))) stdout; return () };"), "True");
+}
+
+#[test]
+fn stage_3_does_not_fire_inside_a_signature_constrained_body() {
+    // A constraint the SIGNATURE binds is not ambiguous: no defaulting.
+    assert_eq!(run("f :: Num a => a;\nf = 1 + 2;\nmain = 0.0;"), "");
+}
+
 #[test]
 fn a_literal_takes_the_type_of_its_context() {
     assert_eq!(run("main = do { write (Just (show_int 3)) stdout; return () };"), "3");
@@ -1037,159 +1104,76 @@ fn a_literal_takes_the_type_of_its_context() {
 
 #[test]
 fn one_body_serves_two_types() {
-    // No annotation on `f`: the literal carries its own variable, so the scheme
-    // is `Num a => a -> a` — not `Int -> Int`.
     assert_eq!(run("f n = n + 1;\nmain = do { write (Just (show_double (f 0.0))) stdout; return () };"), "1.0");
     assert_eq!(run("f n = n + 1;\nmain = do { write (Just (show_integer (f (2 :: Integer)))) stdout; return () };"), "3");
 }
-
-#[test]
-fn two_literals_meet_at_one_type() {
-    assert_eq!(run("main = do { write (Just (show_bool (1 == 1.0))) stdout; return () };"), "True");
-    assert_eq!(run("main = do { write (Just (show_double (1 + 1.0))) stdout; return () };"), "2.0");
-    assert_eq!(run("main = do { write (Just (show_double (1.0 + 1))) stdout; return () };"), "2.0");
-}
-
-#[test]
-fn a_fixed_int_still_rejects_a_double() {
-    // GHC: No instance for `Fractional Int`.
-    assert!(compile_err("main = (1 :: Int) + 1.0;").contains("cannot unify"));
-    assert!(compile_err("main = (1 :: Integer) + 1.0;").contains("cannot unify"));
-}
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [ ] **Step 2: Run them and watch them fail**
 
-Expected: `one_body_serves_two_types` rejects `f 0.0` (`Int` vs `Double`).
+Expected: `stage_2` reports "cannot unify" (wrong stage), `stage_3` fails on
+`1 + 2` (Double, not Integer) and on `1 == 1.0` ("argument type is not concrete").
 
-- [ ] **Step 3: Correct the `fromInteger` signature and add `fromRational`**
+- [ ] **Step 3: Make the literal an application (stage 1 only)**
 
-Write this test first (`rill-lang/tests/literal_polymorphism.rs`):
+`Expr::IntegerLit` lowers to `fromInteger` applied to its exact `Integer`
+(built from `BigInt`); `Expr::FractionalLit` to `fromRational` applied to its exact
+`Rational`. Its inferred type is the method's RESULT variable. Correct
+`PRELUDE`: `fromInteger : Integer -> a`, and add `fromRational : Rational -> a` to
+`Fractional`; complete `Ratio`'s instances with `fromInteger n = Ratio { num: n,
+den: 1 }` and `fromRational r = r`.
 
-```rust
-#[test]
-fn from_integer_takes_an_integer_not_an_int() {
-    // Stage 7a added `Integer` but left the method at `Int -> a`, so the method
-    // could not accept its own Report-mandated argument (§6.4.1).
-    // `2147483648` does not fit `i32`; it fits `Integer` and would overflow an
-    // `Int` parameter only past 2^63, so use a value past 2^32 to discriminate.
-    assert_eq!(
-        run("f :: Integer -> Integer;\nf x = x + fromInteger 4294967296;\nmain = do { write (Just (show_integer (f (0 :: Integer)))) stdout; return () };"),
-        "4294967296"
-    );
-}
+- [ ] **Step 4: Separate stage 2 from stage 1**
+
+A missing instance must be reported as "no instance of …", never as a unification
+failure. Find where dispatch currently folds the two (the primitive branch's
+`no instance of` at `infer.rs:4893` is the model) and make the stage-1 path stop
+reporting the stage-2 failure.
+
+- [ ] **Step 5: Build stage 3 — defaulting at the binding's close**
+
+Remove the `Double`-hardcoded defaulting from `infer_apply_impl`
+(`infer.rs:6876-6910`). Add a residual-constraint store (`Vec<(String,
+TypeVarId)>` plus spans) and, at the end of a binding group
+(`infer_def_group_inner`), for each variable that is STILL a `Var` after the
+substitution:
+
+1. collect its constraints;
+2. if every one is a standard numeric class and at least one is `Num`/
+   `Fractional`, try `Integer` then `Double`, taking the FIRST that satisfies all;
+3. otherwise leave it and report `Ambiguous type variable` at the use site.
+
+Do NOT default a variable a signature binds.
+
+- [ ] **Step 6: Delete the heuristics, one at a time**
+
+The deletion criterion (must reach **0**):
+
+```
+grep -c 'is_int_literal\|int_literal_widens_to\|annotate_formal_arg_types\|scheme_pinned_params\|declared_binding_ty\|numeric_leaf_of' -r rill-lang/src
 ```
 
-Run it, watch it fail while the signature is still `Int -> a` (the argument is
-an `Int` parameter and a literal of the wrong track), then change the `PRELUDE`
-to `fromInteger : Integer -> a` and add `fromRational : Rational -> a` to the
-`Fractional` class. The `FromInteger` kernel path must accept an `Integer`
-payload — Task 5's `ValueFromInteger` already carries `target`, so no new IR is
-needed here.
+Delete one, run `cargo test -p rill-lang --features dsp`, and fix the failure by
+making the CORRECT mechanism work. Seven tests currently pass only through
+`int_literal_widens_to` — `rill-lang/tests/integer_type.rs` (the seven `int_literal_widens_to` dependants),
+`integer_type.rs:316`, and `tests/dictionaries.rs`'s
+`an_integer_literal_takes_the_other_operands_numeric_type`. Each asserts a GHC
+value and may NOT be weakened.
 
-- [ ] **Step 3b: Complete the `Ratio` instance with `fromInteger`/`fromRational`**
+- [ ] **Step 7: Run the stages' tests and the deletion grep**
 
-Now that the signature is `Integer -> a`, add
-`fromInteger n = Ratio { num: n, den: 1 }` to `Num (Ratio a)` and
-`fromRational r = r` to `Fractional (Ratio a)`. Write the test first:
+Run: `cargo test -p rill-lang --features dsp` and the grep above.
+Expected: all green, grep **0**.
 
-```rust
-#[test]
-fn ratio_accepts_from_integer() {
-    // The method is available only after the signature correction; Task 3
-    // omitted it for that reason.
-    assert_eq!(
-        run("r = fromInteger 3 :: Rational;\nmain = do { write (Just (show_integer (numerator r))) stdout; return () };"),
-        "3"
-    );
-}
-```
-
-- [ ] **Step 4: Make the literal an application and delete the heuristics**
-
-A literal lowers to `fromInteger`/`fromRational` applied to its exact payload;
-its inferred type is that method's result variable, decided by unification.
-Then delete the heuristics listed above ONE AT A TIME, running
-`cargo test -p rill-lang --features dsp` after each deletion, so the suite
-identifies the one that was still needed.
-
-- [ ] **Step 5: Run the tests and the deletion criterion**
-
-Run: `cargo test -p rill-lang --features dsp` and the `grep` above.
-Expected: all green, grep count **0**.
-
-- [ ] **Step 6: Run the full gates, then commit**
+- [ ] **Step 8: Run the full gates, then commit**
 
 ```bash
-git commit -m 'feat: literals are fromInteger/fromRational applications'
+git commit -m 'feat: literals are fromInteger/fromRational applications, with three explicit inference stages'
 ```
 
 ---
 
-### Task 8: default `(Integer, Double)`
-
-**Files:**
-- Modify: `rill-lang/src/types/infer.rs` (a residual numeric-constraint store in
-  `Ctx`; a defaulting pass at the binding group's close, `infer_def_group_inner`)
-- Test: `rill-lang/tests/literal_polymorphism.rs`
-
-**Interfaces:**
-- Consumes: Task 7's literal typing.
-- Produces: ambiguous numeric variables default to `Integer` (then `Double`).
-
-**Measured honesty (spec §2.3):** rill has no residual-constraint store today and
-`def_scheme` (`infer.rs:3460-3498`) sees only signatures. The store is a
-`Vec<(String, TypeVarId)>` plus spans, consulted once per binding group — not a
-general solver. This is the ONE place the design needs a store; typing does not.
-
-- [ ] **Step 1: Write the failing test**
-
-```rust
-#[test]
-fn an_unconstrained_integer_literal_defaults_to_integer() {
-    // GHC: `1 + 2` is Integer and does not overflow.
-    assert_eq!(run("main = do { write (Just (show_integer (1 + 2))) stdout; return () };"), "3");
-}
-
-#[test]
-fn an_unconstrained_fractional_literal_defaults_to_double() {
-    // GHC: `1.0 + 2.0` is Double, because Integer has no Fractional instance.
-    assert_eq!(run("main = do { write (Just (show_double (1.0 + 2.0))) stdout; return () };"), "3.0");
-}
-
-#[test]
-fn a_signature_binds_the_variable_so_nothing_defaults() {
-    // `f :: Num a => a; f = 1 + 2` must NOT default inside the body.
-    assert_eq!(run("f :: Num a => a;\nf = 1 + 2;\nmain = 0.0;"), "");
-    assert_eq!(run("g :: Num a => a;\ng = 1 + 2;\nmain = do { write (Just (show_double (g + 0.0))) stdout; return () };"), "");
-}
-```
-
-Rewrite the last test's second assertion to a `compile_err`-free form once the
-helper exists; the requirement is only "a constrained signature does not
-default", which a successful compile proves.
-
-- [ ] **Step 2: Run it and watch it fail**
-
-Expected: `an_unconstrained_integer_literal_defaults_to_integer` fails (it is
-`Int` today), and possibly `show_integer (1 + 2)` is a type error.
-
-- [ ] **Step 3: Implement the store and the pass**
-
-Record `(class, var)` for every numeric constraint a literal introduces; at the
-close of a binding group, default each **ambiguous** variable by trying
-`Integer`, then `Double`, taking the first that satisfies every constraint on it.
-Do not default a variable the binding's signature mentions.
-
-- [ ] **Step 4: Run the tests, then the full gates, then commit**
-
-```bash
-git commit -m 'feat: default numeric literals to Integer, then Double'
-```
-
----
-
-### Task 9: an integer parameter reaches the language as an `Int`, not a `Double`
+### Task 8: an integer parameter reaches the language as an `Int`, not a `Double`
 
 **Files:**
 - Modify: `rill-lang/src/backend/interp.rs:21` (`param_to_f64`)
@@ -1236,7 +1220,7 @@ git commit -m 'fix: an integer parameter widens to Int, not through f64'
 
 ---
 
-### Task 10: docs — close OD-27, record the departures
+### Task 9: docs — close OD-27, record the departures
 
 **Files:**
 - Modify: `docs/superpowers/DOCS-GAPS.md`
