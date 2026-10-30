@@ -92,14 +92,13 @@ fn a_literal_index_does_not_collapse_the_array_parameters() {
 #[test]
 fn a_numeric_bang_is_not_an_index() {
     // `!` has ONE meaning now: a non-array first argument is a TYPE error, not
-    // a silent `index` call that would answer an offset.
+    // a silent `index` call that would answer an offset. "type error" alone
+    // would be vacuous (every diagnostic starts that way), so the assertion
+    // demands the `Ix`/unification evidence AND that no value came out.
     let err = compile_err("main = (1 :: Int) ! 2;");
     assert!(
-        err.contains("cannot unify")
-            || err.contains("Array")
-            || err.contains("type")
-            || err.contains("instance"),
-        "a non-array `!` must be a type error, got: {err}"
+        err.contains("Ix") || err.contains("cannot unify"),
+        "a non-array `!` must fail on the array/unification evidence, got: {err}"
     );
 }
 
@@ -130,6 +129,38 @@ fn a_bang_section_reads_the_same_cell() {
              main = do { write (Just (show_double (at1 a))) stdout; return () };"
         ),
         "20.0"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 2b. A mention is a call-site demand only when the site really solves it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_self_solving_constrained_definition_is_usable_as_a_value() {
+    // `listArray`'s bounds are concrete, so the body solves its own class
+    // variable; taking a reference to it needs no call site. GHC: legal
+    // Haskell 2010, and `length (snd (g 1.0 [2.0, 3.0]))` is `2`.
+    assert_eq!(
+        run("mk p xs = Pair { first: p, second: elems (listArray (Pair { first: 0, second: 1 }) xs) };\ng = mk;\nmain = do { write (Just (show_int (length ((g 1.0 [2.0, 3.0]).second)))) stdout; return () };"),
+        "2"
+    );
+}
+
+#[test]
+fn an_accessor_still_needs_its_call_site() {
+    // The case the widening was FOR: `a ! i` lowers to `(!)`, whose index type
+    // is NOT solved by `at`'s own body (the array argument is a λ-parameter, so
+    // its index type exists only at a call site). A bare reference is therefore
+    // still refused. GHC generalizes `g = at` to `Ix i => Array i Double -> i ->
+    // Double`; rill has no dictionary to hand a first-class constrained value,
+    // so it reports the reference instead. (`main = 0.0` cannot be used here: a
+    // dead `g` is pruned before lowering, so the reference is never lowered.)
+    assert!(
+        compile_err(
+            "at a i = a ! i;\ng = at;\nmain = do { write (Just (show_double (g (listArray (Pair { first: 0, second: 2 }) [1.0, 2.0, 3.0]) 1))) stdout; return () };"
+        )
+        .contains("class-constrained definition")
     );
 }
 

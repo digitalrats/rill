@@ -4928,8 +4928,11 @@ impl<'a> Lowerer<'a> {
         {
             return None;
         }
-        // A DUAL name (`index` is both the `Ix` offset method and the array
-        // accessor): when the first argument's static type selects a method
+        // A DUAL name — one that is BOTH a class method and a
+        // class-constrained definition. Today's prelude has none (`!` is the
+        // accessor and `index` the `Ix` method, one role each), so this arm is
+        // unreached by the prelude; it stays because a user program may declare
+        // such a pair. When the first argument's static type selects a method
         // instance, DECLINE the definition so the method path below handles the
         // call. The first argument is probed in a sandbox (the instructions are
         // discarded), and the routing predicate is the SAME one inference uses
@@ -4951,9 +4954,10 @@ impl<'a> Lowerer<'a> {
     ///
     /// Mirrors inference's `method_shadowed_by_def`: a plain user definition
     /// shadows a method outright; a class-CONSTRAINED definition sharing its
-    /// name with a method (`index`) routes by the FIRST argument's static type —
-    /// an argument that solves the method's class variable goes to the method,
-    /// everything else to the definition.
+    /// name with a method (a DUAL name — none exists in the prelude today)
+    /// routes by the FIRST argument's static type — an argument that solves the
+    /// method's class variable goes to the method, everything else to the
+    /// definition.
     fn method_shadowed_by_def(&mut self, name: &str, args: &[Expr]) -> bool {
         // Lowering sees fragment captures; inference never does, so the
         // asymmetry is intentional and safe: captures only exist in lowering.
@@ -5234,8 +5238,9 @@ impl<'a> Lowerer<'a> {
     ///   compile error instead; the non-class recursion keeps its eager path.
     ///
     /// A value local or fragment capture shadowing the name, and a DUAL name
-    /// whose first argument's static type selects a method instance, also
-    /// return `None` (mirroring [`Self::lower_constrained_apply_site`]).
+    /// (a method that is also a class-constrained definition — none in the
+    /// prelude) whose first argument's static type selects a method instance,
+    /// also return `None` (mirroring [`Self::lower_constrained_apply_site`]).
     #[inline(never)]
     fn lower_signature_less_apply_site(
         &mut self,
@@ -5310,9 +5315,10 @@ impl<'a> Lowerer<'a> {
         {
             return None;
         }
-        // A DUAL name (`index` is both the `Ix` offset method and the array
-        // accessor): when the first argument's static type selects a method
-        // instance, DECLINE the definition so the method path handles the call.
+        // A DUAL name (a method that is also a class-constrained definition —
+        // none in the prelude): when the first argument's static type selects a
+        // method instance, DECLINE the definition so the method path handles the
+        // call.
         if env.class_of_method(name).is_some() {
             if let Some(first) = call_args.first() {
                 if let Some(ty) = self.peek_value_ty(first) {
@@ -5451,7 +5457,12 @@ impl<'a> Lowerer<'a> {
         if param_tys.is_empty() || param_tys.iter().all(|t| matches!(t, ValueTy::Double)) {
             return false;
         }
-        body_carries_class_demand(self.env, body)
+        // The λ-parameters of THIS definition: a mention whose class variable is
+        // solved by one of them is a call-site demand, one solved by the body
+        // itself is not.
+        let (params, _) = crate::types::ty::split_curried_params(param_tys.len(), &[], body);
+        let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+        body_carries_class_demand(self.env, body, &param_names)
     }
 
     /// A fresh unification variable for signature-type conversion at a
@@ -10103,17 +10114,187 @@ pub(crate) fn collect_def_ref_names(e: &Expr, out: &mut HashSet<String>) {
     }
 }
 
-/// Whether `e` references a name whose typing is only solvable at a CALL SITE —
-/// a class METHOD (`inRange`) or a class-CONSTRAINED DEFINITION (`(!)`, the
-/// array accessor, whose `Ix i =>` context is solved from the call's arguments)
-/// — anywhere in its tree. Only a body carrying such a demand needs the
-/// per-call-site specialization; a def like `nth` (which calls only plain
-/// functions) keeps its ordinary first-class value, bare reference included.
-fn body_carries_class_demand(env: &TypeEnv, e: &Expr) -> bool {
+/// Whether `e` raises a typing demand that only a CALL SITE can discharge.
+///
+/// Two kinds of mention qualify:
+///
+/// * a class METHOD (`inRange`, `+`) — its dictionary comes from the receiver's
+///   type, never from the enclosing definition's own declaration;
+/// * a class-CONSTRAINED DEFINITION (`(!)`, `listArray`) whose class variable is
+///   still UNKNOWN after the mention's own arguments are taken into account,
+///   i.e. the argument that must solve it names a λ-parameter of the enclosing
+///   definition — so its type exists only at a call site.
+///
+/// The second clause has to be per-MENTION, not per-name, and this is exactly
+/// what the earlier widening got wrong. `at a i = a ! i` is a demand: `a`'s
+/// index type is the call's, so `g = at` has no standalone value. But
+/// `mk p xs = Pair { first: p, second: elems (listArray (Pair { first: 0,
+/// second: 1 }) xs) }` is NOT: `listArray`'s bounds are concrete, so the body
+/// solves that `Ix i` itself and GHC gives `mk` the ordinary scheme `a -> [b] ->
+/// (a, [b])`. Reading the mention as a demand refused that legal program.
+///
+/// `params` is the set of the enclosing definition's λ-parameters: a reference
+/// to one is what makes an argument's type a call-site fact. A name that is not
+/// a parameter is typed by the program's own declarations, so the mention is
+/// self-solving.
+fn body_carries_class_demand(env: &TypeEnv, e: &Expr, params: &HashSet<String>) -> bool {
+    if let Some((name, args)) = application_spine(e) {
+        if env.class_of_method(name).is_some() {
+            return true;
+        }
+        if env.constrained_defs.contains_key(name) && mention_needs_a_site(env, name, &args, params)
+        {
+            return true;
+        }
+        // The mention itself is settled by the body; a demand may still hide in
+        // its arguments (`listArray (Pair { … }) (map (\x -> x + 1.0) xs)`).
+        return args
+            .iter()
+            .any(|a| body_carries_class_demand(env, a, params));
+    }
+    let mut kids: Vec<&Expr> = Vec::new();
+    // Every child expression whose subtree can hold a demand.
+    match e {
+        Expr::Ref(..)
+        | Expr::Int(..)
+        | Expr::FractionalLit(..)
+        | Expr::Void(..)
+        | Expr::Str(..) => {}
+        Expr::Apply { args, .. } => kids.extend(args.iter()),
+        Expr::ApplyExpr { callee, args, .. } => {
+            kids.push(callee);
+            kids.extend(args.iter());
+        }
+        Expr::Kernel { args, .. } => kids.extend(args.iter()),
+        Expr::Neg(inner, _) => kids.push(inner),
+        Expr::Annot { expr, .. } => kids.push(expr),
+        Expr::If {
+            cond, then, els, ..
+        } => {
+            kids.push(cond);
+            kids.push(then);
+            kids.push(els);
+        }
+        Expr::Lambda { body, .. } => kids.push(body),
+        Expr::Record(fields, _) => kids.extend(fields.iter().map(|(_, f)| f)),
+        Expr::MapLit(entries, _) => kids.extend(entries.iter().map(|(_, v)| v)),
+        Expr::ListLit(elems, _) => kids.extend(elems.iter()),
+        Expr::FieldProject { record, .. } => kids.push(record),
+        Expr::FieldUpdate { record, value, .. } => {
+            kids.push(record);
+            kids.push(value);
+        }
+        Expr::Let { defs, body, .. } => {
+            for d in defs {
+                if !d.is_decl() {
+                    kids.push(d.body());
+                }
+            }
+            kids.push(body);
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            kids.push(scrutinee);
+            for arm in arms {
+                for (g, b) in &arm.guards {
+                    if let Some(g) = g {
+                        kids.push(g);
+                    }
+                    kids.push(b);
+                }
+            }
+        }
+        Expr::ActorParam {
+            default: Some(d), ..
+        } => kids.push(d),
+        _ => {}
+    }
+    kids.into_iter()
+        .any(|k| body_carries_class_demand(env, k, params))
+}
+
+/// A curried application flattened to its CALLEE NAME and all applied arguments
+/// in source order, when the callee spine ends in a name.
+///
+/// The parser nests a curried application one `ApplyExpr` per argument
+/// (`(!) a i` is `ApplyExpr(ApplyExpr(Ref "!") [a]) [i]`), so a mention's
+/// arguments are only visible after the spine is flattened.
+fn application_spine(e: &Expr) -> Option<(&str, Vec<&Expr>)> {
+    fn walk<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) -> Option<&'a str> {
+        match e {
+            Expr::Ref(name, _) => Some(name.as_str()),
+            Expr::Apply { name, args, .. } => {
+                out.extend(args.iter());
+                Some(name.as_str())
+            }
+            Expr::ApplyExpr { callee, args, .. } => {
+                let name = walk(callee, out)?;
+                out.extend(args.iter());
+                Some(name)
+            }
+            _ => None,
+        }
+    }
+    let mut args = Vec::new();
+    let name = walk(e, &mut args)?;
+    Some((name, args))
+}
+
+/// Whether a mention of the class-constrained definition `name` applied to
+/// `args` still needs a call site to solve its class variable.
+///
+/// The question is asked per constraint: the FIRST parameter that mentions the
+/// class variable is the argument that solves it (`Pair i i` in `listArray`,
+/// `Array i e` in `(!)`). If that argument is absent (an under-applied mention)
+/// or names a λ-parameter of the enclosing definition, the body does not know
+/// the type and the call site has to supply it.
+fn mention_needs_a_site(
+    env: &TypeEnv,
+    name: &str,
+    args: &[&Expr],
+    params: &HashSet<String>,
+) -> bool {
+    let Some(cd) = env.constrained_defs.get(name) else {
+        return false;
+    };
+    for var in signature_constraint_vars(&cd.sig) {
+        let Some(idx) = crate::types::ty::class_var_param_pattern(&cd.sig, &var) else {
+            // The variable occurs in no parameter: nothing at a call site can
+            // solve it, so the mention adds no call-site dependency.
+            continue;
+        };
+        match args.get(idx) {
+            Some(arg) => {
+                if expr_names_any_of(arg, params) {
+                    return true;
+                }
+            }
+            None => return true,
+        }
+    }
+    false
+}
+
+/// The type-variable names a signature's class context constrains (`Ix i => …`
+/// yields `i`), looking through `forall` binders and further contexts.
+fn signature_constraint_vars(sig: &crate::ast::TypeExpr) -> Vec<String> {
+    match sig {
+        crate::ast::TypeExpr::TConstrained(cs, inner) => {
+            let mut vars: Vec<String> = cs.iter().map(|(_, var)| var.clone()).collect();
+            vars.extend(signature_constraint_vars(inner));
+            vars
+        }
+        crate::ast::TypeExpr::TForall(_, inner) => signature_constraint_vars(inner),
+        _ => Vec::new(),
+    }
+}
+
+/// Whether `e` references any of `names` (`Ref` or applied callee).
+fn expr_names_any_of(e: &Expr, names: &HashSet<String>) -> bool {
     let mut refs = HashSet::new();
     collect_def_ref_names(e, &mut refs);
-    refs.iter()
-        .any(|n| env.class_of_method(n).is_some() || env.constrained_defs.contains_key(n))
+    refs.iter().any(|n| names.contains(n))
 }
 
 /// The arbitrary-precision integer value of a constant expression, when it is

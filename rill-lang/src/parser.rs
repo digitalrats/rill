@@ -29,7 +29,7 @@ enum InfixOp {
     CmpGe,
     LogicAnd,
     LogicOr,
-    /// `!` — infix indexing (`a ! i` ≡ `index a i`).
+    /// `!` — infix array access (`a ! i` ≡ `(!) a i`, GHC's `Ix` accessor).
     Index,
     /// `++` — list append (`a ++ b` ≡ `++ a b`, the Prelude `++` function).
     AppendList,
@@ -172,7 +172,8 @@ fn infix_binding_power(t: &Tok) -> Option<(InfixOp, u8, u8)> {
         // Not the remainder operator: that meaning was removed because it took
         // a name Haskell gives to a different function.
         Tok::Percent => (InfixOp::Percent, 13, 14),
-        // `!` — rill's infix indexing (`index`), the analog of Haskell's `!!`.
+        // `!` — rill's infix array access, the analog of Haskell's `!!` but
+        // spelled `!` and bound to the `Ix` accessor `(!)`.
         // `infixl 9`: `a ! i + 1` ≡ `(a ! i) + 1`, `a ! b ! c` ≡ `(a ! b) ! c`.
         // `!` is the index operator in expression position regardless of
         // whitespace (`a!1` ≡ `a ! 1`); bang markers (`!x`, `!pat`) exist only
