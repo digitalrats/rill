@@ -61,6 +61,22 @@ fn denominator_digit_count(literal: &str) -> usize {
         .len()
 }
 
+/// The source TEXT the AST carries, and the payload, for a `main = <literal>`.
+fn main_literal_payload(src: &str) -> (BigRational, String) {
+    let program = program_of(src);
+    match program.main_def().unwrap().body() {
+        Expr::FractionalLit(v, text, _) => ((**v).clone(), text.clone()),
+        other => panic!("expected a fractional literal in `{src}`, got {other:?}"),
+    }
+}
+
+/// Compare two spellings of a literal as ONE value: their AST payloads must be
+/// equal. Two spellings of one number must not produce two payloads, and when
+/// BOTH are over budget they must at least clamp to the SAME representative.
+fn same_payload(a: &str, b: &str) -> bool {
+    main_literal_value(&format!("main = {a}")) == main_literal_value(&format!("main = {b}"))
+}
+
 /// Compile and run `src`, returning the concatenated stdout.
 fn run(src: &str) -> String {
     let mut prog = compile::<f32, 256>(src, ForeignRegistry::new())
@@ -273,6 +289,37 @@ fn an_underflowing_exponent_becomes_zero_not_a_panic() {
         ),
         "0.0"
     );
+}
+
+#[test]
+fn the_budget_charges_the_reduced_value_not_the_spelling() {
+    // Trailing zeros in the mantissa cancel: these are ONE number and must give
+    // ONE payload. Charging pre-reduction digits truncated `1.0e-99998` while
+    // `1e-99998` stayed exact. GHC 9.10.3:
+    // `denominator (1e-99998 :: Rational)` has 99 999 decimal digits, and
+    // `1.0e-99998 == 10e-99999 == 1e-99998` is `True`.
+    let a = denominator_digit_count("1e-99998");
+    let b = denominator_digit_count("1.0e-99998");
+    let c = denominator_digit_count("10e-99999");
+    assert_eq!(a, 99_999);
+    assert_eq!(b, a, "`1.0e-99998` is the same number as `1e-99998`");
+    assert_eq!(c, a, "`10e-99999` is the same number as `1e-99998`");
+    // The ZERO-stripping must not cost the source spelling: the three texts are
+    // still distinguishable in the AST, only their values agree.
+    let (_, text_b) = main_literal_payload("main = 1.0e-99998");
+    assert_eq!(text_b, "1.0e-99998");
+    assert_eq!(
+        main_literal_value("main = 1.0e-99998"),
+        BigRational::new(BigInt::from(1), BigInt::from(10).pow(99_998)),
+        "the payload is exactly `10^-99998`, not a clamped representative"
+    );
+}
+
+#[test]
+fn equal_values_compare_equal_in_the_ast() {
+    // Two spellings of one value must not differ as AST payloads.
+    assert!(same_payload("1e-99998", "1.0e-99998"));
+    assert!(same_payload("1e100000", "1.0e100000"));
 }
 
 #[test]

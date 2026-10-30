@@ -173,14 +173,21 @@ pub struct Token {
 ///
 /// So: a literal whose total digit demand fits the budget keeps its EXACT
 /// decimal value, whatever its exponent — `1e2000`, `1e-2000` and `1e5000`
-/// are all exact. A literal that exceeds the budget is CLAMPED (see
-/// [`decimal_rational`]), which changes the AST payload; that residue is a
-/// recorded open defect (OD-F5 in the Task 6 report), owned by the
-/// `fromRational` stage, not an invisible implementation detail. The `f64`
-/// image is the same either way, because every clamped literal is far outside
-/// `f64`'s range (`[5e-324, 1.8e308]`) in the direction of its clamp — that
-/// is GHC's behaviour: `1e4294967296 :: Double` is `Infinity`,
-/// `0.01e-9223372036854775807 :: Double` is `0.0`.
+/// are all exact. The demand is charged on the REDUCED value: trailing zeros in
+/// the mantissa cancel against the scale first, so `1e-99998`, `1.0e-99998` and
+/// `10e-99999` are one number with one payload rather than three.
+///
+/// What happens ABOVE the budget is not uniformly "clamped" — it depends on
+/// which side is expensive, and [`decimal_rational`] has the three arms. A value
+/// certainly outside `f64`'s range moves to a cheap representative, which
+/// changes the AST payload (the residue recorded as OD-F5 in the Task 6 report,
+/// owned by the `fromRational` stage). A value whose magnitude is IN `f64`'s
+/// range but whose exact payload is large deliberately keeps its MANTISSA exact
+/// and leaves the exponent alone: clamping there would change the `f64` image.
+/// The image is the same for every clamped literal because clamping only ever
+/// happens far outside `f64`'s range (`[5e-324, 1.8e308]`) in the direction of
+/// the clamp — that is GHC's behaviour: `1e4294967296 :: Double` is
+/// `Infinity`, `0.01e-9223372036854775807 :: Double` is `0.0`.
 const EXACT_DIGIT_BUDGET: i64 = 100_000;
 
 /// Decimal magnitude beyond which a value is CERTAINLY outside `f64`'s range.
@@ -191,8 +198,16 @@ const EXACT_DIGIT_BUDGET: i64 = 100_000;
 /// the `f64` range.
 const F64_CERTAIN_MAG: i64 = 400;
 
-/// Scale a CLAMPED literal is moved to: still certainly outside `f64`'s range
-/// (so the image is unchanged), and ~1 KB of digits rather than gigabytes.
+/// Scale a clamped literal's POWER OF TEN is moved to: still certainly outside
+/// `f64`'s range (so the image is unchanged), and cheap.
+///
+/// This bounds the power, NOT the total payload. The payload a clamped literal
+/// materialises is `ndigits + CLAMPED_SCALE` decimal digits, where `ndigits` is
+/// the REDUCED mantissa length and therefore bounded only by the input text —
+/// `999…9` with 150 000 digits clamps to a 151 000-digit numerator, not to
+/// ~1 KB. Making the payload itself small would mean rounding the mantissa,
+/// which changes the `f64` image in general; the superlinear cost of a long
+/// significand is OD-F3's problem and is proportional to the text either way.
 const CLAMPED_SCALE: i64 = 1000;
 
 /// Parse an exponent, SATURATING at `i64`'s bounds.
@@ -227,11 +242,13 @@ fn parse_exponent(text: &str) -> Option<i64> {
 /// literals (GHC rejects them too) — plus `exponent → (e|E) [+|-] decimal`.
 ///
 /// Every step is checked or saturating: an exponent near `i64`'s bounds
-/// saturates, and a literal whose EXACT payload would demand more than
-/// [`EXACT_DIGIT_BUDGET`] decimal digits is clamped (see that constant) rather
-/// than overflowing the scale arithmetic or materialising a
-/// gigabyte-wide power of ten. Clamping is invisible to the `f64` image and
-/// visible in the AST payload; it is recorded as OD-F5 in the Task 6 report.
+/// saturates, and a literal whose REDUCED payload would demand more than
+/// [`EXACT_DIGIT_BUDGET`] decimal digits is bounded (see that constant and the
+/// three arms below) rather than overflowing the scale arithmetic or
+/// materialising a gigabyte-wide power of ten. The mantissa is reduced against
+/// the power of ten FIRST, so the budget charges the value rather than its
+/// spelling. Where the payload is altered the change is visible in the AST and
+/// recorded as OD-F5 in the Task 6 report; the `f64` image never changes.
 ///
 /// `None` for text the scanner should never have produced; the caller turns it
 /// into a lex error rather than a silent value.
@@ -257,17 +274,31 @@ pub(crate) fn decimal_rational(text: &str) -> Option<BigRational> {
     if significant.is_empty() {
         return Some(BigRational::from_integer(BigInt::from(0)));
     }
-    let numer: BigInt = significant.parse().ok()?;
-    let ndigits = significant.len() as i64;
+    // REDUCE against the power of ten BEFORE the budget is charged. A trailing
+    // zero in the mantissa is a factor of ten that cancels exactly against the
+    // scale (`10e-99999` and `1e-99998` are ONE number), so leaving it in the
+    // significand would charge digits the payload never needs: charging
+    // pre-reduction turned `1.0e-99998` into a clamped representative while
+    // `1e-99998` stayed exact, giving two payloads for one value. `1.0` is
+    // therefore reduced to `1` with `scale` folded up by one.
+    let reduced = significant.trim_end_matches('0');
+    let stripped = (significant.len() - reduced.len()) as i64;
+    // The significand is never all zeros here (`significant` starts with a
+    // non-zero digit), so `reduced` is non-empty.
+    let numer: BigInt = reduced.parse().ok()?;
+    let ndigits = reduced.len() as i64;
     // `saturating_sub`/`saturating_add`: the exponent is already clamped to
     // `i64`, and a literal like `0.01e-9223372036854775807` would otherwise
     // overflow the scale ("attempt to subtract with overflow") through the
-    // public API.
-    let scale = exp.saturating_sub(frac_part.len() as i64);
+    // public API. The same applies to folding `stripped` back in.
+    let scale = exp
+        .saturating_sub(frac_part.len() as i64)
+        .saturating_add(stripped);
     // The exact payload is `numer * 10^scale` (or `numer / 10^-scale`), so the
-    // work it demands is the significand's digits plus the power's magnitude —
-    // NOT the value's magnitude. Bounding this total is what keeps `1e2000`
-    // (2001 digits) exact while still refusing `1e4294967296` (4 billion).
+    // work it demands is the REDUCED significand's digits plus the power's
+    // magnitude — NOT the value's magnitude, and not the spelling's digits.
+    // Bounding this total is what keeps `1e2000` (2001 digits) and `1e-99998`
+    // (99 999 digits) exact while still refusing `1e4294967296` (4 billion).
     let demanded = ndigits.saturating_add(scale.saturating_abs());
     let scale = if demanded <= EXACT_DIGIT_BUDGET {
         scale

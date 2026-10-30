@@ -800,13 +800,17 @@ mod type_expr_tests {
 
     #[test]
     fn a_bare_bigrational_would_not_fit() {
-        // The portable form of the guard above: whatever the target's pointer
-        // width, an `Expr` must not be large enough to HOLD a `BigRational`
-        // inline. On 64-bit that means 72 < 64 + …, on 32-bit 48; the ratio
-        // holds either way, so this fails if the payload is ever unboxed.
+        // A COARSE portable sanity check, not a discriminator: on x86-64 an
+        // unboxed `Expr` would be 104 bytes against a 64-byte `BigRational`, so
+        // `104 < 128` still HOLDS and this assertion does NOT fail when the
+        // payload is unboxed. The REAL guard is the exact-byte test above,
+        // `the_fractional_payload_stays_boxed` (72 / 48), which is
+        // `#[cfg(target_pointer_width = "64")]` because those counts are
+        // x86-64 measurements. What is left here only catches gross growth —
+        // a payload of two or more inline ratios — at any pointer width.
         assert!(
             std::mem::size_of::<Expr>() < std::mem::size_of::<BigRational>() * 2,
-            "an unboxed payload adds a whole `BigRational`; got {} for `Expr`",
+            "two inline ratios is gross growth; got {} for `Expr`",
             std::mem::size_of::<Expr>()
         );
         assert!(
