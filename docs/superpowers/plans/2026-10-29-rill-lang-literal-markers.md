@@ -829,6 +829,110 @@ git commit -m 'feat: implement the six numeric kernels'
 
 ---
 
+### Task 5b: `Buffer` gets its missing class instances (runs AFTER Task 7)
+
+**Files:**
+- Modify: `rill-lang/src/types/ty.rs` (`PRELUDE`: explicit `Eq`/`Ord`/`Fractional`
+  instances for `FixedBuffer e` and `Tape e`)
+- Modify: `rill-lang/src/backend/interp.rs` (`value_cmp_ref` needs a
+  `(Buffer, Buffer)` arm; the buffer division path)
+- Test: `rill-lang/tests/buffer_instances.rs` (create)
+
+**Interfaces:**
+- Consumes: `Value::Buffer(usize)` and the program's buffer allocator; the
+  whole-buffer kernels `ValueBufferBin`/`ValueBufferUn`; `Num (FixedBuffer e)`,
+  which already exists.
+- Produces: `Eq`/`Ord`/`Fractional` instances for the buffer types, with
+  element-wise semantics.
+
+**Why (measured).** `Buffer` has `Num` but not `Eq`/`Ord`/`Fractional`, so the
+DERIVED structural instance answers by buffer INDEX, not contents:
+
+```rill
+a = square 0.0 0.0 0.0;  b = square 0.0 0.9 0.0;
+a == b        →  True    (GHC: False — the samples differ)
+compare a b   →  0       (claimed to be "whole-buffer structural order")
+recip a       →  type error, though Fractional is a Num subclass
+```
+
+`AGENTS.md` is explicit: a buffer is an ordinary value and participates in the
+SAME classes through INSTANCES — "if a buffer cannot satisfy a class today, the
+answer is to implement the missing instance, never to add a special case". The
+derived structural instance is exactly such a special case: it is correct for a
+handle and wrong for a value.
+
+- [ ] **Step 1: Write the failing tests**
+
+`rill-lang/tests/buffer_instances.rs`:
+
+```rust
+//! A buffer is an ordinary value: it participates in `Eq`/`Ord`/`Fractional`
+//! through instances, with ELEMENT-WISE semantics (user ruling, 2026-10-30).
+
+#[test]
+fn two_distinct_buffers_are_not_equal() {
+    assert_eq!(
+        run("a = square 0.0 0.0 0.0;\nb = square 0.0 0.9 0.0;\nmain = do { write (Just (show_bool (a == b))) stdout; return () };"),
+        "False"
+    );
+}
+
+#[test]
+fn equal_buffers_are_equal() {
+    // Control: two blocks with the SAME samples must compare equal, so the test
+    // above cannot pass just by always answering False.
+    assert_eq!(
+        run("a = square 0.0 0.0 0.0;\nb = square 0.0 0.0 0.0;\nmain = do { write (Just (show_bool (a == b))) stdout; return () };"),
+        "True"
+    );
+}
+
+#[test]
+fn buffer_order_is_lexicographic_over_samples() {
+    // A constant 0.0 block is below a constant 0.9 block: every sample of the
+    // first is smaller, so the first element decides.
+    assert_eq!(
+        run("a = square 0.0 0.0 0.0;\nb = square 0.0 0.9 0.0;\nmain = do { write (Just (show_int (compare a b))) stdout; return () };"),
+        "-1"
+    );
+}
+
+#[test]
+fn buffer_division_is_element_wise() {
+    // GHC has no such instance; the semantics is the design's: `Num` arithmetic
+    // is already whole-buffer element-wise, so `/` follows it.
+    assert_eq!(
+        run("main = do { write (Just (show_int (length (arrayFromBuffer (square 1.0 0.5 0.0 / square 1.0 0.5 0.0))))) stdout; return () };"),
+        "256"
+    );
+}
+```
+
+- [ ] **Step 2: Run them and watch them fail**
+
+Expected: `a == b` → `True`; `compare` → `0`; `/` → a type error.
+
+- [ ] **Step 3: Add the instances**
+
+Explicit `Eq`/`Ord (FixedBuffer e)` (and `Tape e`) in `PRELUDE`, plus
+`Fractional` whose body emits the whole-buffer division kernel — the same shape
+`Num`'s instance bodies already have. `value_cmp_ref` gains a
+`(Buffer, Buffer)` arm comparing the SAMPLES element-wise (lexicographically),
+shorter-is-less. It needs the allocator to read the samples: if `value_cmp_ref`'s
+signature cannot reach it, follow how `ValueBufferBin` resolves a `Value::Buffer`
+index to data and pass what it needs.
+
+A `Buffer`'s length is the block length, so two buffers of different lengths
+compare by the common prefix and then by length — state that in the doc comment.
+
+- [ ] **Step 4: Run the tests, then the full gates, then commit**
+
+```bash
+git commit -m 'feat: Buffer participates in Eq, Ord and Fractional element-wise'
+```
+
+---
+
 ### Task 6: fractional literals carry their exact decimal fraction
 
 **Files:**
