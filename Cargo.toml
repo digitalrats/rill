@@ -45,6 +45,7 @@ categories = ["multimedia::audio", "science::robotics"]
 parking_lot = "0.12"
 num-traits = "0.2"
 num-bigint = "0.4"
+num-rational = "0.4"
 thiserror = "1.0"
 async-trait = "0.1"
 serde = "1.0"

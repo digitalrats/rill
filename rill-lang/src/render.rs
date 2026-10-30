@@ -476,12 +476,12 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             write!(buf, "()").ok();
             Ok(())
         }
-        Expr::Double(v, _) => {
-            if *v == *v as i64 as f64 && v.is_finite() {
-                write!(buf, "{:.1}", v).ok();
-            } else {
-                write!(buf, "{}", v).ok();
-            }
+        // A fractional literal re-emits its SOURCE spelling, so `1e3` stays
+        // `1e3` and `1.00` stays `1.00` instead of folding to a canonical
+        // `f64` print. The exact value is not consulted: the text is part of
+        // the node precisely so the round-trip is faithful.
+        Expr::FractionalLit(_, text, _) => {
+            write!(buf, "{text}").ok();
             Ok(())
         }
         Expr::Str(s, _) => {
@@ -827,8 +827,8 @@ fn render_pattern(p: &Pattern, buf: &mut String) {
         Pattern::LitInt(v) => {
             write!(buf, "{v}").ok();
         }
-        Pattern::LitDouble(v) => {
-            write!(buf, "{v}").ok();
+        Pattern::FractionalLit(_, text) => {
+            write!(buf, "{text}").ok();
         }
         Pattern::LitStr(s) => {
             write!(buf, "\"{s}\"").ok();
@@ -877,6 +877,16 @@ mod tests {
         Span::new(0, 0)
     }
 
+    /// A fractional literal for `text`, carrying the exact value its digits
+    /// spell and the source spelling the renderer reproduces.
+    fn fl(text: &str) -> Expr {
+        Expr::FractionalLit(
+            Box::new(crate::lexer::decimal_rational(text).unwrap()),
+            text.to_string(),
+            span(),
+        )
+    }
+
     #[test]
     fn render_simple_apply() {
         let prog = Program {
@@ -887,7 +897,7 @@ mod tests {
                 params: vec![],
                 body: Expr::Apply {
                     name: "sine".into(),
-                    args: vec![Expr::Double(440.0, span()), Expr::Double(0.5, span())],
+                    args: vec![fl("440.0"), fl("0.5")],
                     span: span(),
                 },
                 span: span(),
@@ -910,7 +920,7 @@ mod tests {
                 params: vec![],
                 body: Expr::Apply {
                     name: "lowpass".into(),
-                    args: vec![Expr::Double(1000.0, span()), Expr::Double(0.7, span())],
+                    args: vec![fl("1000.0"), fl("0.7")],
                     span: span(),
                 },
                 span: span(),
@@ -937,7 +947,7 @@ mod tests {
                 }],
                 body: Expr::Apply {
                     name: "*".into(),
-                    args: vec![Expr::Double(2.0, span()), Expr::Ref("gain".into(), span())],
+                    args: vec![fl("2.0"), Expr::Ref("gain".into(), span())],
                     span: span(),
                 },
                 span: span(),
@@ -966,7 +976,7 @@ mod tests {
                     }],
                     body: Box::new(Expr::Apply {
                         name: "*".into(),
-                        args: vec![Expr::Ref("x".into(), span()), Expr::Double(2.0, span())],
+                        args: vec![Expr::Ref("x".into(), span()), fl("2.0")],
                         span: span(),
                     }),
                     span: span(),
@@ -1083,7 +1093,7 @@ mod tests {
             defs: vec![Def::Eval {
                 name: "main".into(),
                 params: vec![],
-                body: Expr::Double(1.0, span()),
+                body: fl("1.0"),
                 where_defs: vec![],
                 sig: Some(TypeExpr::TName("Double".into())),
                 bang: false,

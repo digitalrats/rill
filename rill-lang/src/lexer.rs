@@ -2,12 +2,15 @@
 
 use crate::error::{CompileError, Span};
 use num_bigint::BigInt;
+use num_rational::BigRational;
 
 /// A lexical token kind.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
-    /// Numeric literal that contains a `.` or exponent — a float.
-    Double(f64),
+    /// Numeric literal that contains a `.` or exponent — a fractional literal.
+    /// Carries the EXACT value its digits spell plus the source text, so `0.1`
+    /// is `1/10` rather than the nearest `f64`.
+    FractionalLit(BigRational, String),
     /// Numeric literal with no `.` — an integer. Carries arbitrary precision:
     /// `123456789012345678901234567890` is a valid literal (GHC accepts it as
     /// an `Integer`).
@@ -155,6 +158,50 @@ pub struct Token {
     pub tok: Tok,
     /// Where it came from.
     pub span: Span,
+}
+
+/// The EXACT rational value a fractional literal's decimal text denotes.
+///
+/// Haskell 2010 §6.4.1: a fractional literal is `fromRational` of the decimal
+/// fraction it spells, so this builds the ratio from the DIGITS — never from
+/// an `f64`, whose rounding would turn `0.1` into
+/// `3602879701896397/36028797018963968`. The grammar accepted here is the
+/// Report's `decimal → digits . digits [exponent]` (either digit run may be
+/// empty, as in `1.` or `1.e3`), with `exponent → (e|E) [+|-] decimal`.
+///
+/// `None` for text the scanner should never have produced; the caller turns it
+/// into a lex error rather than a silent value.
+pub(crate) fn decimal_rational(text: &str) -> Option<BigRational> {
+    let (mantissa, exp) = match text.find(['e', 'E']) {
+        Some(at) => {
+            let exp: i64 = text[at + 1..].parse().ok()?;
+            (&text[..at], exp)
+        }
+        None => (text, 0),
+    };
+    let (int_part, frac_part) = match mantissa.find('.') {
+        Some(at) => (&mantissa[..at], &mantissa[at + 1..]),
+        None => (mantissa, ""),
+    };
+    if int_part.is_empty() && frac_part.is_empty() {
+        return None;
+    }
+    // The fraction is `(int ‖ frac) / 10^len(frac)`, scaled by `10^exp`: an
+    // exact power of ten in each direction, so no rounding is involved.
+    let digits = format!("{int_part}{frac_part}");
+    let numer: BigInt = digits.parse().ok()?;
+    let scale = exp - frac_part.len() as i64;
+    let ten = BigInt::from(10);
+    // `BigInt::pow` takes a `u32`. A scale that does not fit is not a
+    // representable literal — an exact value would need more digits than the
+    // address space holds — so it is a LOUD rejection rather than a silently
+    // truncated exponent (`1e4294967296` must never become `1e0`).
+    let power = u32::try_from(scale.unsigned_abs()).ok()?;
+    Some(if scale >= 0 {
+        BigRational::from_integer(numer * ten.pow(power))
+    } else {
+        BigRational::new(numer, ten.pow(power))
+    })
 }
 
 /// Tokenise `src` into a vector terminated by a single [`Tok::Eof`].
@@ -429,6 +476,15 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             {
                 if bytes[i] == b'.' || bytes[i] == b'e' || bytes[i] == b'E' {
                     is_float = true;
+                    // A decimal exponent may carry a sign (Haskell 2010 §2.5:
+                    // `exponent → (e|E) [+|-] decimal`), so `1e-3` is ONE
+                    // literal rather than `1e` followed by `- 3`.
+                    if (bytes[i] == b'e' || bytes[i] == b'E')
+                        && i + 1 < bytes.len()
+                        && (bytes[i + 1] == b'+' || bytes[i + 1] == b'-')
+                    {
+                        i += 1;
+                    }
                 }
                 i += 1;
             }
@@ -446,12 +502,12 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                     span,
                 });
             } else if is_float {
-                let v: f64 = text.parse().map_err(|_| CompileError::Lex {
+                let v = decimal_rational(text).ok_or_else(|| CompileError::Lex {
                     msg: format!("invalid float literal `{text}`"),
                     span,
                 })?;
                 out.push(Token {
-                    tok: Tok::Double(v),
+                    tok: Tok::FractionalLit(v, text.to_string()),
                     span,
                 });
             } else {
@@ -587,6 +643,11 @@ mod tests {
         tokenize(src).unwrap().into_iter().map(|t| t.tok).collect()
     }
 
+    /// A fractional token for `text`, with the exact value its digits spell.
+    fn fl(text: &str) -> Tok {
+        Tok::FractionalLit(decimal_rational(text).unwrap(), text.to_string())
+    }
+
     #[test]
     fn lexes_combinators_and_ops() {
         assert_eq!(
@@ -620,13 +681,58 @@ mod tests {
     fn distinguishes_int_and_float() {
         assert_eq!(
             kinds("3 3.5 10"),
-            vec![
-                Tok::Int(3.into()),
-                Tok::Double(3.5),
-                Tok::Int(10.into()),
-                Tok::Eof
-            ]
+            vec![Tok::Int(3.into()), fl("3.5"), Tok::Int(10.into()), Tok::Eof]
         );
+    }
+
+    #[test]
+    fn a_fractional_token_carries_the_exact_value_and_the_source_text() {
+        // The four conversions the plan fixes, plus a value whose exact
+        // numerator/denominator are both large.
+        for (src, n, d) in [
+            ("0.1", 1i64, 10i64),
+            ("3.14", 157, 50),
+            ("1e3", 1000, 1),
+            ("1.5e-2", 3, 200),
+            ("1.00", 1, 1),
+        ] {
+            let toks = tokenize(src).unwrap();
+            match &toks[0].tok {
+                Tok::FractionalLit(v, text) => {
+                    assert_eq!(v.numer(), &BigInt::from(n), "numerator of `{src}`");
+                    assert_eq!(v.denom(), &BigInt::from(d), "denominator of `{src}`");
+                    assert_eq!(text, src, "the source text is kept verbatim");
+                }
+                other => panic!("expected a fractional token for `{src}`, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_signed_exponent_is_part_of_the_literal() {
+        // Haskell 2010 §2.5 allows a sign in `exponent`, so `1e-3` is ONE
+        // literal. Read as `1e` minus `3` it would not even tokenise.
+        assert_eq!(kinds("1e-3"), vec![fl("1e-3"), Tok::Eof]);
+        assert_eq!(kinds("1E+3"), vec![fl("1E+3"), Tok::Eof]);
+        assert_eq!(
+            fl("1e-3"),
+            Tok::FractionalLit(BigRational::new(1.into(), 1000.into()), "1e-3".into())
+        );
+    }
+
+    #[test]
+    fn an_invalid_fractional_literal_is_a_lex_error() {
+        // `1e` has no exponent digits; the scanner must not invent a value.
+        let err = tokenize("1e").unwrap_err();
+        match err {
+            CompileError::Lex { msg, .. } => {
+                assert!(msg.contains("invalid float literal"), "{msg}")
+            }
+            other => panic!("expected a lex error, got {other}"),
+        }
+        // An exponent too large for the exact value is a LOUD rejection, not a
+        // silently wrapped one.
+        assert!(tokenize("1e4294967296").is_err());
     }
 
     #[test]
@@ -932,7 +1038,7 @@ mod tests {
                 Tok::ThinArrow,
                 Tok::Ident("x".into()),
                 Tok::Plus,
-                Tok::Double(1.0),
+                fl("1.0"),
                 Tok::Eof,
             ]
         );
@@ -942,13 +1048,7 @@ mod tests {
     fn lexes_dash_dash_comment() {
         assert_eq!(
             kinds("1.0 -- a comment\n + 2.0"),
-            vec![
-                Tok::Double(1.0),
-                Tok::Newline,
-                Tok::Plus,
-                Tok::Double(2.0),
-                Tok::Eof
-            ]
+            vec![fl("1.0"), Tok::Newline, Tok::Plus, fl("2.0"), Tok::Eof]
         );
     }
 
@@ -977,7 +1077,7 @@ mod tests {
                 Tok::KwCase,
                 Tok::LParen,
                 Tok::Ident("C".into()),
-                Tok::Double(1.0),
+                fl("1.0"),
                 Tok::RParen,
                 Tok::KwOf,
                 Tok::LBrace,
@@ -1005,11 +1105,11 @@ mod tests {
         assert_eq!(
             kinds("1.0 `add` 2.0"),
             vec![
-                Tok::Double(1.0),
+                fl("1.0"),
                 Tok::Backtick,
                 Tok::Ident("add".into()),
                 Tok::Backtick,
-                Tok::Double(2.0),
+                fl("2.0"),
                 Tok::Eof,
             ]
         );
@@ -1042,7 +1142,7 @@ mod tests {
     fn lexes_nested_block_comment_as_whitespace() {
         assert_eq!(
             kinds("1.0 {- a {- b -} c -} + 2.0"),
-            vec![Tok::Double(1.0), Tok::Plus, Tok::Double(2.0), Tok::Eof]
+            vec![fl("1.0"), Tok::Plus, fl("2.0"), Tok::Eof]
         );
     }
 
@@ -1055,12 +1155,12 @@ mod tests {
             vec![
                 Tok::Ident("x".into()),
                 Tok::Eq,
-                Tok::Double(1.0),
+                fl("1.0"),
                 Tok::Semi,
                 Tok::Newline,
                 Tok::Ident("y".into()),
                 Tok::Eq,
-                Tok::Double(2.0),
+                fl("2.0"),
                 Tok::Semi,
                 Tok::Eof,
             ]
@@ -1089,7 +1189,7 @@ mod tests {
                     value: "complete".into()
                 },
                 Tok::Newline,
-                Tok::Double(1.0),
+                fl("1.0"),
                 Tok::Eof,
             ]
         );

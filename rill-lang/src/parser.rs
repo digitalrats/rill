@@ -306,7 +306,7 @@ fn is_atom_start(tok: &Tok) -> bool {
         tok,
         Tok::Ident(_)
             | Tok::Int(_)
-            | Tok::Double(_)
+            | Tok::FractionalLit(..)
             | Tok::Str(_)
             | Tok::LParen
             | Tok::LBrace
@@ -325,7 +325,8 @@ fn peek_is_negative_literal(toks: &[Token], pos: usize) -> bool {
     let Some(next) = toks.get(pos + 1) else {
         return false;
     };
-    matches!(next.tok, Tok::Int(_) | Tok::Double(_)) && next.span.start == toks[pos].span.end
+    matches!(next.tok, Tok::Int(_) | Tok::FractionalLit(..))
+        && next.span.start == toks[pos].span.end
 }
 
 /// Whether the `!` at `pos` is a bang marker rather than the infix indexing
@@ -360,7 +361,7 @@ fn is_pattern_start(tok: &Tok) -> bool {
         tok,
         Tok::Ident(_)
             | Tok::Int(_)
-            | Tok::Double(_)
+            | Tok::FractionalLit(..)
             | Tok::Str(_)
             | Tok::Wire
             | Tok::LParen
@@ -658,9 +659,9 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Ok(Pattern::LitInt(v))
             }
-            Tok::Double(v) => {
+            Tok::FractionalLit(v, text) => {
                 self.bump();
-                Ok(Pattern::LitDouble(*v))
+                Ok(Pattern::FractionalLit(Box::new(v.clone()), text.clone()))
             }
             Tok::Str(s) => {
                 self.bump();
@@ -1006,7 +1007,7 @@ impl<'a> Parser<'a> {
                 self.eat(&Tok::RParen)?;
                 Ok(p)
             }
-            Tok::Int(_) | Tok::Double(_) | Tok::Str(_) | Tok::Wire => self.parse_pattern(),
+            Tok::Int(_) | Tok::FractionalLit(..) | Tok::Str(_) | Tok::Wire => self.parse_pattern(),
             Tok::Ident(name) => {
                 // An uppercase name is a CONSTRUCTOR pattern here, and a
                 // constructor's arguments are not part of one atom: `f Just x`
@@ -1038,7 +1039,7 @@ impl<'a> Parser<'a> {
             Tok::Bang => is_attached_bang(self.toks, self.cur()),
             Tok::Ident(_)
             | Tok::Int(_)
-            | Tok::Double(_)
+            | Tok::FractionalLit(..)
             | Tok::Str(_)
             | Tok::Wire
             | Tok::LParen => true,
@@ -2317,7 +2318,11 @@ impl<'a> Parser<'a> {
         let t = self.bump();
         match t.tok {
             Tok::Int(v) => Ok(Expr::Int(v, t.span)),
-            Tok::Double(v) => Ok(Expr::Double(v, t.span)),
+            Tok::FractionalLit(v, text) => Ok(Expr::FractionalLit(
+                Box::new(v.clone()),
+                text.clone(),
+                t.span,
+            )),
             Tok::Str(s) => Ok(Expr::Str(s, t.span)),
             Tok::Question => {
                 let start = t.span.start;
@@ -2346,13 +2351,19 @@ impl<'a> Parser<'a> {
                 let Some(next) = self.toks.get(self.pos) else {
                     return Ok(Expr::Ref("-".into(), t.span));
                 };
-                if matches!(next.tok, Tok::Int(_) | Tok::Double(_)) && next.span.start == t.span.end
+                if matches!(next.tok, Tok::Int(_) | Tok::FractionalLit(..))
+                    && next.span.start == t.span.end
                 {
                     self.bump(); // the number
                     match &next.tok {
-                        Tok::Double(v) => {
-                            Ok(Expr::Neg(Box::new(Expr::Double(*v, next.span)), t.span))
-                        }
+                        Tok::FractionalLit(v, text) => Ok(Expr::Neg(
+                            Box::new(Expr::FractionalLit(
+                                Box::new(v.clone()),
+                                text.clone(),
+                                next.span,
+                            )),
+                            t.span,
+                        )),
                         Tok::Int(v) => {
                             Ok(Expr::Neg(Box::new(Expr::Int(v.clone(), next.span)), t.span))
                         }
@@ -2692,6 +2703,7 @@ fn curry_expr(e: &mut Expr) {
 mod tests {
     use super::*;
     use crate::lexer::tokenize;
+    use num_rational::BigRational;
 
     fn prog(src: &str) -> Program {
         parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap()
@@ -2718,6 +2730,41 @@ mod tests {
             },
             Expr::Apply { name, args, .. } => Some((name.as_str(), args.iter().collect())),
             _ => None,
+        }
+    }
+
+    /// Whether `e` is the fractional literal the source text `text` spells.
+    /// A fractional literal carries its EXACT value, so tests compare the
+    /// source spelling the parser kept rather than an `f64`.
+    fn is_fl(e: &Expr, text: &str) -> bool {
+        matches!(e, Expr::FractionalLit(_, t, _) if t == text)
+    }
+
+    #[test]
+    fn a_fractional_literal_keeps_both_its_exact_value_and_its_text() {
+        match body("main = 0.1") {
+            Expr::FractionalLit(v, text, _) => {
+                assert_eq!(*v, BigRational::new(1.into(), 10.into()));
+                assert_eq!(text, "0.1");
+            }
+            other => panic!("expected a fractional literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_negative_fractional_literal_keeps_the_operand_positive() {
+        // `-0.5` is `negate 0.5`: the sign is the `Neg` node, so the literal
+        // payload stays the exact POSITIVE `1/2`. Negating in the payload
+        // would make `-0.0` indistinguishable from `0.0`.
+        match body("main = -0.5") {
+            Expr::Neg(inner, _) => match inner.as_ref() {
+                Expr::FractionalLit(v, text, _) => {
+                    assert_eq!(**v, BigRational::new(1.into(), 2.into()));
+                    assert_eq!(text, "0.5");
+                }
+                other => panic!("expected a fractional literal under the minus, got {other:?}"),
+            },
+            other => panic!("expected a negation, got {other:?}"),
         }
     }
 
@@ -2833,7 +2880,7 @@ mod tests {
                     assert!(
                         matches!(curry_head(&fields[0].1), Some(("*", args)) if args.len() == 2)
                     );
-                    assert!(matches!(&fields[1].1, Expr::Double(3.0, _)));
+                    assert!(is_fl(&fields[1].1, "3.0"));
                 } else {
                     panic!("expected Pair record, got {other:?}", other = args[0]);
                 }
@@ -2850,11 +2897,11 @@ mod tests {
         match curry_head(&body("main = 1.0 : 2.0 : list")) {
             Some(("cons", args)) => {
                 assert_eq!(args.len(), 2);
-                assert!(matches!(args[0], Expr::Double(1.0, _)));
+                assert!(is_fl(args[0], "1.0"));
                 match curry_head(args[1]) {
                     Some(("cons", args)) => {
                         assert_eq!(args.len(), 2);
-                        assert!(matches!(args[0], Expr::Double(2.0, _)));
+                        assert!(is_fl(args[0], "2.0"));
                         assert!(matches!(args[1], Expr::Ref(r, _) if r == "list"));
                     }
                     other => panic!("expected nested cons, got {other:?}"),
@@ -2882,8 +2929,8 @@ mod tests {
         match curry_head(&body("main = 1.0 `add` 2.0")) {
             Some(("add", args)) => {
                 assert_eq!(args.len(), 2);
-                assert!(matches!(args[0], Expr::Double(1.0, _)));
-                assert!(matches!(args[1], Expr::Double(2.0, _)));
+                assert!(is_fl(args[0], "1.0"));
+                assert!(is_fl(args[1], "2.0"));
             }
             other => panic!("expected `add` application, got {other:?}"),
         }
@@ -3135,7 +3182,7 @@ mod tests {
                 match curry_head(args[0]) {
                     Some(("ay38910", args)) => {
                         assert_eq!(args.len(), 2);
-                        assert!(matches!(args[0], Expr::Double(1750000.0, _)));
+                        assert!(is_fl(args[0], "1750000.0"));
                         assert!(matches!(args[1], Expr::Ref(r, _) if r == "regs"));
                     }
                     other => panic!("expected ay38910 apply, got {other:?}"),
@@ -3451,9 +3498,7 @@ mod tests {
                     assert_eq!(name, "gain");
                     assert!(default.is_some());
                     if let Some(d) = default {
-                        assert!(
-                            matches!(d.as_ref(), Expr::Double(v, _) if (*v - 0.5).abs() < 1e-9)
-                        );
+                        assert!(is_fl(d.as_ref(), "0.5"));
                     }
                 }
                 other => panic!("expected ActorParam, got {other:?}"),
@@ -4008,7 +4053,7 @@ mod tests {
         match curry_head(&body("main = 1.0 + 2.0 < 4.0")) {
             Some(("<", args)) => {
                 assert!(matches!(curry_head(args[0]), Some(("+", inner)) if inner.len() == 2));
-                assert!(matches!(args[1], Expr::Double(v, _) if *v == 4.0));
+                assert!(is_fl(args[1], "4.0"));
             }
             other => panic!("expected `<` at the root, got {other:?}"),
         }

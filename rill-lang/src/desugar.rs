@@ -704,7 +704,7 @@ fn desugar_expr(e: Expr) -> Result<Expr, CompileError> {
             span,
         },
         other @ (Expr::Int(..)
-        | Expr::Double(..)
+        | Expr::FractionalLit(..)
         | Expr::Void(..)
         | Expr::Str(..)
         | Expr::Ref(..)) => other,
@@ -720,6 +720,7 @@ mod tests {
     use super::*;
     use crate::lexer::tokenize;
     use crate::parser::parse;
+    use num_rational::BigRational;
 
     /// Desugar `src` and return the resulting definitions.
     fn desugared(src: &str) -> Vec<Def> {
@@ -783,7 +784,10 @@ mod tests {
         // The catch-all is a wildcard: its body re-binds the equation's own name
         // (`x`) to the shared argument parameter with a transparent `let`.
         assert_eq!(arms.len(), 2);
-        assert!(matches!(arms[0].pattern, Pattern::LitDouble(v) if v == 0.0));
+        assert!(matches!(
+            &arms[0].pattern,
+            Pattern::FractionalLit(v, _) if **v == BigRational::from_integer(0.into())
+        ));
         assert!(matches!(arms[1].pattern, Pattern::Wild));
         assert!(
             matches!(&arms[1].guards[0].1, Expr::Let { defs, .. }

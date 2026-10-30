@@ -3,6 +3,7 @@
 use crate::error::Span;
 use crate::mode::Mode;
 use num_bigint::BigInt;
+use num_rational::BigRational;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -92,8 +93,15 @@ pub enum Pattern {
     /// `literal_to_i64` (GHC's truncation) — the pattern stays on the `Int`
     /// track.
     LitInt(BigInt),
-    /// Double literal.
-    LitDouble(f64),
+    /// Fractional literal, at arbitrary precision: the EXACT value the source
+    /// digits denote, plus the source spelling.
+    ///
+    /// Haskell 2010 §6.4.1 makes a fractional literal a `fromRational` of the
+    /// exact decimal fraction, so `0.1` is `1/10` and NOT the nearest
+    /// `Double` (`3602879701896397/36028797018963968`). The payload is built
+    /// from the digits, and the text is what `render` reproduces. The ratio is
+    /// boxed for the same size reason as the expression's variant.
+    FractionalLit(Box<BigRational>, String),
     /// String literal.
     LitStr(String),
     /// Constructor application with (possibly nested) argument patterns.
@@ -146,8 +154,21 @@ pub enum Expr {
     /// lowering time (an `Integer`-annotated literal keeps every digit; an
     /// unannotated one converts with `literal_to_i64`).
     Int(BigInt, Span),
-    /// Double literal.
-    Double(f64, Span),
+    /// Fractional literal, at arbitrary precision: the EXACT value the source
+    /// digits denote, plus the source spelling.
+    ///
+    /// Haskell 2010 §6.4.1: a fractional literal is `fromRational` applied to
+    /// the exact decimal fraction its digits spell, so `0.1` is `1 % 10`, not
+    /// the nearest `Double` (`3602879701896397/36028797018963968`). The
+    /// payload is built from the DIGITS (never from an `f64`), and the text is
+    /// kept beside it so `render` reproduces the source spelling (`1e3`
+    /// stays `1e3`).
+    ///
+    /// The ratio is BOXED so this variant stays within the AST's existing
+    /// size: a bare `BigRational` is 64 bytes, which pushed `Expr` from 72 to
+    /// 104 bytes and overflowed the recursion stack of the lowering pass on a
+    /// nested program (the same ceiling earlier stages hit).
+    FractionalLit(Box<BigRational>, String, Span),
     /// Imaginary literal is gone (Haskell 2010 has no imaginary literal).
     /// Unit literal `()` — the sole inhabitant of `ValueTy::Void`.
     Void(Span),
@@ -394,7 +415,7 @@ impl Expr {
     pub fn span(&self) -> Span {
         match self {
             Expr::Int(_, s)
-            | Expr::Double(_, s)
+            | Expr::FractionalLit(_, _, s)
             | Expr::Void(s)
             | Expr::Str(_, s)
             | Expr::Ref(_, s)

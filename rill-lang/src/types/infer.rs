@@ -1053,7 +1053,7 @@ fn is_const_value_ref(ctx: &Ctx, e: &Expr) -> bool {
         }
         match ctx.def_bodies.get(name.as_str()) {
             Some(Expr::Int(_, _)) => return true,
-            Some(Expr::Double(_, _)) => return true,
+            Some(Expr::FractionalLit(_, _, _)) => return true,
             Some(next @ Expr::Ref(_, _)) => cur = next,
             _ => return false,
         }
@@ -1150,7 +1150,7 @@ fn collect_static_calls(
                 collect_static_calls(a, src, bound, nodes, out);
             }
         }
-        Expr::Ref(_, _) | Expr::Int(_, _) | Expr::Double(_, _) | Expr::Str(_, _) => {}
+        Expr::Ref(_, _) | Expr::Int(_, _) | Expr::FractionalLit(_, _, _) | Expr::Str(_, _) => {}
         Expr::Neg(inner, _) => collect_static_calls(inner, src, bound, nodes, out),
         Expr::Let { defs, body, .. } => {
             let mut inner = bound.clone();
@@ -1354,7 +1354,7 @@ fn infer_method_value_vty_expected(
         // compatibility), everything else resolves to `Buffer`.
         ValueTy::Buffer(_) => match e {
             Expr::Int(_, _) => Ok(ValueTy::Int),
-            Expr::Double(_, _) => Ok(ValueTy::Double),
+            Expr::FractionalLit(_, _, _) => Ok(ValueTy::Double),
             _ => Ok(ctx.env.buffer_vty()),
         },
         vty => Ok(vty.clone()),
@@ -1371,7 +1371,7 @@ fn infer_method_value_vty_expected(
 /// (`((\b -> b) 1.0) :: Buffer` is rejected, as GHC rejects it), and a literal
 /// never stands in for a different SCALAR type (`1 == 1.0` stays an error).
 fn literal_fills_buffer(ctx: &Ctx, param: &ValueTy, actual: &ValueTy, arg: &Expr) -> bool {
-    matches!(arg, Expr::Int(_, _) | Expr::Double(_, _))
+    matches!(arg, Expr::Int(_, _) | Expr::FractionalLit(_, _, _))
         && matches!(ctx.subst.resolve_value(param), ValueTy::Buffer(_))
         && !matches!(ctx.subst.resolve_value(actual), ValueTy::Buffer(_))
 }
@@ -3714,7 +3714,7 @@ fn arm_result_vty(bt: ArrowTy, body: &Expr, span: Span) -> Result<ValueTy, Compi
     match &bt.vty {
         ValueTy::Buffer(_) => match body {
             Expr::Int(_, _) => Ok(ValueTy::Int),
-            Expr::Double(_, _) => Ok(ValueTy::Double),
+            Expr::FractionalLit(_, _, _) => Ok(ValueTy::Double),
             _ => Err(CompileError::Type {
                 msg: "branch must be a value expression (0->1 value channel)".into(),
                 span,
@@ -3989,7 +3989,7 @@ fn bind_pattern(
             }
             Ok(())
         }
-        Pattern::LitInt(_) | Pattern::LitDouble(_) | Pattern::LitStr(_) => {
+        Pattern::LitInt(_) | Pattern::FractionalLit(..) | Pattern::LitStr(_) => {
             Err(CompileError::Type {
                 msg: "literal pattern requires a scalar scrutinee".into(),
                 span: arm_span,
@@ -4054,7 +4054,7 @@ fn check_scalar_pattern(
                 unify_value(scrutinee_vty, &ValueTy::Int, &mut ctx.subst, arm_span)
             }
         }
-        Pattern::LitDouble(_) => {
+        Pattern::FractionalLit(..) => {
             unify_value(scrutinee_vty, &ValueTy::Double, &mut ctx.subst, arm_span)
         }
         Pattern::LitStr(_) => {
@@ -4193,7 +4193,7 @@ fn infer_expr_expected(
             Some(ValueTy::Double) => ValueTy::Double,
             _ => ValueTy::Int,
         })),
-        Expr::Double(_, _) => Ok(ArrowTy::value(match expected {
+        Expr::FractionalLit(_, _, _) => Ok(ArrowTy::value(match expected {
             Some(ValueTy::Buffer(_)) => ctx.env.buffer_vty(),
             _ => ValueTy::Double,
         })),
@@ -4461,7 +4461,7 @@ fn infer_expr_expected(
             // `_` in match-scrutinee position is the identity value wire: it is
             // a Value channel with a fresh value type, pinned to the arm-derived
             // sum type (or a literal arm's scalar type) below by unification.
-            // Bare Int/Double literals are signal-rate channels in v1 but
+            // Bare Int/Fractional literals are signal-rate channels in v1 but
             // value-compatible in value positions (mirroring `arm_result_vty`).
             // Derive the arm constructors' sum type BEFORE inferring the
             // scrutinee, so the scrutinee can be inferred with that sum as its
@@ -4506,7 +4506,7 @@ fn infer_expr_expected(
             });
             let st = match scrutinee.as_ref() {
                 Expr::Int(_, _) => ArrowTy::value_channel(ValueTy::Int),
-                Expr::Double(_, _) => ArrowTy::value_channel(ValueTy::Double),
+                Expr::FractionalLit(_, _, _) => ArrowTy::value_channel(ValueTy::Double),
                 _ => infer_expr_expected(ctx, scrutinee, pre_expected)?,
             };
             // The scrutinee must be a single value channel (not a signal buffer).
@@ -7381,11 +7381,13 @@ fn infer_apply_impl(
                         // with `Buffer` expected, exactly as the buffer
                         // arithmetic path does (`lowering` broadcasts a scalar
                         // to a buffer constant).
-                        let at = if matches!(&args[pos], Expr::Int(_, _) | Expr::Double(_, _)) {
-                            infer_expr_expected(ctx, &args[pos], Some(ctx.env.buffer_vty()))?
-                        } else {
-                            infer_expr(ctx, &args[pos])?
-                        };
+                        let at =
+                            if matches!(&args[pos], Expr::Int(_, _) | Expr::FractionalLit(_, _, _))
+                            {
+                                infer_expr_expected(ctx, &args[pos], Some(ctx.env.buffer_vty()))?
+                            } else {
+                                infer_expr(ctx, &args[pos])?
+                            };
                         if matches!(at.vty, ValueTy::Var(_)) {
                             // An unresolved λ-parameter used in a signal slot is
                             // a signal parameter: bind it to `Buffer`. (Curried
@@ -7775,7 +7777,7 @@ fn infer_apply_impl(
             .is_some_and(|c| matches!(c, ValueTy::Buffer(_))),
         _ => false,
     };
-    let at = if matches!(arg, Expr::Int(_, _) | Expr::Double(_, _)) && want_buffer {
+    let at = if matches!(arg, Expr::Int(_, _) | Expr::FractionalLit(_, _, _)) && want_buffer {
         infer_expr_expected(ctx, arg, Some(ctx.env.buffer_vty()))?
     } else {
         infer_expr(ctx, arg)?

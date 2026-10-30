@@ -79,6 +79,42 @@ fn roundtrips_an_out_of_range_integer_literal() {
 }
 
 #[test]
+fn roundtrips_a_fractional_literal_exactly() {
+    // The AST payload is an exact `BigRational` plus the source spelling, so a
+    // JSON round-trip must preserve BOTH: a value with more digits than an
+    // `f64` can hold would lose digits if it were serialized as a float, and
+    // the spelling (`1e3`, `1.00`) is part of the node.
+    roundtrip("main = 0.1");
+    roundtrip("main = 1.2345678901234567890123");
+    roundtrip("main = 1e3");
+    roundtrip("main = 1.5e-2");
+    roundtrip("main = 1.00");
+    // A fractional PATTERN is the same node shape in `Pattern` position, so it
+    // must round-trip too (the exact value and the spelling are both fields).
+    roundtrip("main = case 1.0 of { 0.5 -> 1.0; _ -> 2.0 }");
+}
+
+#[test]
+fn a_fractional_literal_survives_json_with_its_exact_value() {
+    // Assert the VALUE, not only `Program` equality: the serialized form must
+    // carry the ratio's two integers, so `0.1` comes back as `1/10` and never
+    // as the nearest double.
+    let program = parse("main = 0.1");
+    let back = program_from_json(&program_to_json(&program).unwrap()).unwrap();
+    match back.main_def().unwrap().body() {
+        rill_lang::ast::Expr::FractionalLit(v, text, _) => {
+            assert_eq!(
+                **v,
+                num_rational::BigRational::new(1.into(), 10.into()),
+                "the exact value must survive JSON"
+            );
+            assert_eq!(text, "0.1");
+        }
+        other => panic!("expected a fractional literal, got {other:?}"),
+    }
+}
+
+#[test]
 fn roundtrips_a_type_synonym_with_a_compound_target() {
     // A synonym's target is a full `TypeExpr` (Haskell 2010 §4.1.2), so the
     // serialized AST must carry the application rather than a bare name:

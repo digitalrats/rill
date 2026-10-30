@@ -3809,9 +3809,11 @@ impl TypeEnv {
                 Some(d) => self.validate_body_type_names(d, tyvars),
                 None => Ok(()),
             },
-            Expr::Int(..) | Expr::Double(..) | Expr::Void(..) | Expr::Str(..) | Expr::Ref(..) => {
-                Ok(())
-            }
+            Expr::Int(..)
+            | Expr::FractionalLit(..)
+            | Expr::Void(..)
+            | Expr::Str(..)
+            | Expr::Ref(..) => Ok(()),
         }
     }
 

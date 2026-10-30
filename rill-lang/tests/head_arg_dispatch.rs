@@ -78,14 +78,14 @@ fn resolve_method_uses_the_full_applied_type_as_key() {
         .resolve_method("size", "Pair Int (Pair Int Int)")
         .expect("nested instance resolves by its full type");
     assert!(
-        matches!(&body, Expr::Double(v, _) if *v == 3.0),
+        matches!(&body, Expr::FractionalLit(_, t, _) if t == "3.0"),
         "expected the 3-D instance body, got {body:?}"
     );
     let (_, _, body) = env
         .resolve_method("size", "Pair Int Int")
         .expect("2-D instance resolves by its full type");
     assert!(
-        matches!(&body, Expr::Double(v, _) if *v == 2.0),
+        matches!(&body, Expr::FractionalLit(_, t, _) if t == "2.0"),
         "expected the 2-D instance body, got {body:?}"
     );
 }

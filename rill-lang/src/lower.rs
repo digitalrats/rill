@@ -14,6 +14,8 @@ use crate::types::infer::TypedProgram;
 use crate::types::ty::{concat_map_result_elem, DataInfo, Subst, TypeEnv, ValueTy};
 use crate::types::unify::unify_value;
 use num_bigint::BigInt;
+use num_rational::BigRational;
+use num_traits::ToPrimitive;
 
 /// Match a concrete value type against a structural pattern that may contain
 /// fresh `Var` positions (a record's freshened field type), recording each
@@ -905,6 +907,25 @@ impl<'a> Lowerer<'a> {
         r
     }
 
+    /// Lower one fractional literal to a `Double` constant.
+    ///
+    /// Kept out of line (`#[inline(never)]`): the arm sits in the deeply
+    /// recursive `lower_value_expected` dispatch, and the exact-ratio payload
+    /// made its inline frame large enough to overflow the stack on a nested
+    /// program (a 2-D `assocs`).
+    #[inline(never)]
+    fn lower_fractional_literal(
+        &mut self,
+        v: &BigRational,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        let dst = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueConstDouble {
+            dst,
+            value: rational_to_f64(v),
+        });
+        Ok((dst, ValueTy::Double))
+    }
+
     /// Emit a function application: eager `ValueCallFunc` in strict mode,
     /// lazy `ValueCallLazy` (a thunk) in complete mode. The lazy form is what
     /// makes recursion and infinite structures productive — the call suspends
@@ -1345,7 +1366,10 @@ impl<'a> Lowerer<'a> {
                 let (r, _) = self.lower_value_expected(e, expected)?;
                 return Ok(r);
             }
-            Expr::Lambda { .. } | Expr::Double(_, _) | Expr::Int(_, _) | Expr::Str(_, _) => {
+            Expr::Lambda { .. }
+            | Expr::FractionalLit(_, _, _)
+            | Expr::Int(_, _)
+            | Expr::Str(_, _) => {
                 let (r, _) = self.lower_value_expected(e, expected)?;
                 return Ok(r);
             }
@@ -1356,7 +1380,7 @@ impl<'a> Lowerer<'a> {
             Expr::Annot { expr, .. } => match expr.as_ref() {
                 Expr::Ref(..)
                 | Expr::Lambda { .. }
-                | Expr::Double(_, _)
+                | Expr::FractionalLit(_, _, _)
                 | Expr::Int(_, _)
                 | Expr::Str(_, _) => {
                     let (r, _) = self.lower_value_expected(e, expected)?;
@@ -1498,11 +1522,7 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ValueTy::Int))
             }
-            Expr::Double(v, _) => {
-                let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueConstDouble { dst, value: *v });
-                Ok((dst, ValueTy::Double))
-            }
+            Expr::FractionalLit(v, _, _) => self.lower_fractional_literal(v),
             Expr::Ref(name, span) => self.lower_value_ref_expected(name, *span, expected),
             // `e :: T` erases: lowering the inner expression with the same
             // expected type AND returning its own type means the annotation
@@ -3888,7 +3908,7 @@ impl<'a> Lowerer<'a> {
                 // type is `Integer`, in which case it folds to a
                 // `ValueConstInteger` — `-3 :: Integer` must be a typed-`Integer`
                 // slot holding an `Integer`, the same invariant the literal
-                // path keeps. A float literal to a `Value::Double`, and a
+                // path keeps. A fractional literal to a `Value::Double`, and a
                 // non-literal follows its lowered type. Without this, `-1` was
                 // the one place a statically-`Int` slot held a `Value::Double` —
                 // and an `Ix` offset computed from a negative lower bound then
@@ -7162,7 +7182,7 @@ impl<'a> Lowerer<'a> {
                     out.push(name.clone());
                 }
             }
-            Expr::Int(_, _) | Expr::Double(_, _) | Expr::Void(_) | Expr::Str(_, _) => {}
+            Expr::Int(_, _) | Expr::FractionalLit(_, _, _) | Expr::Void(_) | Expr::Str(_, _) => {}
             // A kernel is a compiler instruction, not a call to a named
             // definition: the callee contributes no capture (there is no name),
             // and only the arguments can carry free variables.
@@ -8401,11 +8421,11 @@ impl<'a> Lowerer<'a> {
                 }
                 Ok(self.emit_literal_test(scrutinee_reg, lit_reg, else_t))
             }
-            Pattern::LitDouble(v) => {
+            Pattern::FractionalLit(v, _) => {
                 let lit_reg = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueConstDouble {
                     dst: lit_reg,
-                    value: *v,
+                    value: rational_to_f64(v),
                 });
                 Ok(self.emit_literal_test(scrutinee_reg, lit_reg, else_t))
             }
@@ -8828,9 +8848,12 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok(vec![dst])
             }
-            Expr::Double(v, _) => {
+            Expr::FractionalLit(v, _, _) => {
                 let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueBufferConst { dst, value: *v });
+                self.emit_value(ValueInstr::ValueBufferConst {
+                    dst,
+                    value: rational_to_f64(v),
+                });
                 Ok(vec![dst])
             }
             Expr::Void(span) => Err(CompileError::Type {
@@ -9941,7 +9964,9 @@ fn rename_bound(e: &Expr, renames: &HashMap<String, String>) -> Expr {
                 .collect(),
             *span,
         ),
-        Expr::Int(_, _) | Expr::Double(_, _) | Expr::Void(_) | Expr::Str(_, _) => e.clone(),
+        Expr::Int(_, _) | Expr::FractionalLit(_, _, _) | Expr::Void(_) | Expr::Str(_, _) => {
+            e.clone()
+        }
     }
 }
 
@@ -10090,7 +10115,7 @@ fn body_carries_class_demand(env: &TypeEnv, e: &Expr) -> bool {
 
 /// The arbitrary-precision integer value of a constant expression, when it is
 /// an integer literal (possibly nested under unary minus). Unlike [`const_f64`]
-/// this does NOT accept float literals or arithmetic: it is used where the
+/// this does NOT accept fractional literals or arithmetic: it is used where the
 /// constant must stay on the Int track (`Expr::Neg` of an integer literal) and
 /// deciding whether a literal is an integer constant at all.
 fn const_bigint(e: &Expr) -> Option<BigInt> {
@@ -10145,9 +10170,33 @@ fn literal_to_f64(v: &BigInt) -> f64 {
         .expect("decimal integer text always parses as f64")
 }
 
+/// The `f64` value of an exact fractional literal.
+///
+/// This is THE conversion boundary for fractional literals: the AST carries
+/// the exact [`BigRational`] its digits spell, and the IR's
+/// `ValueConstDouble` carries an `f64`, so exactly one rounding happens here —
+/// the same discipline [`literal_to_i64`] keeps for integers. `0.1` lowers to
+/// the nearest `f64` to `1/10` (it can only be an approximation), but the AST
+/// and every consumer of the exact value still see `1/10`.
+///
+/// Correctly rounded, and saturating to `INFINITY` outside `f64`'s range:
+/// `num-rational`'s `ToPrimitive::to_f64` rounds the quotient to 53 bits with
+/// round-to-even and shifts by an exact power of two, so it is the correctly
+/// rounded result of `numer / denom` rather than a mantissa truncation.
+///
+/// Kept out of line: `to_f64` is a large routine (big-integer shifts and a
+/// 53-bit round-to-even loop), and inlining it into the deeply recursive
+/// `lower_value` dispatch added enough locals to overflow the stack on a
+/// nested program.
+#[inline(never)]
+fn rational_to_f64(v: &BigRational) -> f64 {
+    v.to_f64()
+        .expect("a non-zero rational always converts to an f64")
+}
+
 fn const_f64(e: &Expr) -> Option<f64> {
     match e {
-        Expr::Double(v, _) => Some(*v),
+        Expr::FractionalLit(v, _, _) => Some(rational_to_f64(v)),
         Expr::Int(v, _) => Some(literal_to_f64(v)),
         Expr::Neg(inner, _) => const_f64(inner).map(|v| -v),
         // Constant arithmetic: an infix operator IS an application of the
@@ -11360,5 +11409,34 @@ mod tests {
         let huge: BigInt = "9".repeat(400).parse().unwrap();
         assert_eq!(literal_to_f64(&huge), f64::INFINITY);
         assert_eq!(literal_to_f64(&-huge), f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn rational_to_f64_is_the_one_conversion_boundary() {
+        // Measured on GHC 9.10.3: `show (x :: Double)` for the same decimal
+        // texts the lexer turns into exact ratios. `0.1` can only be
+        // approximated here — the EXACT `1/10` lives in the AST — but the
+        // approximation must be the correctly rounded nearest double.
+        for (literal, ghc) in [
+            ("0.1", 0.1f64),
+            ("3.14", 3.14f64),
+            ("1e3", 1000.0f64),
+            ("1.5e-2", 0.015f64),
+            // 18 digits whose exact rational is NOT exactly the double:
+            // truncating the mantissa instead of rounding would differ.
+            ("1.2345678901234567890123", 1.2345678901234567f64),
+            ("9007199254740993.0", 9007199254740992.0f64),
+        ] {
+            let exact = crate::lexer::decimal_rational(literal).unwrap();
+            assert_eq!(
+                rational_to_f64(&exact),
+                ghc,
+                "`{literal}` must convert to GHC's Double"
+            );
+        }
+        // Beyond f64's finite range the conversion saturates, as GHC prints
+        // `Infinity` for `1e400 :: Double`.
+        let huge = crate::lexer::decimal_rational("1e400").unwrap();
+        assert_eq!(rational_to_f64(&huge), f64::INFINITY);
     }
 }
