@@ -437,10 +437,32 @@ fn a_buffer_abs_reached_through_a_function_definition_is_the_same_block() {
 fn a_buffer_from_integer_reached_through_a_function_definition_fills_its_own_block() {
     // `exec_value_from_integer`'s `Buffer` arm had the SAME absolute-vs-relative
     // destination defect, so it is pinned through a definition too (the only
-    // way the fragment `base` is non-zero).
+    // way the fragment `base` is non-zero). The assertion compares SAMPLE
+    // VALUES, not buffers: `==` on two buffers is answered by buffer identity
+    // (an open defect, Task 5b), so a buffer-equality assertion would pass even
+    // if the fill produced the wrong block.
+    // The DIRECT form of the same expression: `fromInteger`'s expected type is
+    // known there, so no annotation is needed and the two must agree sample for
+    // sample. Comparing through a `show_bool (… == …)` would assert buffer
+    // equality, which is answered by identity (open defect, Task 5b).
+    let got = run_block_with(
+        "f :: Buffer -> Int -> Buffer;\nf b n = b + fromInteger n;\n",
+        "f (square 0.0 1.0 0.0) 2",
+    );
+    let want = run_block_with(
+        "g :: Buffer -> Int -> Buffer;\ng b n = b + fromInteger n;\n",
+        "(square 0.0 1.0 0.0) + fromInteger 2",
+    );
     assert_eq!(
-        run_io("f :: Buffer -> Int -> Buffer;\nf b n = b + fromInteger n;\nmain = do { write (Just (show_bool (f (square 0.0 1.0 0.0) 2 == (square 0.0 1.0 0.0) + fromInteger 2))) stdout; return () };"),
-        "True"
+        got, want,
+        "the fill through a definition must match the direct form"
+    );
+    // `square 0.0 1.0 0.0` is a constant 1.0 block; adding the `fromInteger`
+    // fill must make every sample 3.0, so a silent zero cannot pass.
+    assert!(
+        got.iter().all(|x| (*x - 3.0).abs() < 1e-6),
+        "expected 3.0 per sample, got {:?}",
+        &got[..4]
     );
 }
 
