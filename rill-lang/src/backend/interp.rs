@@ -1273,15 +1273,25 @@ fn reg_is_buffer<T: Transcendental, const BUF: usize>(
 /// `abs_slice::<T, 4, ScalarVector4<T>>` the by-name buffer branch used.
 /// `signum`/`recip` have no `UnOp` of their own — they are the element-wise
 /// scalar operations over the block, which is the identical arithmetic.
+///
+/// `dst` is the FRAGMENT-RELATIVE destination register and `base` its offset
+/// into the world's register store — the same convention [`ValueBufferUn`]
+/// uses. Passing an already-absolute `dst` with `base: 0` would make
+/// [`buffer_index`]'s guard compare against the wrong length and index past
+/// the end of the buffer table whenever a user definition (not just the
+/// program's own top level) is what reaches the kernel.
+///
+/// [`ValueBufferUn`]: crate::ir::ValueInstr::ValueBufferUn
 fn exec_value_buffer_unary<T: Transcendental, const BUF: usize>(
     ir: &Ir,
     world: &mut WorldState<T, BUF>,
     op: ValueUnOp,
     dst: usize,
     src_idx: usize,
+    base: usize,
 ) {
     let n = world.block_len;
-    let di = buffer_index(ir, world, dst, 0);
+    let di = buffer_index(ir, world, dst, base);
     let mut scratch = [T::ZERO; BUF];
     world.buffers[src_idx].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
     world.buffers[di].with_data_mut(|b| match op {
@@ -1298,7 +1308,7 @@ fn exec_value_buffer_unary<T: Transcendental, const BUF: usize>(
             }
         }
     });
-    world.value_regs[dst] = alloc_owned(ir, world, Value::Buffer(di));
+    world.value_regs[dst + base] = alloc_owned(ir, world, Value::Buffer(di));
 }
 
 /// Haskell 2010's `signum` for a floating operand (§6.4.4), which is **not**
@@ -1347,24 +1357,28 @@ fn signum_sample<T: Transcendental>(x: T) -> T {
 ///
 /// The operand is FORCED first: in lazy mode a buffer-typed binding is a thunk
 /// whose register holds a `ThunkCell`, and inspecting the register without
-/// forcing would misclassify it as a non-numeric scalar (a fault). Registers are
-/// ABSOLUTE here (`dst`/`src` already carry `+ base`).
+/// forcing would misclassify it as a non-numeric scalar (a fault). `dst`/`src`
+/// are FRAGMENT-RELATIVE here and `base` is their offset into the world's
+/// register store, so the buffer half can resolve its destination through
+/// [`buffer_index`] with the same convention [`ValueBufferUn`](crate::ir::ValueInstr::ValueBufferUn)
+/// uses — an already-absolute register would be offset a second time.
 fn exec_value_unary_instr<T: Transcendental, const BUF: usize>(
     ir: &Ir,
     world: &mut WorldState<T, BUF>,
     op: ValueUnOp,
     dst: usize,
     src: usize,
+    base: usize,
     drops: &mut Vec<ArenaRef>,
 ) {
     // Force exactly as the scalar path would, then decide. `force` is
     // idempotent (a memoized thunk is already a plain ref), so the scalar path
     // re-reading the operand costs nothing.
-    if let Some(src_idx) = reg_is_buffer(ir, world, src, drops) {
-        exec_value_buffer_unary(ir, world, op, dst, src_idx);
+    if let Some(src_idx) = reg_is_buffer(ir, world, src + base, drops) {
+        exec_value_buffer_unary(ir, world, op, dst, src_idx, base);
         return;
     }
-    exec_value_unary(ir, world, op, dst, src, drops);
+    exec_value_unary(ir, world, op, dst + base, src + base, drops);
 }
 
 /// Execute a [`ValueInstr::ValueFromInteger`] conversion and store the result
@@ -1373,21 +1387,27 @@ fn exec_value_unary_instr<T: Transcendental, const BUF: usize>(
 /// `target` names the numeric track to build; the source is an `Int` or an
 /// `Integer` and never a `Double` (a `fromInteger` with a float argument is a
 /// lowering bug, not a rounding request).
+///
+/// `dst`/`src` are FRAGMENT-RELATIVE registers and `base` is their offset into
+/// the world's register store: the `Buffer` arm resolves its destination
+/// through [`buffer_index`] with the same `(relative, base)` convention
+/// [`ValueBufferUn`](crate::ir::ValueInstr::ValueBufferUn) uses.
 fn exec_value_from_integer<T: Transcendental, const BUF: usize>(
     ir: &Ir,
     world: &mut WorldState<T, BUF>,
     dst: usize,
     src: usize,
     target: crate::ir::ValueTyTag,
+    base: usize,
     drops: &mut Vec<ArenaRef>,
 ) {
-    let v = arithmetic_operand(ir, world, src, drops);
+    let v = arithmetic_operand(ir, world, src + base, drops);
     // Release the previous `dst` occupant AFTER the operand is read.
-    if let Some(r) = world.value_regs.get_mut(dst).and_then(|r| r.take()) {
+    if let Some(r) = world.value_regs.get_mut(dst + base).and_then(|r| r.take()) {
         drops.push(r);
     }
     if matches!(v, ArithmeticOperand::Bottom) {
-        world.value_regs[dst] = alloc_owned(ir, world, Value::Bottom);
+        world.value_regs[dst + base] = alloc_owned(ir, world, Value::Bottom);
         return;
     }
     // The exact `BigInt`/`i64` the target needs, computed WITHOUT an `f64`
@@ -1403,11 +1423,11 @@ fn exec_value_from_integer<T: Transcendental, const BUF: usize>(
                         world,
                         "`fromInteger` needs an integer operand (an Int or an Integer)",
                     );
-                    world.value_regs[dst] = None;
+                    world.value_regs[dst + base] = None;
                     return;
                 }
             };
-            world.value_regs[dst] = alloc_owned(ir, world, Value::Integer(out));
+            world.value_regs[dst + base] = alloc_owned(ir, world, Value::Integer(out));
         }
         crate::ir::ValueTyTag::Double => {
             let out = match v {
@@ -1426,11 +1446,11 @@ fn exec_value_from_integer<T: Transcendental, const BUF: usize>(
                         world,
                         "`fromInteger` needs an integer operand (an Int or an Integer)",
                     );
-                    world.value_regs[dst] = None;
+                    world.value_regs[dst + base] = None;
                     return;
                 }
             };
-            world.value_regs[dst] = alloc_owned(ir, world, Value::Double(out));
+            world.value_regs[dst + base] = alloc_owned(ir, world, Value::Double(out));
         }
         crate::ir::ValueTyTag::Buffer => {
             let out = match v {
@@ -1446,14 +1466,14 @@ fn exec_value_from_integer<T: Transcendental, const BUF: usize>(
                         world,
                         "`fromInteger` needs an integer operand (an Int or an Integer)",
                     );
-                    world.value_regs[dst] = None;
+                    world.value_regs[dst + base] = None;
                     return;
                 }
             };
             let n = world.block_len;
-            let di = buffer_index(ir, world, dst, 0);
+            let di = buffer_index(ir, world, dst, base);
             world.buffers[di].with_data_mut(|b| b[..n].fill(out));
-            world.value_regs[dst] = alloc_owned(ir, world, Value::Buffer(di));
+            world.value_regs[dst + base] = alloc_owned(ir, world, Value::Buffer(di));
         }
     }
 }
@@ -1647,27 +1667,17 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             *b + base,
             drops,
         ),
-        ValueInstr::ValueNegate { dst, src } => exec_value_unary_instr(
-            ir,
-            world,
-            ValueUnOp::Negate,
-            *dst + base,
-            *src + base,
-            drops,
-        ),
-        ValueInstr::ValueAbs { dst, src } => {
-            exec_value_unary_instr(ir, world, ValueUnOp::Abs, *dst + base, *src + base, drops)
+        ValueInstr::ValueNegate { dst, src } => {
+            exec_value_unary_instr(ir, world, ValueUnOp::Negate, *dst, *src, base, drops)
         }
-        ValueInstr::ValueSignum { dst, src } => exec_value_unary_instr(
-            ir,
-            world,
-            ValueUnOp::Signum,
-            *dst + base,
-            *src + base,
-            drops,
-        ),
+        ValueInstr::ValueAbs { dst, src } => {
+            exec_value_unary_instr(ir, world, ValueUnOp::Abs, *dst, *src, base, drops)
+        }
+        ValueInstr::ValueSignum { dst, src } => {
+            exec_value_unary_instr(ir, world, ValueUnOp::Signum, *dst, *src, base, drops)
+        }
         ValueInstr::ValueRecip { dst, src } => {
-            exec_value_unary_instr(ir, world, ValueUnOp::Recip, *dst + base, *src + base, drops)
+            exec_value_unary_instr(ir, world, ValueUnOp::Recip, *dst, *src, base, drops)
         }
         ValueInstr::ValueCompare3 { dst, a, b } => {
             let (ar, br) = (
@@ -1684,7 +1694,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             world.value_regs[*dst + base] = res.and_then(|v| alloc_owned(ir, world, v));
         }
         ValueInstr::ValueFromInteger { dst, src, target } => {
-            exec_value_from_integer(ir, world, *dst + base, *src + base, *target, drops)
+            exec_value_from_integer(ir, world, *dst, *src, *target, base, drops)
         }
         ValueInstr::ValueConstructRecord { dst, fields } => {
             world.value_regs[*dst + base] =

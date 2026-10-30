@@ -29,11 +29,31 @@ fn shows(show: &str, expr: &str) -> String {
     format!("main = do {{ write (Just ({show} ({expr}))) stdout; return () }};")
 }
 
-/// Run a whole-buffer `main` and return the live block.
-fn run_block(expr: &str) -> Vec<f32> {
+/// [`run`] with the foreign generator registry attached, so a program may build
+/// a buffer (`sine`/`square`) and still print through `main`.
+fn run_io(src: &str) -> String {
     let mut ffi = ForeignRegistry::<f32>::new();
     register::register_foreign_generators(&mut ffi);
-    let world = eval_ffi("", expr, ffi).unwrap_or_else(|e| panic!("run failed for:\n{expr}\n{e}"));
+    let mut prog =
+        compile::<f32, 256>(src, ffi).unwrap_or_else(|e| panic!("compile failed for:\n{src}\n{e}"));
+    prog.run()
+        .unwrap_or_else(|e| panic!("run failed for:\n{src}\n{e}"));
+    prog.stdout().concat()
+}
+
+/// Run a whole-buffer `main` and return the live block.
+fn run_block(expr: &str) -> Vec<f32> {
+    run_block_with("", expr)
+}
+
+/// [`run_block`] with source definitions in scope, so a user FUNCTION can be
+/// the thing that reaches a buffer kernel (the shape that used to index out of
+/// bounds).
+fn run_block_with(defs: &str, expr: &str) -> Vec<f32> {
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register::register_foreign_generators(&mut ffi);
+    let world = eval_ffi(defs, expr, ffi)
+        .unwrap_or_else(|e| panic!("run failed for:\n{defs}\n{expr}\n{e}"));
     let r = world.result().expect("a whole-buffer result was expected");
     let mut got = [0.0f32; 256];
     assert!(world.copy_buffer(r, &mut got), "`{expr}` must be a buffer");
@@ -287,6 +307,141 @@ fn buffer_compare_uses_the_same_order_as_eq() {
     .unwrap_or_else(|e| panic!("{e}"));
     prog.run().unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(prog.stdout().concat(), "0");
+}
+
+#[test]
+#[ignore = "open defect: `value_cmp_ref` has no `(Buffer, Buffer)` arm, so any two \
+            buffers compare equal. Remove this ignore when whole-buffer ordering \
+            lands with the Buffer instances."]
+fn compare_distinguishes_two_distinct_buffers() {
+    // Two different blocks must not compare equal. `compare b b == 0` proves
+    // nothing: a no-op comparator satisfies it too.
+    //
+    // OPEN DEFECT: `value_cmp_ref` (`interp.rs`) has no `(Buffer, Buffer)` arm,
+    // so two buffers fall through to `kind_rank`, which answers rank 16 for
+    // both and therefore `0` (Equal) for ANY pair — `compare b1 b2` cannot see
+    // an unequal block, and `==`/`<` over buffers have the same defect (both
+    // go through `value_cmp`). Pre-existing (measured identical at base
+    // `25c7954`), but this task makes `compare` reachable, so it is recorded.
+    // Owner: the Buffer-instance stage — whole-buffer ORDERING is a design
+    // decision (element-wise lexicographic over the block? by sample count?),
+    // not a bug to patch here. This assertion is deliberately left FAILING as
+    // a `#[ignore]` + tracked row rather than deleted; remove the `ignore` when
+    // the ordering lands.
+    let out = run_io("main = do { write (Just (show_bool (compare (sine 440.0 0.5 0.0) (sine 220.0 0.5 0.0) == 0))) stdout; return () };");
+    assert_eq!(out, "False", "two distinct buffers must not compare equal");
+}
+
+#[test]
+fn abs_works_on_a_ratio_because_it_is_a_class_method() {
+    // Before the name branch was removed, `abs` at any non-Buffer type was a
+    // compile error, so the `Ratio` instance's `abs` body was dead code.
+    // GHC 9.10.3: `abs ((-3) % 4)` is `3 % 4`, so the fields are 3 and 4.
+    assert_eq!(
+        run("r = Ratio { num: (-3 :: Integer), den: (4 :: Integer) };\nq = abs r;\nmain = do { write (Just (show_integer (numerator q))) stdout; write (Just (show_integer (denominator q))) stdout; return () };"),
+        "34"
+    );
+}
+
+#[test]
+fn negate_at_int_wraps_like_ghc() {
+    // The `0i64.wrapping_sub(x)` path. GHC 9.10.3: `negate 3 = -3`,
+    // `negate 0 = 0`, and `negate minBound :: Int` is `minBound` (the
+    // two's-complement wrap, printed `-9223372036854775808`). The literal
+    // 9223372036854775808 truncates to `minBound` at the `Int` boundary, so
+    // that call really does negate `i64::MIN`.
+    assert_eq!(run(&shows("show_int", "negate 3")), "-3");
+    assert_eq!(run(&shows("show_int", "negate 0")), "0");
+    assert_eq!(
+        run(&shows("show_int", "negate 9223372036854775808")),
+        "-9223372036854775808"
+    );
+}
+
+#[test]
+fn recip_is_rejected_at_int_and_integer() {
+    // `Fractional` has no `Int`/`Integer` instance (Haskell 2010 §6.4.4), so
+    // both are loud type errors; a silent `1 / x` on the integer track would
+    // be a wrong answer.
+    for src in [
+        "main = do { write (Just (show_double (recip 3))) stdout; return () };",
+        "main = do { write (Just (show_double (recip (3 :: Integer)))) stdout; return () };",
+    ] {
+        assert!(
+            compile::<f32, 256>(src, ForeignRegistry::new()).is_err(),
+            "`recip` must be rejected: {src}"
+        );
+    }
+}
+
+#[test]
+fn recip_of_zero_is_infinity() {
+    // GHC 9.10.3: `recip 0.0 = Infinity`, `recip (-0.0) = -Infinity`. rill's
+    // `show_double` spells these `inf`/`-inf` (a `show` rendering divergence,
+    // separate from `recip`), so the VALUE is pinned by comparison with
+    // `1.0 / 0.0` rather than by the text.
+    assert_eq!(
+        run("main = do { write (Just (show_bool (recip 0.0 == 1.0 / 0.0))) stdout; return () };"),
+        "True"
+    );
+    assert_eq!(
+        run("main = do { write (Just (show_bool (recip (negate 0.0) == 0.0 - (1.0 / 0.0)))) stdout; return () };"),
+        "True"
+    );
+    assert_eq!(run(&shows("show_double", "recip 0.0")), "inf");
+}
+
+#[test]
+fn a_buffer_abs_reached_through_a_function_definition_is_the_same_block() {
+    // The shape that used to PANIC ("index out of bounds"): a user definition,
+    // not the program's own top level, is what reaches the kernel. The
+    // destination register inside the fragment is RELATIVE, so the buffer arm
+    // must resolve it with the fragment's `base`; passing it absolute made the
+    // bounds guard compare against the wrong length.
+    let direct = run_block("abs (sine 440.0 0.5 0.0)");
+    let via_def = run_block_with(
+        "g :: Buffer -> Buffer;\ng x = abs x;",
+        "g (sine 440.0 0.5 0.0)",
+    );
+    assert_eq!(
+        via_def, direct,
+        "abs through a definition must match direct"
+    );
+    let raw = run_block("sine 440.0 0.5 0.0");
+    for (i, (r, a)) in raw.iter().zip(via_def.iter()).enumerate() {
+        assert_eq!(*a, r.abs(), "sample {i}: abs({r}) must be {}", r.abs());
+    }
+    // The other two kernels have the same fragment-relative destination.
+    let neg_def = run_block_with(
+        "g :: Buffer -> Buffer;\ng x = negate x;",
+        "g (sine 440.0 0.5 0.0)",
+    );
+    assert_eq!(neg_def, run_block("negate (sine 440.0 0.5 0.0)"));
+    let sg_def = run_block_with(
+        "g :: Buffer -> Buffer;\ng x = signum x;",
+        "g (sine 440.0 0.5 0.0)",
+    );
+    assert_eq!(sg_def, run_block("signum (sine 440.0 0.5 0.0)"));
+    // And the equality surface the reviewer's reproduction used must not panic.
+    assert_eq!(
+        run_io("g :: Buffer -> Buffer;\ng x = abs x;\nmain = do { write (Just (show_bool (g (square 0.0 (-0.5) 0.0) == g (square 0.0 (-0.5) 0.0)))) stdout; return () };"),
+        "True"
+    );
+    assert_eq!(
+        run_io("g x = abs x;\nmain = do { write (Just (show_bool (g (square 0.0 (-0.5) 0.0) == g (square 0.0 (-0.5) 0.0)))) stdout; return () };"),
+        "True"
+    );
+}
+
+#[test]
+fn a_buffer_from_integer_reached_through_a_function_definition_fills_its_own_block() {
+    // `exec_value_from_integer`'s `Buffer` arm had the SAME absolute-vs-relative
+    // destination defect, so it is pinned through a definition too (the only
+    // way the fragment `base` is non-zero).
+    assert_eq!(
+        run_io("f :: Buffer -> Int -> Buffer;\nf b n = b + fromInteger n;\nmain = do { write (Just (show_bool (f (square 0.0 1.0 0.0) 2 == (square 0.0 1.0 0.0) + fromInteger 2))) stdout; return () };"),
+        "True"
+    );
 }
 
 // ---------------------------------------------------------------------------

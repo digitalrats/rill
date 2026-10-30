@@ -5177,10 +5177,7 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
             });
         }
     }
-    if matches!(
-        name,
-        "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh" | "abs"
-    ) {
+    if matches!(name, "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh") {
         // A math builtin is an ordinary unary VALUE function, not a signal
         // arrow: `abs b : Buffer` over a buffer, `abs 1.0 : Double` over a
         // scalar. The parameter and result are the same type.

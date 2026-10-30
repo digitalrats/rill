@@ -4311,10 +4311,7 @@ impl<'a> Lowerer<'a> {
                     | "min"
                     | "max"
             )
-            || matches!(
-                name,
-                "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh" | "abs"
-            )
+            || matches!(name, "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh")
             // `error` is lowered to its own fault instruction (see the `Apply`
             // arm), so it is a builtin op for capture purposes too — unless a
             // user definition of the name shadows it. `__fault` is the
@@ -6484,19 +6481,13 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 Ok((dst, ret))
-            }
-            // A kernel with no IR instruction. There is none today — this arm
-            // exists so a future `KernelId` variant is REPORTED here rather than
-            // silently mis-lowered, and `has_instruction`'s exhaustive match
-            // means such a variant also fails to compile until it is classified.
-            #[allow(unreachable_patterns)]
-            other => Err(CompileError::Type {
-                msg: format!(
-                    "primitive method `{class_name}.{name}` for `{ty_name}` selects kernel \
-                     `{other:?}`, which has no IR instruction yet (design §3.9)"
-                ),
-                span,
-            }),
+            } // No catch-all arm: this match is EXHAUSTIVE over `KernelId`, so a
+              // future kernel variant fails to COMPILE here (non-exhaustive
+              // pattern) instead of being silently mis-lowered at run time. That
+              // is the same guarantee `has_instruction` gives with its
+              // exhaustive match, and it is strictly earlier and louder than a
+              // "no IR instruction yet" error. Design §3.9's gap list is empty,
+              // so there is no kernel left to report.
         }
     }
 
