@@ -435,18 +435,18 @@ fn no_instance_is_still_a_compile_error() {
 fn an_ix_body_still_compiles() {
     // The prelude's array surface is written as constrained definitions; every
     // one of them must still typecheck now that its body is actually inferred.
-    let body = "x = index (listArray (Pair { first: 0, second: 2 }) [1.0, 2.0, 3.0]) 1;";
+    let body = "x = (listArray (Pair { first: 0, second: 2 }) [1.0, 2.0, 3.0]) ! 1;";
     let toks = tokenize(body).unwrap();
     let prog = parse(&toks, body.as_bytes()).unwrap();
     infer_program(&prog, Mode::Strict)
         .expect("the prelude's Ix bodies must typecheck under their given constraints");
 
     // ... and they still RUN. The value exercises `listArray` (whose body calls
-    // the GIVEN `rangeSize`) and `index` (whose body calls the GIVEN `inRange`
-    // and `index` as the dual-named offset method).
+    // the GIVEN `rangeSize`) and the accessor `(!)` (whose body calls the GIVEN
+    // `inRange` and `index`, the latter being the `Ix` METHOD).
     let (defs, expr) = (
         "",
-        "index (listArray (Pair { first: 0, second: 2 }) [1.0, 2.0, 3.0]) 1",
+        "(listArray (Pair { first: 0, second: 2 }) [1.0, 2.0, 3.0]) ! 1",
     );
     let world = eval_ffi(defs, expr, rill_lang::ffi::ForeignRegistry::<f32>::new())
         .expect("the array helpers must keep working end to end");
@@ -456,7 +456,7 @@ fn an_ix_body_still_compiles() {
     assert_eq!(
         world.arena().get(v),
         Some(&rill_lang::arena::Value::Double(2.0)),
-        "`index arr 1` must read the second element through the Ix bodies"
+        "`arr ! 1` must read the second element through the Ix bodies"
     );
 }
 

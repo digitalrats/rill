@@ -1172,7 +1172,7 @@ instance Monad IO where {
 --  for the two prelude index shapes (`Int`, `Pair Int Int`) — a structural
 --  limitation: building an array over a user-defined index type faults
 --  "unsupported index type". READS stay language-side, through
---  `checkedOffset`/`index`, so user `Ix` instances keep working for `!`
+--  `checkedOffset`/`(!)`, so user `Ix` instances keep working for `!`
 --  and the ST wrappers; only `array`-construction over a non-prelude index
 --  shape is out of reach.
 --
@@ -1193,7 +1193,7 @@ instance Monad IO where {
 --
 --  Fault policy: every CELL reference is bounds-checked, not just the flat
 --  offset. `checkedOffset` turns an out-of-range cell into `-1`, which the flat
---  primitives reject with their own clean out-of-range fault — so `!`/`index`
+--  primitives reject with their own clean out-of-range fault — so `!`
 --  and every association's index fault instead of wrapping into a neighbouring
 --  row (a flat offset cannot tell the storage layer which cell it came from).
 --
@@ -1240,15 +1240,23 @@ instance Ix (Pair Int Int) where {
 bounds a :: Array i e -> Pair i i = arrayBounds a;
 elems a :: Array i e -> List e = arrayElems a;
 
---  `index` is DOUBLE DUTY: the `Ix` offset method (`Pair i i -> i -> Int`) and
---  this array accessor (`Array i e -> i -> e`, the `!` operator). The dispatch is
---  type-directed on the first argument — a `Pair` bounds value selects the
---  method, an `Array` selects this definition — and the body below relies on
---  exactly that to reach the METHOD for its offset. The offset is computed by
---  `checkedOffset` (the PRIMITIVE `arrayBounds`, not the `bounds` definition: a
---  plain definition is lowered through its (polymorphic) scheme, so its index
---  type would stay a variable and the METHOD dispatch would be lost).
-index a ix :: Ix i => Array i e -> i -> e = arrayIndexFlat a (checkedOffset (arrayBounds a) ix);
+--  TWO NAMES, TWO ROLES — exactly GHC's split:
+--
+--      (!)   :: Ix i => Array i e -> i -> e   -- the accessor (element)
+--      index :: Ix a => Pair a a -> a -> Int  -- the `Ix` METHOD (offset)
+--
+--  They used to share the name `index`, so a call had to GUESS which one was
+--  meant from its first argument's type. That guess degenerates whenever the
+--  argument type still carries variables: `Array i e` before `i`/`e` are solved
+--  bound the element type to the index type and produced "no instance of Ix
+--  for type Double". Nothing guesses now — `!` is the accessor and `index` is
+--  the class method, so each call's meaning is structural.
+--
+--  The offset is computed by `checkedOffset` (the PRIMITIVE `arrayBounds`, not
+--  the `bounds` definition: a plain definition is lowered through its
+--  (polymorphic) scheme, so its index type would stay a variable and the
+--  METHOD dispatch would be lost).
+(!) a ix :: Ix i => Array i e -> i -> e = arrayIndexFlat a (checkedOffset (arrayBounds a) ix);
 
 --  `checkedOffset bounds ix`: the flat offset of `ix`, or `-1` when the cell is
 --  outside the bounds. Every flat primitive rejects a negative offset, so an
@@ -1288,12 +1296,12 @@ accum f a xs :: Ix i => (e -> (e -> e)) -> Array i e -> List (Pair i e) -> Array
 
 indices a :: Ix i => Array i e -> List i = range (arrayBounds a);
 
-assocs a :: Ix i => Array i e -> List (Pair i e) = map (\ ix -> Pair { first: ix, second: index a ix }) (indices a);
+assocs a :: Ix i => Array i e -> List (Pair i e) = map (\ ix -> Pair { first: ix, second: a ! ix }) (indices a);
 
 --  `ixmap b f a`: reindex — the result is indexed by `Pair i i`, and position
 --  `ix` takes `a`'s element at `f ix`. TWO `Ix` instances are in play, one per
 --  index type.
-ixmap b f a :: (Ix i, Ix j) => Pair i i -> (i -> j) -> Array j e -> Array i e = arrayFromList b (map (\ ix -> index a (f ix)) (range b));
+ixmap b f a :: (Ix i, Ix j) => Pair i i -> (i -> j) -> Array j e -> Array i e = arrayFromList b (map (\ ix -> a ! (f ix)) (range b));
 
 --  --- Mutable arrays (ST) ---------------------------------------------------
 --  The wrappers compute the flat offset with `Ix.index` on the handle's own

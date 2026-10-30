@@ -125,7 +125,7 @@ struct Ctx {
     /// Names of SIGNATURE-LESS CURRIED definitions (`at a i = a ! i`, whose
     /// body is a λ-nest). Such a def is typed as a VALUE (its λ-chain), so its
     /// scheme carries the structured parameter shapes the body recovered
-    /// (`Array i e` from the constrained `index`) — shapes the user never
+    /// (`Array i e` from the constrained `(!)`) — shapes the user never
     /// wrote. A call-site mismatch then dumps those recovered shapes as if
     /// they were the user's own source. The M10 diagnostic consults this set
     /// to point at the missing annotation instead.
@@ -402,16 +402,20 @@ fn given_for_method_call(
     Ok(given_witness(&ctx.given, &ctx.env, class_name, &at).cloned())
 }
 
-/// Whether a call of the DUAL name `name` (a class method that is also a
-/// class-constrained definition — `index` is both `Ix`'s offset method and the
-/// array accessor `!`) routes to the METHOD because the body's GIVEN constraint
-/// witnesses its class variable.
+/// Whether a call of a name that is BOTH a class method and a class-constrained
+/// definition routes to the METHOD because the body's GIVEN constraint witnesses
+/// its class variable.
+///
+/// No PRELUDE name is dual any more: `!` is the array accessor and `index` the
+/// pure `Ix` offset method, so each has one role and nothing has to guess. The
+/// routing remains the general rule for any user definition that shadows a
+/// method name with a constrained definition.
 ///
 /// The test is the method's own class-var PATTERN (`Pair i i` for `Ix`), not
-/// mere mention: inside `index :: Ix i => Array i e -> i -> e` the array's index
-/// argument IS the given variable, but the accessor's first argument is an
-/// `Array`, which the pattern cannot match — so that call still reaches the
-/// definition, exactly as outside a constrained body.
+/// mere mention: a signature whose class variable also appears in a container
+/// argument (`C i => Array i e -> i -> e`) must not have that argument's type
+/// read as the class variable, or the pattern would match a shape the method
+/// does not accept.
 fn given_routes_to_method(ctx: &Ctx, name: &str, selector_ty: &ValueTy) -> bool {
     if ctx.given.is_empty() {
         return false;
@@ -454,8 +458,8 @@ fn given_routes_to_method(ctx: &Ctx, name: &str, selector_ty: &ValueTy) -> bool 
         if !ctx.env.entails(&g.class, &class_name) {
             continue;
         }
-        // A constructor-class given (`Functor f`) carries no variable id; the
-        // dual names in the prelude (`index`) are arity-0 only.
+        // A constructor-class given (`Functor f`) carries no variable id, so it
+        // can never witness an arity-0 class method's variable.
         let Some(id) = g.id else {
             continue;
         };
@@ -1679,23 +1683,23 @@ pub(crate) fn method_dispatch_key(
 /// Whether a call to the class METHOD `name` can be dispatched by
 /// `selector_ty` — the FIRST argument's static type.
 ///
-/// This is the routing predicate for a DUAL name: a name that is BOTH a class
-/// method and a class-constrained definition. `index` is the canonical case — it
-/// is the `Ix` offset method (`index: Pair i i -> i -> Int`) and, separately,
-/// the array accessor `!` (`index :: Ix i => Array i e -> i -> e`). The first
-/// argument's type decides: a `Pair Int Int` bounds value solves the method's
-/// class variable (an offset), an `Array …` value does not (the accessor).
+/// This is the routing predicate for a name that is BOTH a class method and a
+/// class-constrained definition. No PRELUDE name is dual any more — `!` is the
+/// array accessor and `index` the pure `Ix` offset method — but the rule stays
+/// for user definitions that shadow a method name: the first argument's type
+/// decides, and a value whose type does not solve the method's class variable
+/// routes to the definition.
 ///
 /// It is DELIBERATELY stricter than [`method_dispatch_key`]: after solving the
 /// class variable it requires a REGISTERED instance under the solved full type
 /// and never falls back to the selector's head constructor name. That fallback
-/// would "solve" `Ix` for an `Array` selector (head `Array`) and route the
-/// accessor into the method path, reporting "no instance of `Ix` for `Array`"
-/// instead of reaching the definition.
+/// would "solve" a non-index class for a container selector and route a
+/// definition call into the method path, reporting a misleading "no instance
+/// of …" instead of reaching the definition.
 ///
 /// Inference and lowering both call this helper on their own recovered
 /// first-argument type (`infer_expr` / the lowerer's sandbox probe), so the two
-/// passes agree on which `index` a call means — the invariant the T4 review
+/// passes agree on which name a call means — the invariant the T4 review
 /// established for class dispatch.
 pub(crate) fn first_arg_solves_class_var(env: &TypeEnv, name: &str, selector_ty: &ValueTy) -> bool {
     fn value_has_var(ty: &ValueTy, var: TypeVarId) -> bool {
@@ -3570,7 +3574,7 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
         let body_ty = infer_def_body(ctx, def)?;
         // M10 marker: a signature-less CURRIED definition (`at a i = a ! i`,
         // whose body is a λ-nest) recovers structured parameter types
-        // (`Array i e`) from the constrained `index` inside the λ-body, but the
+        // (`Array i e`) from the constrained `(!)` inside the λ-body, but the
         // recovered shapes surface only at the call site. Remember the name so
         // a call-site mismatch can point at the missing annotation instead of
         // dumping the recovered shapes.
@@ -5757,11 +5761,13 @@ fn infer_constrained_apply(
 ///
 /// A plain user definition shadows a class method outright (a user `eq`/`lt` is
 /// a plain function). A class-CONSTRAINED definition that shares its name with
-/// a method — `index` is both the `Ix` offset method and the array accessor `!`
-/// — is a DUAL name: the FIRST argument's static type decides. An argument that
+/// a method is DUAL: the FIRST argument's static type decides — an argument that
 /// solves the method's class variable (`Pair Int Int` for `Ix`) routes to the
-/// method, anything else (`Array i e`) to the definition. Lowering applies the
-/// same predicate to the same recovered type, so the passes cannot disagree.
+/// method, anything else to the definition. Lowering applies the same predicate
+/// to the same recovered type, so the passes cannot disagree.
+///
+/// The PRELUDE no longer contains such a name: `!` is the array accessor and
+/// `index` the pure `Ix` method, one role each.
 fn method_shadowed_by_def(ctx: &mut Ctx, name: &str, args: &[Expr]) -> bool {
     // Inference only knows about locals; fragment captures are a lowering-only
     // concept, so lowering checks them separately.
@@ -5788,10 +5794,10 @@ fn method_shadowed_by_def(ctx: &mut Ctx, name: &str, args: &[Expr]) -> bool {
 /// the same state and cannot inherit a bogus binding from the probe.
 ///
 /// Inside a constrained body the given constraint decides FIRST: if the body's
-/// own `Ix i` witness satisfies the method's class-var pattern, the call is the
+/// own witness satisfies the method's class-var pattern, the call is the
 /// METHOD. That is what keeps `checkedOffset :: Ix i => …`'s `index b ix`
-/// (offset of an abstract index) distinct from the array accessor `index a ix`
-/// in the same prelude body.
+/// (the offset of an abstract index) on the METHOD path rather than being read
+/// as any same-named definition in scope.
 fn probe_first_arg_solves_class_var(ctx: &mut Ctx, name: &str, first: &Expr) -> bool {
     let saved_subst = ctx.subst.clone();
     let saved_next = ctx.next;

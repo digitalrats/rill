@@ -335,25 +335,43 @@ fn ix_pair_in_range_checks_both_dimensions() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. `index` double duty (D1): the method and the array accessor
+// 3. TWO NAMES, TWO ROLES: `index` is the `Ix` METHOD, `(!)` the accessor
 // ---------------------------------------------------------------------------
 
 #[test]
-fn index_is_the_ix_offset_and_the_array_accessor_by_argument_type() {
-    // `Pair` first argument → the `Ix` METHOD (an offset).
+fn index_is_the_ix_offset_method_only() {
+    // `index` is `Ix`'s offset method. A `Pair` bounds value yields an offset.
     assert_eq!(
         run("main = index (Pair { first: 0, second: 2 }) 1;").1,
         Value::Int(1)
     );
-    // `Array` first argument → the constrained accessor (an element), whose
-    // body must reach the METHOD through `index (bounds a) i`.
-    let src = "main = index (arrayFromList (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0]) 1;";
+    // An ARRAY is not an `Ix` index type: `index` applied to one is a type
+    // error. The two roles are separate names now, so nothing guesses.
+    let arr = "listArray (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0]";
+    let msg = match eval_ffi("", &format!("index ({arr}) 1"), ForeignRegistry::new()) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("`index` over an Array must be a type error, not a read"),
+    };
+    assert!(
+        msg.contains("Ix"),
+        "the type error must be the missing `Ix` instance for `Array`, got: {msg}"
+    );
+}
+
+#[test]
+fn bang_is_the_array_accessor() {
+    // The accessor is `!` — an ELEMENT, whose body reaches the `Ix` METHOD
+    // through `checkedOffset` for its offset.
+    let src = "main = (arrayFromList (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0]) ! 1;";
+    assert_eq!(run(src).1, Value::Double(20.0));
+    // The prefix spelling is the same function.
+    let src = "main = (!) (arrayFromList (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0]) 1;";
     assert_eq!(run(src).1, Value::Double(20.0));
 }
 
 #[test]
 fn bang_reaches_the_array_accessor_through_an_ix_computed_offset() {
-    // `!` desugars to `index` (Task 2). A NEGATIVE lower bound proves the whole
+    // `!` is the accessor `(!)`. A NEGATIVE lower bound proves the whole
     // chain stays on the Int track: the offset is `0 - (-1) = 1`, so the
     // element is the middle one — and `arrayIndexFlat` requires a real
     // `Value::Int` offset, so a Double offset would fault instead.
@@ -399,10 +417,10 @@ fn list_array_pads_a_short_list_with_faulting_holes() {
     // GHC-faithful lenient construction: `listArray (0,2) [1.0, 2.0]` has
     // rangeSize 3 — the missing position is one shared lazy hole (the same
     // fault-on-force object as `array`'s unlisted positions), NOT a length
-    // fault. Listed positions read through `index`; only forcing the hole
+    // fault. Listed positions read through `!`; only forcing the hole
     // faults.
     let arr = format!("listArray {} [1.0, 2.0]", bounds(0, 2));
-    let src = format!("main = (\\a -> Pair {{ first: index a 0, second: index a 1 }}) ({arr});");
+    let src = format!("main = (\\a -> Pair {{ first: a ! 0, second: a ! 1 }}) ({arr});");
     let (prog, v) = run(&src);
     let (c0, c1) = pair_values(&prog, &v);
     assert_eq!(c0, Value::Double(1.0));
@@ -441,9 +459,9 @@ fn array_leaves_unlisted_positions_as_faulting_holes() {
         "array {} [Pair {{ first: 0, second: 1.5 }}, Pair {{ first: 2, second: 3.5 }}]",
         bounds(0, 3)
     );
-    // Listed positions read their values through `index`; the bounds read back.
+    // Listed positions read their values through `!`; the bounds read back.
     let src = format!(
-        "main = (\\a -> Pair {{ first: arrayBounds a, second: Pair {{ first: index a 0, second: index a 2 }} }}) ({arr});"
+        "main = (\\a -> Pair {{ first: arrayBounds a, second: Pair {{ first: a ! 0, second: a ! 2 }} }}) ({arr});"
     );
     let (prog, v) = run(&src);
     let (b, cells) = pair_values(&prog, &v);
@@ -596,7 +614,7 @@ fn two_dimensional_indices_are_the_row_major_grid() {
 
 #[test]
 fn two_dimensional_assocs_pairs_each_cell_with_its_row_major_element() {
-    // `assocs a` zips `indices a` with `index a cell`: the element at (i, j) is
+    // `assocs a` zips `indices a` with `a ! ix`: the element at (i, j) is
     // the (i * cols + j)-th stored element, so the pairing is exactly the
     // order `listArray` took the elements in.
     let src = "main = assocs (listArray \

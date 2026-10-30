@@ -64,7 +64,7 @@ impl InfixOp {
             InfixOp::CmpGe => ">=",
             InfixOp::Cons => "cons",
             InfixOp::Par => "Pair",
-            InfixOp::Index => "index",
+            InfixOp::Index => "!",
             InfixOp::AppendList => "++",
             InfixOp::AppendSemigroup => "<>",
             InfixOp::LogicAnd => "&&",
@@ -2958,7 +2958,7 @@ mod tests {
         // infix `!` is the `!!` analog, so `a `f` b ! i` has one level and
         // left-associates: `(a `f` b) ! i`.
         match curry_head(&body("main = xs `f` ys ! 0")) {
-            Some(("index", args)) => {
+            Some(("!", args)) => {
                 assert_eq!(args.len(), 2);
                 match curry_head(args[0]) {
                     Some(("f", inner)) => assert_eq!(inner.len(), 2),
@@ -4079,11 +4079,13 @@ mod tests {
     }
 
     #[test]
-    fn bang_index_parses_as_index_application() {
-        // A separated `!` is infix indexing: `a ! i` desugars to `index a i`.
+    fn bang_index_parses_as_the_accessor_application() {
+        // A separated `!` is the array accessor: `a ! i` desugars to `(!) a i`
+        // — NOT to `index`, which is the `Ix` offset method. Two names, two
+        // roles; the accessor's own body reaches the method.
         let e = body("main = a ! i");
-        let Some(("index", args)) = curry_head(&e) else {
-            panic!("expected an `index` application, got {e:?}");
+        let Some(("!", args)) = curry_head(&e) else {
+            panic!("expected a `(!)` application, got {e:?}");
         };
         assert_eq!(args.len(), 2);
         assert!(matches!(args[0], Expr::Ref(n, _) if n == "a"));
@@ -4092,13 +4094,13 @@ mod tests {
 
     #[test]
     fn bang_index_is_left_associative() {
-        // `a ! b ! c` ≡ `(a ! b) ! c` ≡ `index (index a b) c`.
+        // `a ! b ! c` ≡ `(a ! b) ! c` ≡ `(!) ((!) a b) c`.
         let e = body("main = a ! b ! c");
-        let Some(("index", args)) = curry_head(&e) else {
-            panic!("expected an `index` application, got {e:?}");
+        let Some(("!", args)) = curry_head(&e) else {
+            panic!("expected a `(!)` application, got {e:?}");
         };
         assert_eq!(args.len(), 2);
-        assert!(matches!(curry_head(args[0]), Some(("index", inner)) if inner.len() == 2));
+        assert!(matches!(curry_head(args[0]), Some(("!", inner)) if inner.len() == 2));
         assert!(matches!(args[1], Expr::Ref(n, _) if n == "c"));
     }
 
@@ -4107,7 +4109,7 @@ mod tests {
         // `a ! i + 1` ≡ `(a ! i) + 1` — indexing sits just below application.
         match curry_head(&body("main = a ! i + 1")) {
             Some(("+", args)) => {
-                assert!(matches!(curry_head(args[0]), Some(("index", inner)) if inner.len() == 2));
+                assert!(matches!(curry_head(args[0]), Some(("!", inner)) if inner.len() == 2));
                 assert!(matches!(&args[1], Expr::Int(v, _) if *v == 1.into()));
             }
             other => panic!("expected `+` at the root, got {other:?}"),
@@ -4116,24 +4118,23 @@ mod tests {
 
     #[test]
     fn attached_bang_in_expression_position_is_indexing() {
-        // A `!` in expression position is the infix index operator regardless
-        // of whitespace: `a!i`, `a !i`, `a! 1`, `a ! 1` all desugar to a
-        // two-arg `index` application — matching the other infix operators
-        // (`a+1` ≡ `a + 1`). Bang markers only exist in pattern positions
-        // (params, case patterns, bindings), which parse through separate
-        // paths.
+        // A `!` in expression position is the infix accessor regardless of
+        // whitespace: `a!i`, `a !i`, `a! 1`, `a ! 1` all desugar to a two-arg
+        // `(!)` application — matching the other infix operators (`a+1` ≡
+        // `a + 1`). Bang markers only exist in pattern positions (params, case
+        // patterns, bindings), which parse through separate paths.
         for src in ["main = a!i", "main = a !i", "main = a! i", "main = a ! i"] {
             let e = body(src);
-            let Some(("index", args)) = curry_head(&e) else {
-                panic!("expected an `index` application for `{src}`, got {e:?}");
+            let Some(("!", args)) = curry_head(&e) else {
+                panic!("expected a `(!)` application for `{src}`, got {e:?}");
             };
-            assert_eq!(args.len(), 2, "`{src}` must desugar to a two-arg `index`");
+            assert_eq!(args.len(), 2, "`{src}` must desugar to a two-arg `(!)`");
             assert!(matches!(args[0], Expr::Ref(n, _) if n == "a"));
         }
-        // A numeric index parses the same way: `a!1` ≡ `index a 1`.
+        // A numeric index parses the same way: `a!1` ≡ `(!) a 1`.
         let e = body("main = a!1");
-        let Some(("index", args)) = curry_head(&e) else {
-            panic!("expected an `index` application for `main = a!1`, got {e:?}");
+        let Some(("!", args)) = curry_head(&e) else {
+            panic!("expected a `(!)` application for `main = a!1`, got {e:?}");
         };
         assert_eq!(args.len(), 2);
         assert!(matches!(&args[1], Expr::Int(v, _) if *v == 1.into()));

@@ -2100,7 +2100,7 @@ impl<'a> Lowerer<'a> {
                 // just like a class-constrained def. Its recovered λ-parameter
                 // types (`fn_param_tys`) carry type variables lowering cannot
                 // substitute, so a body that dispatches on a parameter's shape
-                // (`a ! i` → the dual-named `index`) died in the typeclass
+                // (`a ! i` → the constrained accessor `(!)`) died in the typeclass
                 // dispatch with an unsolved class variable. Binding the
                 // parameters to the argument registers' CONCRETE static types
                 // lets those method calls select their instances. See
@@ -4983,7 +4983,7 @@ impl<'a> Lowerer<'a> {
     ///
     /// [`Self::sandbox_value_ty`] empties the local scopes because it types
     /// self-contained scrutinees; a dispatch probe asks about an argument that
-    /// usually IS a local reference (`index b i` with `b` a λ-parameter), so
+    /// usually IS a local reference (`inRange b i` with `b` a λ-parameter), so
     /// clearing them would make every probe of a local fail and silently route
     /// every dual-name call to the definition.
     ///
@@ -5208,8 +5208,8 @@ impl<'a> Lowerer<'a> {
     /// Inference recovers the λ-parameter types of such a definition into
     /// [`Self::fn_param_tys`] (`Array i e`, `i`), but lowering has no
     /// substitution: a body that dispatches on a parameter's shape (`a ! i` →
-    /// the dual-named `index`, whose `Ix` class variable is the array's INDEX
-    /// type) reaches the typeclass dispatch with an unsolved variable and dies
+    /// the constrained accessor `(!)`, whose `Ix` class variable is the array's
+    /// INDEX type) reaches the typeclass dispatch with an unsolved variable and dies
     /// (`no instance of `Ix` for type `Pair``). Just as
     /// [`Self::lower_constrained_apply_site`] solves a class-constrained
     /// definition's variables from its arguments' static types, this site binds
@@ -5428,9 +5428,10 @@ impl<'a> Lowerer<'a> {
     /// The criterion is deliberately NARROWER than the specialization-site
     /// trigger: besides not being class-constrained, an empty-parameter λ-nest
     /// with no `::` annotation, and at least one recovered non-`Double`
-    /// λ-parameter, the body must reference a CLASS-METHOD name (`a ! i` lowers
-    /// to the dual-named `index`, an `Ix` method). `nth xs k = head (tail xs)`
-    /// references no class method and stays a well-formed first-class value.
+    /// λ-parameter, the body must reference a call-site-dependent name — a class
+    /// METHOD or a class-CONSTRAINED DEFINITION (`a ! i` lowers to `(!)`, which
+    /// is constrained on `Ix i`). `nth xs k = head (tail xs)` references
+    /// neither and stays a well-formed first-class value.
     fn is_deferred_sigless_def(&self, name: &str) -> bool {
         if self.env.constrained_defs.contains_key(name) {
             return false;
@@ -5519,7 +5520,7 @@ impl<'a> Lowerer<'a> {
         }
         // A DEFERRED signature-less curried def has no standalone value either:
         // its body dispatches on a parameter's shape at a call site (`a ! i`
-        // lowers to the dual-named `index`, an `Ix` method), so a bare
+        // lowers to the constrained accessor `(!)`), so a bare
         // reference (`f = at`) would lower the absent body against an unsolved
         // class variable — the same misleading `no instance of … for Double`
         // the constrained guard reports instead. A value local or fragment
@@ -10102,15 +10103,17 @@ pub(crate) fn collect_def_ref_names(e: &Expr, out: &mut HashSet<String>) {
     }
 }
 
-/// Whether `e` references a CLASS-METHOD name — `a ! i` lowers to the
-/// dual-named `index`, an `Ix` method — anywhere in its tree. Only a body
-/// carrying such a demand needs the per-call-site specialization; a def like
-/// `nth` (which calls only plain functions) keeps its ordinary first-class
-/// value, bare reference included.
+/// Whether `e` references a name whose typing is only solvable at a CALL SITE —
+/// a class METHOD (`inRange`) or a class-CONSTRAINED DEFINITION (`(!)`, the
+/// array accessor, whose `Ix i =>` context is solved from the call's arguments)
+/// — anywhere in its tree. Only a body carrying such a demand needs the
+/// per-call-site specialization; a def like `nth` (which calls only plain
+/// functions) keeps its ordinary first-class value, bare reference included.
 fn body_carries_class_demand(env: &TypeEnv, e: &Expr) -> bool {
     let mut refs = HashSet::new();
     collect_def_ref_names(e, &mut refs);
-    refs.iter().any(|n| env.class_of_method(n).is_some())
+    refs.iter()
+        .any(|n| env.class_of_method(n).is_some() || env.constrained_defs.contains_key(n))
 }
 
 /// The arbitrary-precision integer value of a constant expression, when it is

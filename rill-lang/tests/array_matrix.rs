@@ -224,12 +224,13 @@ fn two_by_two_indexes_every_cell_and_reads_the_shape() {
     assert_eq!(high, (1, 1));
     assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0], "row-major storage order");
 
-    // Every cell through `!`, and the same cells through the named accessor.
+    // Every cell through `!`, and the same cells through the prefix `(!)` —
+    // one function, two spellings.
     for (i, j, want) in [(0, 0, 1.0), (0, 1, 2.0), (1, 0, 3.0), (1, 1, 4.0)] {
         let src = format!("main = {} ! {};", m2(), cell(i, j));
         assert_eq!(run_float(&src), want, "`!` at cell ({i},{j})");
-        let src = format!("main = index {} {};", m2(), cell(i, j));
-        assert_eq!(run_float(&src), want, "`index` at cell ({i},{j})");
+        let src = format!("main = (!) {} {};", m2(), cell(i, j));
+        assert_eq!(run_float(&src), want, "`(!)` at cell ({i},{j})");
     }
 }
 

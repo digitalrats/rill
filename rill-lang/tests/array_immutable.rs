@@ -236,13 +236,15 @@ fn bang_out_of_range_is_a_clean_fault_not_a_panic() {
 }
 
 #[test]
-fn the_named_index_accessor_faults_out_of_range_like_bang() {
+fn the_prefix_accessor_faults_out_of_range_like_bang() {
+    // `(!) a i` is the SAME function as `a ! i` (System FC: an infix operator
+    // is its function form), so it must reject the same offsets.
     let arr = "(listArray (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0])";
     for i in ["3", "-1"] {
-        let msg = fault(&format!("main = index {arr} {i};"));
+        let msg = fault(&format!("main = (!) {arr} {i};"));
         assert!(
             msg.contains("out of range"),
-            "expected the named accessor to fault for index {i}, got: {msg}"
+            "expected the prefix accessor to fault for index {i}, got: {msg}"
         );
     }
 }
@@ -277,13 +279,13 @@ fn two_dimensional_bang_out_of_range_is_a_clean_fault() {
 }
 
 #[test]
-fn two_dimensional_index_accessor_faults_out_of_range_like_bang() {
-    // The named accessor shares the accessor body with `!`, so it must reject
-    // the same cells — for both a `Pair Int Int` index and a column overflow.
-    let msg = fault(&format!("main = index {} {};", m3(), cell(0, 3)));
+fn two_dimensional_prefix_accessor_faults_out_of_range_like_bang() {
+    // `(!)` is `!`'s function form, so it must reject the same cells — for both
+    // a `Pair Int Int` index and a column overflow.
+    let msg = fault(&format!("main = (!) {} {};", m3(), cell(0, 3)));
     assert!(
         msg.contains("out of range"),
-        "expected the named accessor to fault for cell (0,3), got: {msg}"
+        "expected the prefix accessor to fault for cell (0,3), got: {msg}"
     );
 }
 
@@ -526,9 +528,9 @@ fn array_builds_a_matrix_with_undefined_holes_for_unlisted_cells() {
         assoc(0, 1, 1.5),
         assoc(1, 2, 3.5)
     );
-    // Bounds read back; the listed cells read their values through `index`.
+    // Bounds read back; the listed cells read their values through `!`.
     let src = format!(
-        "main = (\\a -> Pair {{ first: arrayBounds a, second: Pair {{ first: index a {}, second: index a {} }} }}) ({arr});",
+        "main = (\\a -> Pair {{ first: arrayBounds a, second: Pair {{ first: a ! {}, second: a ! {} }} }}) ({arr});",
         cell(0, 1),
         cell(1, 2)
     );
@@ -626,7 +628,7 @@ fn a_reindexed_matrix_is_indexable_and_remappable_without_a_binding() {
     );
     // Transposed (1,0) is the source's (0,1) = 2.0.
     let value = with_output(
-        &format!("main = index {transposed} {};", cell(1, 0)),
+        &format!("main = {transposed} ! {};", cell(1, 0)),
         |_prog, v| match v {
             Value::Double(f) => *f,
             other => panic!("expected a Double, got {other:?}"),
