@@ -1429,39 +1429,53 @@ impl<'a> Lowerer<'a> {
                 span,
             });
         }
-        // Each operand is lowered with `Integer` EXPECTED, so an integer
-        // LITERAL becomes an `Integer` constant rather than the `Int` a
-        // context-free literal defaults to (Haskell 2010 §6.4.1's
-        // `fromInteger`-polymorphism at this position). Inference already
-        // pinned these to `Integer`; without the expectation lowering would
-        // emit an `Int` payload for a typed-`Integer` slot — MEASURED: `3 % 6`
-        // failed with "expects Integer argument 1, got Int".
-        let int_exp = ValueTy::Integer;
-        let (a, a_ty) = self.lower_value_expected(&call_args[0], Some(&int_exp))?;
-        let (b, b_ty) = self.lower_value_expected(&call_args[1], Some(&int_exp))?;
-        for (i, (t, e)) in [(a_ty, &call_args[0]), (b_ty, &call_args[1])]
+        // The kernel is `Integral a => a -> a -> …` (Report §6.4.2), so the field
+        // type is whatever `Integral` instance the call site supplied. Inference
+        // already pinned it — the residual this node pushes is discharged before
+        // lowering — so the operands are lowered at the type inference recorded
+        // and both must agree on it. A literal in an `Integer` field becomes an
+        // `Integer` constant here (Haskell 2010 §6.4.1's `fromInteger`
+        // polymorphism at this position); a `Ratio Int` field keeps `Int`.
+        let field_exp = self
+            .literal_instance(span)
+            .or_else(|| {
+                self.recorded_selection(span, "Integral")
+                    .map(|(k, _)| self.env.vty_of_name(&k).unwrap_or(ValueTy::Integer))
+            })
+            .unwrap_or(ValueTy::Integer);
+        let (a, a_ty) = self.lower_value_expected(&call_args[0], Some(&field_exp))?;
+        let (b, b_ty) = self.lower_value_expected(&call_args[1], Some(&field_exp))?;
+        for (i, (t, e)) in [(a_ty.clone(), &call_args[0]), (b_ty.clone(), &call_args[1])]
             .into_iter()
             .enumerate()
         {
-            if !matches!(t, ValueTy::Integer | ValueTy::Var(_)) {
+            // An `Integral` operand is a numeric LEAF: `Int` or `Integer`. A
+            // floating one means the field type escaped the class, which is the
+            // loud rejection below rather than a silent `f64` computation.
+            if !matches!(t, ValueTy::Int | ValueTy::Integer | ValueTy::Var(_)) {
                 return Err(CompileError::Type {
                     msg: format!(
-                        "`{name}` expects Integer argument {}, got {t:?} (no `Integral` class \
-                         exists, so this kernel is Integer-only — OD-24)",
+                        "`{name}` is an `Integral` method: its field type must be `Int` or \
+                         `Integer`, but argument {} is {t:?}",
                         i + 1
                     ),
                     span: e.span(),
                 });
             }
         }
+        let field = if matches!(a_ty, ValueTy::Int) || matches!(b_ty, ValueTy::Int) {
+            ValueTy::Int
+        } else {
+            ValueTy::Integer
+        };
         let dst = self.fresh_value_reg();
         let (op, ret) = if is_ratio {
             (
                 ValueBuiltinOp::RatioPercent,
-                ValueTy::Con("Ratio".into(), vec![ValueTy::Integer]),
+                ValueTy::Con("Ratio".into(), vec![field]),
             )
         } else {
-            (ValueBuiltinOp::Gcd, ValueTy::Integer)
+            (ValueBuiltinOp::Gcd, field)
         };
         self.emit_value(ValueInstr::ValueCallBuiltin {
             dst,

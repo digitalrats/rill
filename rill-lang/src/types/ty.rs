@@ -1158,7 +1158,12 @@ instance Ord (Ratio a) where {
 --  literal at a `Ratio` type builds the ratio `n/1` (the `1` again from
 --  `fromInteger`, so it is the field's own type), and a fractional literal is
 --  already a `Ratio` value.
-instance Num (Ratio a) where {
+--  `instance (Integral a) => Num (Ratio a)` — Report Table 6.1 makes `Ratio a`
+--  a `RealFrac`, so its arithmetic is defined only for an `Integral` field: the
+--  normalisation goes through `gcd :: Integral a => a -> a -> a`. GHC declares
+--  exactly this and rejects `Ratio Double` arithmetic with
+--  `No instance for Integral Double` (measured).
+instance (Integral a) => Num (Ratio a) where {
     (+) x y = __ratio_percent (x.num * y.den + y.num * x.den) (x.den * y.den);
     (-) x y = __ratio_percent (x.num * y.den - y.num * x.den) (x.den * y.den);
     (*) x y = __ratio_percent (x.num * y.num) (x.den * y.den);
@@ -1214,15 +1219,13 @@ instance Fractional (Ratio a) where {
 numerator r :: Ratio a -> a = r.num;
 denominator r :: Ratio a -> a = r.den;
 
---  `gcd :: Integer -> Integer -> Integer` (Haskell 2010 Prelude §6.4.2) — an
+--  `gcd :: Integral a => a -> a -> a` (Haskell 2010 Prelude §6.4.2) — an
 --  ORDINARY prelude definition over the reserved `__gcd` kernel, so a program
 --  may shadow it exactly as H2010 allows (`gcd` is a Prelude binding, not a
---  keyword). The signature is HONESTLY NARROWER than the Report's
---  `Integral a => a -> a -> a`: rill has no `Integral` class, so the kernel is
---  `Integer`-only (design A6 / OD-24 — an open defect, not a settled
---  behaviour). The `Integer` fields are written out because the kernel's
---  operand type is `Integer`; a `gcd` at another payload is a loud rejection.
-gcd a b :: Integer -> Integer -> Integer = __gcd a b;
+--  keyword). The Report's own signature: BOTH operands and the result are one
+--  `Integral` type, so `gcd (12 :: Int) 18` is `Int` and `gcd (12 ::
+--  Integer) 18` is `Integer` (GHC measures both).
+gcd a b :: Integral a => a -> a -> a = __gcd a b;
 
 --  `(%) :: Integer -> Integer -> Ratio Integer` — `Data.Ratio`'s smart
 --  constructor, and like `gcd` an ORDINARY, SHADOWABLE prelude definition over
@@ -1230,11 +1233,11 @@ gcd a b :: Integer -> Integer -> Integer = __gcd a b;
 --  the KERNEL, not this spelling, so a program's own `(%)` replaces only what
 --  `1 % 2` means to that program, never what `a / b` computes.
 --
---  The signature is HONESTLY NARROWER than the Report's
---  `Integral a => a -> a -> Ratio a` — the A4 narrowing, an open OD-24 defect,
---  loud at either end (a `Double` or `Int` operand is a type error, never a
---  silent `f64` computation).
-(%) a b :: Integer -> Integer -> Ratio Integer = __ratio_percent a b;
+--  The Report's signature: `Integral a => a -> a -> Ratio a`, so the field
+--  type is whatever `Integral` instance the context supplies — `Integer` for
+--  `Rational`, `Int` for `Ratio Int`. A `Double` field is rejected because
+--  `Double` is not `Integral` (GHC's own reason, measured).
+(%) a b :: Integral a => a -> a -> Ratio a = __ratio_percent a b;
 
 --  A buffer is an ordinary value and a NUMERIC one: `Buffer` is a subclass of
 --  `Num` (and therefore of `Eq`/`Ord`), so it uses the SAME operator vocabulary

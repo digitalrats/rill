@@ -7273,8 +7273,13 @@ fn infer_kernel(
             let ret = ctx.fresh_vty();
             Ok(ArrowTy::value_channel(ret))
         }
-        // `__ratio_percent n d` and `__gcd a b` — both `Integer -> Integer -> …`
-        // (there is no `Integral` class to generalise over: design A6 / OD-24).
+        // `__ratio_percent n d` and `__gcd a b` — `Integral a => a -> a -> …`.
+        //
+        // The Report types both at `Integral a` (§6.4.2: `gcd :: (Integral a) =>
+        // a -> a -> a`, and `Data.Ratio.%` normalises through it), so the field
+        // type is whatever `Integral` instance the context supplies — `Integer`
+        // for `Rational`, `Int` for `Ratio Int`. Both are measured against GHC:
+        // `Ratio Int` arithmetic compiles there and `Ratio Double` does not.
         crate::ast::Kernel::RatioPercent | crate::ast::Kernel::Gcd => {
             if args.len() != 2 {
                 return Err(CompileError::Type {
@@ -7282,23 +7287,39 @@ fn infer_kernel(
                     span,
                 });
             }
+            // ONE field type shared by both arguments: `gcd :: Integral a => a ->
+            // a -> a` has a single `a`, so the pair must be the same type.
+            let field = ctx.fresh_vty();
             for (i, a) in args.iter().enumerate() {
                 let t = infer_method_value_vty(ctx, a, "argument")?;
-                if let Err(e) = unify_value(&t, &ValueTy::Integer, &mut ctx.subst, a.span()) {
+                if let Err(e) = unify_value(&t, &field, &mut ctx.subst, a.span()) {
                     return Err(CompileError::Type {
                         msg: format!(
-                            "`{name}` expects Integer argument {}, got {t:?}: {e} (no \
-                             `Integral` class exists, so this kernel is Integer-only — OD-24)",
+                            "`{name}` expects both arguments at one `Integral` type; argument {} \
+                             is {t:?}: {e}",
                             i + 1
                         ),
                         span: a.span(),
                     });
                 }
             }
+            // The field must BE an `Integral` instance. A literal pair defaults
+            // to `Integer` (§4.3.4), which is what `Rational` needs.
+            let field = ctx.subst.resolve_value(&field);
+            let cv = match field {
+                ValueTy::Var(v) => v,
+                _ => ctx.fresh_id(),
+            };
+            ctx.residual.push(Residual {
+                class: "Integral".to_string(),
+                var: cv,
+                span,
+                literal: false,
+            });
             let ret = if kernel == crate::ast::Kernel::RatioPercent {
-                ValueTy::Con("Ratio".into(), vec![ValueTy::Integer])
+                ValueTy::Con("Ratio".into(), vec![field])
             } else {
-                ValueTy::Integer
+                field
             };
             Ok(ArrowTy::value_channel(ret))
         }

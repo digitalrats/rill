@@ -3215,27 +3215,6 @@ fn forced_bigint<T: Transcendental, const BUF: usize>(
     }
 }
 
-/// Read a value register as an `Integer` operand for a pure `Integer` kernel
-/// (`gcd`, `%`). The declared signatures are `Integer -> Integer -> …`, so a
-/// non-`Integer` operand is a lowering bug or a rejected mixed-track call —
-/// a FAULT naming the kernel, never a silent rounding into `f64`.
-fn integer_operand<T: Transcendental, const BUF: usize>(
-    ir: &Ir,
-    world: &mut WorldState<T, BUF>,
-    reg: usize,
-    what: &'static str,
-    drops: &mut Vec<ArenaRef>,
-) -> Result<BigInt, &'static str> {
-    match arithmetic_operand(ir, world, reg, drops) {
-        ArithmeticOperand::Integer(v) => Ok(v),
-        ArithmeticOperand::Bottom => Err(what),
-        ArithmeticOperand::Absent => Err(what),
-        ArithmeticOperand::Int(_)
-        | ArithmeticOperand::Double(_)
-        | ArithmeticOperand::Rational(_) => Err(what),
-    }
-}
-
 /// The greatest common divisor of two `Integer`s, as `gcd` (Haskell 2010
 /// Prelude §6.4.2) computes it: BINARY (Stein) GCD over the operands'
 /// MAGNITUDES, so the result is always non-negative (`gcd (-4) 6` is `2`) and
@@ -3245,6 +3224,31 @@ fn integer_operand<T: Transcendental, const BUF: usize>(
 /// `num_integer` as a direct dependency; `BigUint::trailing_zeros` and the
 /// shift/mask primitives are already here, so the loop is written out rather
 /// than adding a crate for five lines.
+/// The numeric TRACK an `Integral` field is on, so a kernel can give its
+/// result back on the SAME track (`gcd (12 :: Int) 18` is an `Int` 6).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IntegralTrack {
+    Int,
+    Integer,
+}
+
+/// An `Integral`-typed kernel operand: `Int` or `Integer`, widened to the
+/// kernel's `BigInt` body and remembered on which track it arrived.
+fn integral_operand<T: Transcendental, const BUF: usize>(
+    ir: &Ir,
+    world: &mut WorldState<T, BUF>,
+    reg: usize,
+    what: &'static str,
+    drops: &mut Vec<ArenaRef>,
+) -> Result<(BigInt, IntegralTrack), &'static str> {
+    match arithmetic_operand(ir, world, reg, drops) {
+        ArithmeticOperand::Integer(v) => Ok((v, IntegralTrack::Integer)),
+        ArithmeticOperand::Int(v) => Ok((BigInt::from(v), IntegralTrack::Int)),
+        ArithmeticOperand::Bottom | ArithmeticOperand::Absent => Err(what),
+        ArithmeticOperand::Double(_) | ArithmeticOperand::Rational(_) => Err(what),
+    }
+}
+
 fn integer_gcd(a: &BigInt, b: &BigInt) -> BigInt {
     let mut m = a.magnitude().clone();
     let mut n = b.magnitude().clone();
@@ -4856,25 +4860,32 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             world.value_regs[dst] = alloc_owned(ir, world, Value::Buffer(di));
         }
         Gcd => {
-            // `gcd n d`: a pure `Integer` kernel, read through the shared
-            // integer-operand path so a non-`Integer` operand FAULTS rather
-            // than rounding (`gcd :: Integer -> Integer -> Integer`).
-            let a = integer_operand(
+            // `gcd :: Integral a => a -> a -> a`. The kernel body is `BigInt`
+            // arithmetic; the BOUNDARY accepts an `Int` field too and gives the
+            // result back on that track, so `gcd (12 :: Int) 18` is `Int` 6.
+            let a = integral_operand(
                 ir,
                 world,
                 base + args[0],
-                "gcd: operand is not an Integer",
+                "gcd: operand is not an Integral",
                 drops,
             );
-            let b = integer_operand(
+            let b = integral_operand(
                 ir,
                 world,
                 base + args[1],
-                "gcd: operand is not an Integer",
+                "gcd: operand is not an Integral",
                 drops,
             );
             world.value_regs[dst] = match (a, b) {
-                (Ok(a), Ok(b)) => alloc_owned(ir, world, Value::Integer(integer_gcd(&a, &b))),
+                (Ok((a, track)), Ok((b, _))) => {
+                    let g = integer_gcd(&a, &b);
+                    let v = match track {
+                        IntegralTrack::Int => Value::Int(g.to_i64().unwrap_or(0)),
+                        IntegralTrack::Integer => Value::Integer(g),
+                    };
+                    alloc_owned(ir, world, v)
+                }
                 (Err(why), _) | (_, Err(why)) => {
                     latch_fault(ir, world, why);
                     None
@@ -4886,22 +4897,28 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // constructor, and the ONE normalisation site (`numerator` and
             // `denominator` are field projections, so a value built here is
             // already in lowest terms with `den > 0`).
-            let n = integer_operand(
+            let n = integral_operand(
                 ir,
                 world,
                 base + args[0],
-                "Ratio: operand is not an Integer",
+                "Ratio: operand is not an Integral",
                 drops,
             );
-            let d = integer_operand(
+            let d = integral_operand(
                 ir,
                 world,
                 base + args[1],
-                "Ratio: operand is not an Integer",
+                "Ratio: operand is not an Integral",
                 drops,
             );
+            let field_track = match (&n, &d) {
+                (Ok((_, IntegralTrack::Int)), _) | (_, Ok((_, IntegralTrack::Int))) => {
+                    IntegralTrack::Int
+                }
+                _ => IntegralTrack::Integer,
+            };
             let (n, d) = match (n, d) {
-                (Ok(n), Ok(d)) => match ratio_normalized(n, d) {
+                (Ok((n, _)), Ok((d, _))) => match ratio_normalized(n, d) {
                     Ok(pair) => pair,
                     Err(why) => {
                         // A zero denominator is H2010's `Ratio has zero
@@ -4920,11 +4937,15 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                     return;
                 }
             };
-            let Some(num_ref) = alloc_owned(ir, world, Value::Integer(n)) else {
+            let mk = |v: BigInt| match field_track {
+                IntegralTrack::Int => Value::Int(v.to_i64().unwrap_or(0)),
+                IntegralTrack::Integer => Value::Integer(v),
+            };
+            let Some(num_ref) = alloc_owned(ir, world, mk(n)) else {
                 world.value_regs[dst] = None;
                 return;
             };
-            let Some(den_ref) = alloc_owned(ir, world, Value::Integer(d)) else {
+            let Some(den_ref) = alloc_owned(ir, world, mk(d)) else {
                 world.arena.drop_ref(num_ref);
                 world.value_regs[dst] = None;
                 return;

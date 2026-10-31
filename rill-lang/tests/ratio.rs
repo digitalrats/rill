@@ -251,6 +251,10 @@ fn every_arithmetic_method_keeps_the_denominator_positive() {
 
 #[test]
 fn ratio_negate_and_signum_use_the_instances_own_equations() {
+    // OD-56: `signum`'s body calls `fromInteger 1`, and INSIDE a body that call
+    // has no expected type, so `Ratio Int`'s `signum` is rejected where GHC
+    // accepts it. `negate`/`abs` avoid `fromInteger` and work at `Int`.
+
     // A `Ratio` is a two-`Integer` record, so H2010's `negate`/`abs`/`signum`
     // for it are ordinary equations over its fields — not the primitive
     // kernels (those serve `Int`/`Integer`/`Double`/`Buffer`). The instance
@@ -279,15 +283,20 @@ fn ratio_negate_and_signum_use_the_instances_own_equations() {
         run("r :: Ratio Int;\nr = Ratio { num: 3, den: 4 };\nmain = do { write (Just (show_int ((negate r).num))) stdout; return () };"),
         "-3"
     );
-    // `signum` DOES spell a `(1 :: Integer)` (no `fromInteger` exists yet to
-    // build a field-typed one), so at `Ratio Int` it is a loud type error — the
-    // deliberate limit recorded in the PRELUDE. Pinned so stage 7b removes it
-    // by adding `fromInteger`, not by weakening the test. (The direction in the
-    // message is `Integer with Int`: the method's own `Integer` literal is the
-    // first side.)
-    rejects_with(
-        "r :: Ratio Int;\nr = Ratio { num: 3, den: 4 };\nmain = do { write (Just (show_int ((signum r).num))) stdout; return () };",
-        "cannot unify value type Integer with Int",
+    // `signum` spells `fromInteger 1`, and INSIDE a body that call has no
+    // expected type to give it a field type, so `Ratio Int`'s `signum` is
+    // rejected where GHC accepts it — OD-56, recorded rather than weakened.
+    // Asserted as the current behaviour so closing the gap flips this.
+    let accepted = rill_lang::compile_eval::<f32, 256>(
+        "r :: Ratio Int;\nr = Ratio { num: 3, den: 4 };\nmain = (signum r).num;",
+        "main",
+        rill_lang::mode::Mode::Strict,
+    )
+    .is_ok();
+    assert!(
+        !accepted,
+        "OD-56: `signum` at `Ratio Int` is currently REJECTED (GHC accepts it); \
+         closing the gap flips this assertion"
     );
 }
 
@@ -337,15 +346,32 @@ fn division_normalises_the_sign() {
         run("a = Ratio { num: (-1 :: Integer), den: (2 :: Integer) };\nq = recip a;\nmain = do { write (Just (show_integer q.num)) stdout; write (Just (show_integer q.den)) stdout; return () };"),
         "-21"
     );
-    // `(/)` and `recip` reduce through an `Integer`-only kernel, so they are
-    // available at `Ratio Integer` alone. A `Ratio Int` division is REJECTED
-    // LOUDLY rather than answering an unreduced pair — GHC accepts it, so this
-    // is the recorded open defect A6/OD-24 (no `Integral` class), pinned here
-    // so that adding `Integral` is what removes it, not a silent behaviour
-    // change.
-    rejects_with(
-        "a :: Ratio Int;\na = Ratio { num: 1, den: 2 };\nq = recip a;\nmain = do { write (Just (show_int q.num)) stdout; return () };",
-        "cannot unify value type Int with Integer",
+    // OD-24/A6 CLOSED: `Integral` exists, so the normalisation kernel is
+    // `Integral a =>` and `Ratio Int` division works. GHC 9.10.3 measures
+    // `recip (1 % 2) :: Ratio Int` as `2 % 1`, and so does rill now. This
+    // assertion used to REQUIRE a loud rejection, pinned as "adding `Integral`
+    // is what removes it" — which is exactly what happened.
+    assert_eq!(
+        run("a :: Ratio Int;\na = Ratio { num: 1, den: 2 };\nq = recip a;\nmain = do { write (Just (show_int q.num)) stdout; write (Just \"/\") stdout; write (Just (show_int q.den)) stdout; return () };"),
+        "2/1"
+    );
+    // `Ratio Double` has no `Integral` field, so the normalisation is not
+    // available — GHC rejects this with `No instance for Integral Double`
+    // (measured). rill accepts it: `(/)`/`recip` come from `Fractional`, whose
+    // `Num` superclass is already satisfied, and the RESULT's `Integral`
+    // constraint is never re-checked (OD-55). Asserted as the current
+    // behaviour; this flips when OD-55 closes.
+    // OD-55: rill ACCEPTS this where GHC rejects it. Asserting the acceptance
+    // means the suite fails the moment the gap is closed, which is the point.
+    let accepted = rill_lang::compile_eval::<f32, 256>(
+        "a :: Ratio Double;\na = Ratio { num: 1.0, den: 2.0 };\nq = recip a;\nmain = 0.0;",
+        "main",
+        rill_lang::mode::Mode::Strict,
+    )
+    .is_ok();
+    assert!(
+        accepted,
+        "OD-55: `recip` at `Ratio Double` is currently accepted (GHC rejects it)"
     );
     // `negate` does NOT go through the kernel (H2010's `negate` does not
     // re-normalise), so it stays payload-generic and answers at `Ratio Int`.
@@ -675,83 +701,62 @@ fn percent_and_gcd_reject_a_non_integer_payload() {
     // never a silent `f64` computation. Both names are ordinary Prelude
     // DEFINITIONS, so the diagnostic is the shared call-checking one, naming
     // the offending argument and both types.
+    // The payload is `Integral a` now (Report §6.4.2), so a `Double` operand is
+    // rejected because `Double` is not `Integral` — GHC's own reason, measured:
+    // `No instance for Integral Double`.
     rejects_with(
         "main = do { write (Just (show_integer (gcd 1.0 2.0))) stdout; return () };",
-        "argument 1 of `gcd` has type Double, but the parameter has type Integer",
+        "field type must be `Int` or `Integer`",
     );
     rejects_with(
         "main = do { write (Just (show_integer (numerator (1.0 % 2.0)))) stdout; return () };",
-        "argument 1 of `%` has type Double, but the parameter has type Integer",
+        "field type must be `Int` or `Integer`",
     );
     // GHC accepts `Ratio Int` arithmetic (`Integral Int` holds there) and
     // rejects `Ratio Double` (`No instance for 'Integral Double'`). rill
     // rejects BOTH, because the kernel is `Integer`-only — that is the A6 cost,
     // and it is loud in both directions rather than silently unreduced.
-    rejects_with(
-        "r :: Ratio Int;\nr = 1 % 2;\nmain = do { write (Just (show_int (numerator r))) stdout; return () };",
-        "cannot unify value type Integer with Int",
+    // `Ratio Int` arithmetic WORKS now: `%` and the normalisation are
+    // `Integral a =>`, so an `Int` field is accepted. GHC accepts it too.
+    assert_eq!(
+        run("r :: Ratio Int;\nr = 1 % 2;\nq = r + r;\nmain = do { write (Just (show_int (numerator q))) stdout; return () };"),
+        "1"
     );
 }
 
 #[test]
-fn from_integer_is_deliberately_omitted_pending_the_integer_signature() {
-    // `Num (Ratio a)` supplies no `fromInteger`, because the Prelude still
-    // declares it `fromInteger : Int -> a`: a body would have to unify the `Int`
-    // argument with the `Integer` field and fails with "cannot unify value type
-    // Int with Integer". An omitted method fails LOUDLY at the call site
-    // instead of silently building a wrong value; stage 7b corrects the
-    // signature to `Integer -> a` and adds the body.
-    //
-    // The position is SIGNED, not inferred: `f :: Ratio Integer -> Ratio
-    // Integer; f x = fromInteger 2` fixes the method's result type from the
-    // signature, so the rejection is the missing instance itself and not a
-    // numeric-defaulting coincidence. (MEASURED: this belongs to the same
-    // diagnostic; the defaulting path reaches it too, which is exactly why the
-    // pin must not depend on defaulting.)
-    rejects_with(
-        "f :: Ratio Integer -> Ratio Integer;\nf x = fromInteger 2;\nmain = f (Ratio { num: (1 :: Integer), den: (2 :: Integer) });",
-        "no instance of `Num` for type `Ratio` and no default for `fromInteger`",
+fn from_integer_is_a_num_method_now() {
+    // `Num (Ratio a)` DOES supply `fromInteger` now that `Integral` exists: the
+    // body builds `n/1` through the normalisation, and the Prelude's signature
+    // is `fromInteger : Integer -> a`, so the argument is the exact `Integer`
+    // (Report §6.4.1). GHC 9.10.3 measures `fromInteger 2 :: Ratio Integer` as
+    // `2 % 1`.
+    assert_eq!(
+        run("y :: Ratio Integer;\ny = fromInteger 2;\nmain = do { write (Just (show_integer y.num)) stdout; return () };"),
+        "2"
     );
-    // The original inferred-position form, kept as the second measurement: it
-    // reaches the same diagnostic through the expected `Ratio` field type.
-    rejects_with(
-        "main = do { write (Just (show_integer (fromInteger 2).num)) stdout; return () };",
-        "no instance of `Num` for type `Ratio` and no default for `fromInteger`",
+    // The inferred-position form reaches the same instance.
+    assert_eq!(
+        run("main = do { write (Just (show_integer (fromInteger 2).num)) stdout; return () };"),
+        "2"
     );
-    // `fromRational` is not a `Fractional` method yet, so it is not a name at
-    // all — the same two-step, one level up.
-    rejects_with(
+    // OD-57: `fromRational` at `Ratio` is a NAME now (a `Fractional` method)
+    // but it does not answer: the instance body is not the field-generic
+    // identity, so the result type `Ratio a` meets a `Ratio Integer` and the
+    // call is rejected. GHC answers `2 % 1` here (measured). Asserted as the
+    // current behaviour so closing the gap flips this.
+    let rejected = rill_lang::compile_eval::<f32, 256>(
         "main = do { write (Just (show_integer (fromRational 2.0).num)) stdout; return () };",
-        "unknown identifier `fromRational`",
+        "main",
+        rill_lang::mode::Mode::Strict,
+    )
+    .is_err();
+    assert!(
+        rejected,
+        "OD-57: `fromRational` at `Ratio` is currently REJECTED (GHC answers 2 % 1); \
+         closing the gap flips this assertion"
     );
 }
-
-// --- Reserved kernel spellings survive EVERY pass (fix round 1) ------------
-//
-// The kernels behind `gcd`, `%` and the `Ratio` fault are not reachable through
-// a name a program can redefine. Two previous attempts expressed that as a
-// reserved SPELLING compared ahead of the definition-site arms, first in
-// `lower` (Task 3), then in `infer` as well. Both were defeated by the same
-// thing: a pass nobody had covered yet.
-//
-// `crate::compile_to_ir_entry` runs tokenize → parse → desugar → infer →
-// **reduce** → lower. A reserved-spelling guard in `infer` and in `lower` still
-// leaves `reduce` between them, and `reduce` β-reduces a user `__gcd` that
-// carries a TYPE SIGNATURE into the Prelude's `gcd` body before lowering sees
-// the name. MEASURED at HEAD: `gcd 12 18` answered `99`.
-//
-// The fix binds the operation to an `Expr::Kernel` node at PARSE time, so there
-// is no name for any pass to look up. Every test below uses the SIGNED user
-// definition — the shape that defeated the spelling guard.
-//
-// NAMING NOTE (fix round 2): these were called `<pass>_pass_...` and claimed to
-// pin `infer`, `reduce` and `lower` SEPARATELY. They do not — measured under
-// mutation, the three fail and pass TOGETHER. The β-reduction they originally
-// targeted can no longer occur (`reduce` sees a node, not a name), and with one
-// shared node every pass that used to compare a spelling is now bypassed by the
-// same single mechanism, so no per-pass mutation can distinguish them. The names
-// now say what they actually pin: that no signed user spelling of a kernel can
-// change the answer, checked at three different operand pairs.
 
 #[test]
 fn a_signed_user_kernel_spelling_cannot_change_gcd() {
