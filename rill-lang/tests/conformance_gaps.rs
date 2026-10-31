@@ -146,9 +146,17 @@ mod fold_takes_an_operator {
 
     #[test]
     fn fold_with_operator_over_a_generated_range() {
-        // `listRange (0, 3)` = [0,1,2,3] as Ints; folding `+` sums them.
+        // `listRange (0, 3)` = 0,1,2,3 and folding `+` sums them. The seed `0`
+        // and the elements are INTEGRAL literals with no context fixing them, so
+        // `default (Integer, Double)` takes its FIRST entry. GHC 9.10.3 measures
+        // exactly that — the Core is `foldl … (+ $dNum) (IS 0#) …`, an `Integer`.
+        // The assertion therefore reads the value integrally instead of pinning
+        // the `Int` track.
         assert_eq!(
-            int_of("", "fold (+) 0 (listRange (Pair { first: 0, second: 3 }))"),
+            integral(
+                &strict("", "fold (+) 0 (listRange (Pair { first: 0, second: 3 }))")
+                    .expect("the source must compile and run")
+            ),
             6
         );
     }

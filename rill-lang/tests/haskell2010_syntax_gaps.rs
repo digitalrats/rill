@@ -619,8 +619,17 @@ mod standalone_signatures {
             value_of("f :: Int -> Int;\nf x = x + 1;", "f 1"),
             Value::Int(2)
         );
-        // The same body without the signature stays on the inferred track.
-        assert_eq!(value_of("f x = x + 1;", "f 1"), Value::Int(2));
+        // WITHOUT the signature the definition generalizes to
+        // `forall a. Num a => a -> a` (GHC 9.10.3 measures exactly that), and at
+        // `f 1` in a printing position the ambiguous `Num a` takes
+        // `default (Integer, Double)`'s first entry. So this is `Integer`, not
+        // `Int`: the earlier assertion pinned one track where the language
+        // leaves it open.
+        assert_eq!(
+            integral(&value_of("f x = x + 1;", "f 1")),
+            2,
+            "an unconstrained `f x = x + 1` is `Num`-polymorphic, defaulted to Integer at use"
+        );
     }
 
     #[test]
