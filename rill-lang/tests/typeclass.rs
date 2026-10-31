@@ -464,6 +464,67 @@ fn a_forall_signature_reports_its_real_arity() {
 }
 
 #[test]
+fn an_open_expectation_defers_instead_of_failing() {
+    // A result-directed method whose expected RESULT is still a type VARIABLE is
+    // the ordinary mid-inference state, not an error (Haskell 2010 §4.3.4). GHC
+    // measures `fromInteger 2 + 0.5` as Core
+    //   `(+ @Double $fNumDouble (fromInteger @Double $fNumDouble (IS 2#)) (D# 0.5##))`
+    // — ONE `a` shared by `(+)`, `Num a` and `Fractional a`, decided by
+    // DEFAULTING at the group's close. The apply path used to demand a CONCRETE
+    // expectation and reject the program; the bare-reference path already
+    // deferred, which is why `2 + 0.5` worked while `fromInteger 2 + 0.5` did not.
+    let run_num = |src: &str| {
+        let (defs, expr) = src
+            .rsplit_once("main = ")
+            .expect("the source must bind `main`");
+        let world = eval_ffi(
+            defs,
+            expr.trim().trim_end_matches(';'),
+            ForeignRegistry::<f32>::new(),
+        )
+        .unwrap_or_else(|e| panic!("`{src}` must typecheck: {e}"));
+        match world.arena().get(world.result().unwrap()).unwrap() {
+            rill_lang::arena::Value::Double(v) => format!("Double({v})"),
+            rill_lang::arena::Value::Integer(v) => format!("Integer({v})"),
+            rill_lang::arena::Value::Int(v) => format!("Int({v})"),
+            other => panic!("expected a number, got {other:?}"),
+        }
+    };
+    // One `a` for both operands: `0.5` forces `Fractional`, so `a := Double`.
+    assert_eq!(run_num("main = fromInteger 2 + 0.5;"), "Double(2.5)");
+    assert_eq!(run_num("main = 0.5 + fromInteger 2;"), "Double(2.5)");
+    // The argument may be any `Integer`, not only a literal.
+    assert_eq!(
+        run_num("k :: Integer\nk = 2\nmain = fromInteger k + 0.5;"),
+        "Double(2.5)"
+    );
+    // With NO fractional operand the same judgement defaults to `Integer`.
+    assert_eq!(
+        run_num("main = fromInteger (2 :: Integer) + fromInteger (1 :: Integer);"),
+        "Integer(3)"
+    );
+    // A USER class is still not defaultable (§4.3.4's standard-class rule):
+    // GHC rejects `z + 0.5` for `z :: Z a => a`, and so must rill.
+    let user =
+        "typeclass Z a where { z: a; }\ninstance Z Double where { z = 1.5; }\nmain = z + 0.5;";
+    let (defs, expr) = user.rsplit_once("main = ").unwrap();
+    let err = match eval_ffi(
+        defs,
+        expr.trim().trim_end_matches(';'),
+        ForeignRegistry::<f32>::new(),
+    ) {
+        Ok(_) => panic!("a non-standard class variable must not be defaulted"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("Ambiguous")
+            || err.to_string().contains("expected type unknown")
+            || err.to_string().contains("expected type is not concrete"),
+        "expected an ambiguity diagnostic, got: {err}"
+    );
+}
+
+#[test]
 fn a_nullary_method_inside_a_buffer_operand_still_resolves() {
     // The shared application rule ran a bare inference with `?` first, so a
     // nullary argument that only types under the parameter's EXPECTED type

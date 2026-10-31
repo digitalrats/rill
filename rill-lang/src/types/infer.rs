@@ -7740,7 +7740,69 @@ fn infer_apply_impl(
                     );
                 };
                 let env = ctx.env.clone();
+                // An expectation that is still a VARIABLE is not a failure: it
+                // is the ordinary mid-inference state (Haskell 2010 §4.3.4).
+                // `fromInteger 2 + 0.5` has ONE `a` shared by `(+)`, `Num a`
+                // and `Fractional a`; GHC measures Core
+                // `(+ @Double $fNumDouble (fromInteger @Double $fNumDouble
+                // (IS 2#)) (D# 0.5##))` — the instance is chosen by DEFAULTING
+                // at the group's close, not by a concrete type coming down.
+                // Defer exactly like the `None` arm above: keep the class
+                // variable live as the sibling's variable and let the residual
+                // carry the demand to stages 2–3.
+                let resolved_exp2 = ctx.subst.resolve_value(&exp);
+                let exp_is_open = matches!(
+                    resolved_exp2,
+                    ValueTy::Var(_) | ValueTy::TyConVar(_) | ValueTy::TyConApp(..)
+                );
                 let cv_var = ctx.fresh_id();
+                if exp_is_open {
+                    if let ValueTy::Var(id) = resolved_exp2 {
+                        ctx.residual.push(Residual {
+                            class: class_name.clone(),
+                            var: id,
+                            span,
+                            literal: false,
+                        });
+                    }
+                    let subst = match &resolved_exp2 {
+                        ValueTy::Var(id) => ClassVarSubst::Var(*id),
+                        _ => ClassVarSubst::Ty(resolved_exp2.clone()),
+                    };
+                    let env2 = ctx.env.clone();
+                    let mut it = (0..8).map(|_| ctx.fresh_vty());
+                    let (param_tys, ret) =
+                        signature_param_and_result_tys_conv(&env2, &class_var, &subst, sig, || {
+                            it.next().unwrap_or(ValueTy::Double)
+                        });
+                    if ret.is_none() {
+                        let value_ty = param_tys
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| ctx.fresh_vty());
+                        let what = format!("method `{name}` of `{class_name}`");
+                        return apply_args_curried(
+                            ctx,
+                            &param_tys,
+                            &value_ty,
+                            args,
+                            span,
+                            &what,
+                            ArgUnify::Exact,
+                        );
+                    }
+                    let ret_ty = ret.unwrap_or_else(|| ctx.fresh_vty());
+                    let what = format!("method `{name}` of `{class_name}`");
+                    return apply_args_curried(
+                        ctx,
+                        &param_tys,
+                        &ret_ty,
+                        args,
+                        span,
+                        &what,
+                        ArgUnify::Exact,
+                    );
+                }
                 let Some((ty_name, cv_subst)) =
                     method_dispatch_key(&env, &class_name, &class_var, sig, &exp, cv_var, || {
                         ctx.fresh_vty()
