@@ -468,7 +468,7 @@ fn render_type_into(t: &TypeExpr, buf: &mut String, spelling: Spelling) {
 
 fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), CompileError> {
     match expr {
-        Expr::Int(v, _) => {
+        Expr::IntegerLit(v, _) => {
             write!(buf, "{v}").ok();
             Ok(())
         }
@@ -824,7 +824,7 @@ fn render_pattern(p: &Pattern, buf: &mut String) {
         Pattern::Var(n) => {
             write!(buf, "{n}").ok();
         }
-        Pattern::LitInt(v) => {
+        Pattern::IntegerLit(v) => {
             write!(buf, "{v}").ok();
         }
         Pattern::FractionalLit(_, text) => {

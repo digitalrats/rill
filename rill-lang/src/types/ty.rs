@@ -733,6 +733,19 @@ typeclass (Eq a) => Ord a where {
     max  : a -> a -> a = \ x -> \ y -> if x <= y then y else x;
 }
 
+--  --- Rational numbers (`Data.Ratio`) ---------------------------------------
+--  Haskell 2010 §9.5: `data Ratio a = a :% a`, with `type Rational = Ratio
+--  Integer`. rill spells it as an ordinary parameterized RECORD, which is what
+--  it is on the value side too — a `Ratio Integer` is an arena `Record` of two
+--  `Integer` leaves.
+--
+--  Declared BEFORE the numeric classes because `Fractional`'s `fromRational ::
+--  Rational -> a` (Haskell 2010 §6.4.1) names the type: a signature may only
+--  mention names the environment has already registered, and the prelude's own
+--  kind check enforces that.
+data Ratio a = { num: a, den: a };
+type Rational = Ratio Integer;
+
 --  Numeric tower. `Num` carries the operators; `Fractional` adds `/`.
 --  `Num` is Eq- and Ord-bounded: Haskell's numeric tower requires comparison
 --  (`Real a => Ord a`), and rill keeps one flat tower so the numeric operators
@@ -744,11 +757,23 @@ typeclass (Eq a, Ord a) => Num a where {
     negate : a -> a;
     abs : a -> a;
     signum : a -> a;
-    fromInteger : Int -> a;
+    --  Haskell 2010 §6.4.1: an integer literal denotes `fromInteger (n ::
+    --  Integer)`, so the method's ARGUMENT is the literal's exact `Integer`
+    --  and its RESULT is the `Num` type the context demands.
+    fromInteger : Integer -> a;
 }
 typeclass (Num a) => Fractional a where {
     (/) : a -> a -> a;
     recip : a -> a;
+    --  `fromRational (r :: Rational)`, the `Fractional` companion of
+    --  `fromInteger` (Haskell 2010 §6.4.1). Every fractional literal denotes
+    --  this application.
+    --
+    --  Spelled `Ratio Integer` rather than `Rational` in the PRELUDE because
+    --  the prelude's own kind check runs before synonyms are registered; the
+    --  two spellings are the same type, and a program may write either
+    --  (`type Rational = Ratio Integer` is declared below).
+    fromRational : Ratio Integer -> a;
 }
 
 --  Index types (`Data.Ix`): the offset/range vocabulary the array surface is
@@ -797,15 +822,6 @@ instance Num Int where { }
 instance Num Integer where { }
 instance Num Double where { }
 instance Fractional Double where { }
-
---  --- Rational numbers (`Data.Ratio`) ---------------------------------------
---  Haskell 2010 §9.5: `data Ratio a = a :% a`, with `type Rational = Ratio
---  Integer`. rill spells it as an ordinary parameterized RECORD, which is what
---  it is on the value side too — a `Ratio Integer` is an arena `Record` of two
---  `Integer` leaves. There is no ratio `Value` variant: the instances below do
---  all their work through ordinary field projection.
-data Ratio a = { num: a, den: a };
-type Rational = Ratio Integer;
 
 --  The instances have a POLYMORPHIC head (`Ratio a`), and they are EXPLICIT.
 --  `derive_eq_ord` also derives a structural `Eq`/`Ord` marker for every
@@ -951,35 +967,26 @@ instance Ord (Ratio a) where {
 --  `abs` was intercepted by name in lowering and required a Buffer, so the
 --  body was correct by the Report but unexercised.
 --
---  `signum` spells its `1` as `(1 :: Integer)`, so that method alone is typed
---  at an `Integer` field. This is a TASK 7b GAP, NOT a consequence of A2: A2 is
---  about `Ratio a` carrying no `Integral a =>` context, and it has nothing to
---  do with this. GHC accepts `signum :: Ratio Int -> Ratio Int` and answers
---  `signum (3 % 4) = 1 % 1` at `Ratio Int`; the reason rill cannot is that a
---  field-typed `1` needs `fromInteger :: Integer -> a`, which this task omits
---  (next paragraph) because the Prelude still declares the signature `Int -> a`.
---  So the instance answers `signum` for `Ratio Integer` and reports "cannot
---  unify value type Int with Integer" for `Ratio Int` — a loud, local limit,
---  and a separate row under Task 7b. Adding `fromInteger` removes it; relaxing
---  or correcting the signature cannot.
+--  `signum` builds its `1` from `fromInteger`, so it is typed at the FIELD's
+--  type rather than pinned to `Integer`: `signum` on `Ratio Int` answers
+--  `1/1` exactly as GHC's `Data.Ratio` does. (Before literals were
+--  `fromInteger` applications the `1` had to be spelled `(1 :: Integer)`,
+--  which pinned the whole method to `Integer` fields and left `Ratio Int`
+--  unreachable.)
 --
---  `fromInteger` is DELIBERATELY OMITTED. The Prelude still declares it
---  `fromInteger : Int -> a`, so `fromInteger n = Ratio { num: n, den: 1 }`
---  types `n` as an `Int` while the field is the class variable — measured:
---  `cannot unify value type Int with Integer`. An unannotated literal field
---  (`num: 1`) fails the same way, and rill has no `fromInteger` at `Ratio` to
---  build a literal from. An instance MAY omit a method, and an omitted method
---  fails LOUDLY at the call site — measured: "no instance of `Num` for type
---  `Ratio` and no default for `fromInteger`" — instead of silently producing
---  the wrong value. Stage 7b's `fromInteger : Integer -> a` corrects the
---  signature and adds the body.
+--  `fromInteger n = Ratio { num: n, den: 1 }` and `fromRational r = r` are
+--  Haskell 2010 §6.4.1's two literal conversions at `Ratio`: an integer
+--  literal at a `Ratio` type builds the ratio `n/1` (the `1` again from
+--  `fromInteger`, so it is the field's own type), and a fractional literal is
+--  already a `Ratio` value.
 instance Num (Ratio a) where {
     (+) x y = __ratio_percent (x.num * y.den + y.num * x.den) (x.den * y.den);
     (-) x y = __ratio_percent (x.num * y.den - y.num * x.den) (x.den * y.den);
     (*) x y = __ratio_percent (x.num * y.num) (x.den * y.den);
     negate x = let z = x.num - x.num in Ratio { num: z - x.num, den: x.den };
     abs x = Ratio { num: let z = x.num - x.num in if x.num < z then z - x.num else x.num, den: let z = x.den - x.den in if x.den < z then z - x.den else x.den };
-    signum x = Ratio { num: let z = x.num - x.num in let one = z + (1 :: Integer) in if x.num < z then z - one else if x.num > z then one else z, den: (1 :: Integer) };
+    signum x = Ratio { num: let z = x.num - x.num in let one = z + fromInteger 1 in if x.num < z then z - one else if x.num > z then one else z, den: fromInteger 1 };
+    fromInteger n = Ratio { num: n, den: fromInteger 1 };
 }
 
 --  `(/)` multiplies by the reciprocal: `(n1/d1) / (n2/d2) = (n1*d2)/(d1*n2)`.
@@ -1006,11 +1013,13 @@ instance Num (Ratio a) where {
 --  Both bottoms lower to the same `ValueFault` instruction, so the branch has
 --  the method's own type and typechecks as GHC's does.
 --
---  No `fromRational` here: the class does not declare that method yet (stage
---  7b adds it together with the literal rule that needs it).
+--  `fromRational r = r` is the identity because a fractional literal's payload
+--  is ALREADY the exact `Rational` the source digits denote (Task 6), so a
+--  `Ratio` target needs no conversion — it takes the value as it stands.
 instance Fractional (Ratio a) where {
     (/) x y = __ratio_percent (x.num * y.den) (x.den * y.num);
     recip x = __ratio_percent x.den x.num;
+    fromRational r = r;
 }
 
 --  `Data.Ratio`'s field projections. These are ORDINARY DEFINITIONS, not
@@ -1065,6 +1074,13 @@ data Tape a = { };
 --  `instance (Floating a) => Num (FixedBuffer a)` is an ADDITIVE change.
 instance Num (FixedBuffer Double) where { }
 instance Num (Tape Double) where { }
+--  `Fractional` on a buffer for the same reason: a FRACTIONAL literal is
+--  `fromRational (r :: Rational)` at `Fractional a => a` (Haskell 2010 §6.4.1),
+--  so a buffer-typed fractional literal — the ordinary signal constant `0.5` in
+--  `sine 440.0 0.5 0.0 * 0.5` — needs this instance just as `1 * 0.5` needs
+--  `Num`. The bodies are whole-block kernels, exactly like `Num`'s.
+instance Fractional (FixedBuffer Double) where { }
+instance Fractional (Tape Double) where { }
 instance Buffer (FixedBuffer Double) where { }
 instance Buffer (Tape Double) where { }
 
@@ -1212,6 +1228,28 @@ instance Ix Int where {
     inRange b i = (b.first <= i) && (i <= b.second);
     rangeSize b = b.second - b.first + 1;
 }
+--  The standard `Ix Integer` instance (Haskell 2010 §Data.Ix). It is not
+--  decoration: `default (Integer, Double)` — the list `Ix Integer` shares with
+--  every numeric default — sends an UNCONSTRAINED bounds literal
+--  (`listArray (0, 1) xs`) to `Integer`, exactly as GHC does, so without this
+--  instance the defaulted program could not be written. The bodies are the same
+--  equations as `Ix Int`; the element track follows the bounds operand.
+instance Ix Integer where {
+    range b = listRange b;
+    -- `index : Pair i i -> i -> Int` and `rangeSize : (i, i) -> Int` are `Int`s
+    -- by the CLASS's own signatures, while the arithmetic here is `Integer`. GHC
+    -- derives both with `fromIntegral` from `Integral Integer`; rill has no
+    -- `Integral`, and `fromInteger :: Integer -> Int` is the same narrowing (it
+    -- truncates, which is exactly what an `Int` offset means).
+    --
+    -- The sibling methods are NOT called: an instance body that re-enters its own
+    -- class cannot resolve the second dispatch (there is one dictionary being
+    -- built), so `range b` is written out as `listRange b` and the bound test as
+    -- the field comparison it is.
+    index b i = fromInteger (i - b.first);
+    inRange b i = (b.first <= i) && (i <= b.second);
+    rangeSize b = fromInteger (b.second - b.first + 1);
+}
 
 --  2-D indices, row-major over `Pair Int Int`. The instance is SELF-CONTAINED on
 --  purpose: the per-coordinate arithmetic is inlined instead of dispatching the
@@ -1224,6 +1262,18 @@ instance Ix (Pair Int Int) where {
     index b i = (i.first - (b.first).first) * ((b.second).second - (b.first).second + 1) + (i.second - (b.first).second);
     inRange b i = ((b.first).first <= i.first) && (i.first <= (b.second).first) && ((b.first).second <= i.second) && (i.second <= (b.second).second);
     rangeSize b = ((b.second).first - (b.first).first + 1) * ((b.second).second - (b.first).second + 1);
+}
+
+--  The 2-D `Integer` counterpart, for the same reason as the 1-D one:
+--  `default (Integer, Double)` sends an unconstrained bounds pair to `Integer`,
+--  and a `Pair Integer Integer` index must then have its instance. The offset and
+--  the count are `Int`s by the class's signatures, so they narrow through
+--  `fromInteger` (see the 1-D note); `range` is spelled out for the same reason.
+instance Ix (Pair Integer Integer) where {
+    range b = concat_map (\ i1 -> map (\ i2 -> Pair { first: i1, second: i2 }) (listRange (Pair { first: (b.first).second, second: (b.second).second }))) (listRange (Pair { first: (b.first).first, second: (b.second).first }));
+    index b i = fromInteger ((i.first - (b.first).first) * ((b.second).second - (b.first).second + 1) + (i.second - (b.first).second));
+    inRange b i = ((b.first).first <= i.first) && (i.first <= (b.second).first) && ((b.first).second <= i.second) && (i.second <= (b.second).second);
+    rangeSize b = fromInteger (((b.second).first - (b.first).first + 1) * ((b.second).second - (b.first).second + 1));
 }
 
 --  --- Immutable arrays ------------------------------------------------------
@@ -1955,6 +2005,9 @@ impl TypeEnv {
         let forall_a = |inner: crate::ast::TypeExpr| {
             crate::ast::TypeExpr::TForall(vec!["a".to_string()], Box::new(inner))
         };
+        let forall_i = |inner: crate::ast::TypeExpr| {
+            crate::ast::TypeExpr::TForall(vec!["i".to_string()], Box::new(inner))
+        };
         let io =
             |inner: crate::ast::TypeExpr| crate::ast::TypeExpr::TApp("IO".to_string(), vec![inner]);
         let stream = |name: &str, arg: crate::ast::TypeExpr| {
@@ -2242,10 +2295,16 @@ impl TypeEnv {
         // behind `listArray` (and `newArrayFromListFlat` is its ST twin).
         env.builtin_sigs.insert(
             "listRange".to_string(),
-            crate::ast::TypeExpr::TFunc(
-                vec![pair(vec![tv("Int"), tv("Int")])],
-                Box::new(list(tv("Int"))),
-            ),
+            // `listRange : (i, i) -> List i` over the INTEGRAL index types the
+            // `Ix` instances use: an `Int` pair and an `Integer` pair are the
+            // same concept (an inclusive integral range) and the element type
+            // follows the operand. The `Ix Integer` instance needs the
+            // `Integer` form, and `default (Integer, Double)` is what makes an
+            // unconstrained bounds literal arrive there.
+            forall_i(crate::ast::TypeExpr::TFunc(
+                vec![pair(vec![tv("i"), tv("i")])],
+                Box::new(list(tv("i"))),
+            )),
         );
         env.builtin_sigs.insert(
             "arrayFromListChecked".to_string(),
@@ -3817,7 +3876,7 @@ impl TypeEnv {
                 Some(d) => self.validate_body_type_names(d, tyvars),
                 None => Ok(()),
             },
-            Expr::Int(..)
+            Expr::IntegerLit(..)
             | Expr::FractionalLit(..)
             | Expr::Void(..)
             | Expr::Str(..)
@@ -3847,6 +3906,35 @@ impl TypeEnv {
             TypeEntry::Newtype => Some(ValueTy::Newtype(name.to_string(), vec![])),
             TypeEntry::TypeCtor { .. } => Some(ValueTy::Con(name.to_string(), vec![])),
             TypeEntry::Variable => None,
+        }
+    }
+
+    /// Whether `class` has a registered instance at the concrete TYPE `ty`.
+    ///
+    /// One query, used by both separated inference stages: stage 2 asks it of a
+    /// variable unification made concrete (a `false` there is the
+    /// `no instance of …` error), and stage 3 asks it of each default candidate
+    /// (`false` disqualifies the candidate). Answering it in one place is what
+    /// keeps "has an instance" a single judgement rather than a `matches!` list
+    /// of type names.
+    ///
+    /// The registry is keyed by the value-type KEY, falling back to the HEAD
+    /// constructor name for a structurally derived instance (`derive_eq_ord`
+    /// keys `Eq Array`, which answers every `Array i e`). The fallback is the
+    /// same one [`crate::types::infer::method_dispatch_key`] applies, so an
+    /// instance this says exists is one dispatch can actually select.
+    pub(crate) fn instance_exists(&self, class: &str, ty: &ValueTy) -> bool {
+        let Some(by_ty) = self.instances.get(class) else {
+            return false;
+        };
+        if let Some(key) = value_type_key(self, ty) {
+            if by_ty.contains_key(key.as_str()) {
+                return true;
+            }
+        }
+        match self.type_name_of_vty(ty) {
+            Some(head) => by_ty.contains_key(head.as_str()),
+            None => false,
         }
     }
 

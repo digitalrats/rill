@@ -1346,6 +1346,221 @@ git commit -m 'feat: literals are fromInteger/fromRational applications, with th
 
 ---
 
+### Task 10a: delete `Def::Eval.params` — arity is a property of the BODY (do this FIRST)
+
+**Why this is the deepest layer.** Haskell 2010 §4.4.3.1: `f x = e` is
+SHORTENING for `f = \x -> e`. There are no named functions — a definition binds
+a NAME to an EXPRESSION, and the only carrier of parameters is `Expr::Lambda`
+(one argument each, curried). rill stores the same concept TWO ways:
+
+| source | `Def.params` | body is `Expr::Lambda` | `lam_count` |
+|---|---|---|---|
+| `f x = e` | `["x"]` | **no** | 1 |
+| `f x y = e` | `[]` | yes | 2 |
+| `f = \x -> e` | `[]` | yes | 1 |
+| `f = \x -> \y -> e` | `[]` | yes | 2 |
+
+`parser::curry_defs_in` curries at `params.len() > 1`, so the ONE-parameter form
+keeps its parameter on the def node — the last "named function". It is why
+semantically identical programs behave differently:
+
+| program | rill today |
+|---|---|
+| `(\x -> x + h) 2.5` | ✅ `3.5` |
+| `f = \x -> x + h; f 2.5` | ✅ `3.5` |
+| `f x = x + h; f 2.5` | ❌ **WRONG RUNTIME ANSWER** (`arithmetic mixes an Integer operand with a floating one`) |
+| `h + 2.5` | ❌ compile refusal |
+
+`Expr::Lambda` decomposes `expected` into parameter types; the def-with-params
+path does not. That asymmetry IS the defect family this whole task has been
+chasing.
+
+**A constant is arity 0.** In a lazy system `c` may be read as `\() -> c`; what
+distinguishes it is that its body builds NO lambda. So arity is `lam_count` —
+already computed — and `params` duplicates it in a second place. `cafs` currently
+needs BOTH (`params.is_empty() && lam_count == 0`); one suffices.
+
+**Measured cost of the one-line change** (`params.len() > 1` →
+`!params.is_empty()`): HEALS 2 (`one_body_serves_two_types` — the wrong runtime
+answer above — and `a_type_synonym_may_name_a_parameterized_type`), BREAKS 30.
+Every one of the 30 ASSUMES the two-shape representation:
+
+| consumer | files |
+|---|---|
+| surface-shape tests | `parser::tests::juxtaposition_parse`, `parses_main_with_where_block`, `parses_match_expression`, `bang_param_marks_definition_param` |
+| inlining | `reduce::tests::nested_apply_is_inlined`, `simple_apply_is_inlined`, `top_level_call_is_inlined` |
+| CAF classification | `types::infer::tests::function_with_params_is_not_caf`, `open_block_is_not_caf` |
+| bang patterns | `bang_case_pattern_forces_payload`, `bang_param_forces_argument`, `render::tests::render_roundtrip_bang_forms` |
+| Complete-mode recursion | `complete_from_*`, `complete_take_*`, `complete_nth_with_list_param_recursive`, `complete_shared_thunk_forced_once`, `complete_let_binding_is_lazy_thunk` |
+| misc | `renderer_prints_the_source_spelling`, `deep_non_tail_recursion_same_result`, `higher_order_argument_is_checked`, `user_function_captures_shared_free_variable`, `bare_named_fn_into_function_shaped_param_names_the_annotation`, `benchmark_size_take_64_runs_within_the_arena_budget`, `if_on_a_lazy_bool_takes_the_right_branch`, `od_25_short_circuit_comes_from_laziness` |
+
+**Steps.**
+1. Change `curry_defs_in` to curry at `!params.is_empty()`.
+2. Migrate the 8 READERS of `Def::Eval::params` one at a time, each behind its
+   own test:
+   - `reduce.rs:343` (bang forcing), `:380`/`:450` (CAF), `:530`/`:583`
+     (partial application);
+   - `lower.rs:924` (`is_local_function`), `:7138` (CAF arm), `:7652`;
+   - `types/infer.rs` CAF filter — drop `params.is_empty()` and keep
+     `lam_count == 0`;
+   - the parser/desugar assertions become body-shape assertions.
+3. Delete the `params` field from `Def::Eval` and `Def::params()`; the compiler
+   then proves every remaining site is migrated.
+4. Re-run the 30; each must pass on the ONE representation.
+
+**Do NOT** bundle this with Task 10's channel work: this changes the AST, the
+channels change the inference-to-lowering interface, and mixing them would make
+neither reviewable.
+
+---
+
+### Task 10b: step 3 of the dictionary design — a constraint IS a parameter
+
+**Spec:** `docs/superpowers/specs/2026-10-25-rill-lang-runtime-dictionaries-design.md`
+(«Runtime Typeclass Dictionaries (vtable model)»). Its §3.7 migration order is
+the authority; this task is exactly its **step 3**, which blocks steps 4–8.
+
+**Where the design stopped (measured today):**
+
+| §3.7 step | state |
+|---|---|
+| 0 groundwork (`ValueTy::Dict`, `Scheme.constraints`, given context) | done |
+| 1 `Value::Dictionary` + `DictSlot` | done (`arena::DictSlot`) |
+| 2 build a dictionary per mentioned `(class, type)` at seat | **built and NOT read** — `lower.rs:11012`: "Nothing reads the table yet" |
+| **3 polymorphic functions take a dictionary parameter** | **NOT DONE — this task** |
+| 4 method call projects a slot | blocked by 3 |
+| 5 method-as-value is a selector | blocked by 3 |
+| 6 superclass projection | blocked by 3 |
+| 7 literals as `fromInteger` + defaulting | partly (Task 6) |
+| 8 delete `ConstrainedDef` and its five paths | blocked by 3 |
+
+**What GHC actually emits (measured, `-O0 -ddump-ds-preopt`):**
+
+```haskell
+let { $dC_aKi = $fCInt }
+let { $dC_aK7 = $fCDouble }
+(+ (m $dC_aK7 (D# 1.0##)) (m $dC_aKi (I# 1#)))
+```
+
+One `m`, TWO dictionaries — not monomorphisation. A method is a **vtable slot**:
+its hidden first argument is a pointer to the vtable, NOT data. That is why the
+design calls the layout "methods + base-vtable refs", as C++ vtables: `supers`
+is the base-class pointer, `methods` the slot array.
+
+**Why the current model cannot get there.** rill implements the STATIC case
+(type known ⇒ inline the instance body) and has no DYNAMIC case (type unknown ⇒
+pass the vtable pointer). Everything this task chased follows:
+
+* `f :: C a => a -> Double; f = m` is inexpressible ("cannot use
+  class-constrained definition without applying it") — it needs a dictionary
+  argument;
+* recursive polymorphic functions are refused;
+* seven parallel inference→lowering type channels exist to push static
+  information into places where GHC simply passes a vtable.
+
+**Steps (each independently green; do NOT batch).**
+1. Type the constraint as a real lambda parameter: `f :: C a => T` becomes
+   `Thunk([Dict(C,a)], [T])` in the scheme, and `instantiate` supplies it.
+2. Emit the dictionary argument at every call site from the selection table
+   `TypedProgram.value_tys` / `dict_selections` already carries.
+3. Project the slot at a method call (§3.7 step 4) and delete
+   `instantiate_method` + `lower_primitive_method`.
+4. Method-as-value = `(dict ref, slot index)` closure (§3.8), delete
+   `lower_method_value` + `lower_operator_value`.
+5. Superclass projection.
+6. Delete `ConstrainedDef` and the specialisation path; a grep proves the five
+   paths are gone.
+
+**Prerequisite:** Task 10a (one function shape). With `Def::Eval.params` gone,
+a dictionary IS just another parameter, and there is one place that says how a
+parameter is bound.
+
+**Do not** start this while Task 7's literal work is uncommitted: the two touch
+`Scheme.constraints` and `fromInteger`/`fromRational` lowering.
+
+---
+
+### Task 10: ONE value site and ONE application rule (BLOCKS nothing; follows Task 7)
+
+**Why.** `lower_value` dispatches on a name through NINE special paths —
+operators by literal `match`, `not`, `error`, collection builtins, data
+constructors, sum constructors, newtypes, class methods (three sub-paths), FFI,
+and user definitions (five sub-paths). Each path decides for itself which TYPE it
+needs, so each grew its own channel from inference, and the type data is now
+carried SEVEN parallel ways:
+
+```
+def_schemes, fn_param_tys, shared_cell_result_tys,
+runst_payload_tys, dict_selections, literal_tys, literal_instances
+```
+
+Measured cost of that shape, over one working session:
+
+| channel / special path | tests it won |
+|---|---|
+| `literal_tys` + `literal_instances` | 0 |
+| `def_selections` (removed) | 0 — never populated |
+| `position_solves` | 0 |
+| `instance_from_expectation` | 1 |
+| deferred (result-directed) dispatch | 7 |
+| `main :: IO t` contract | 1 |
+| the `integral()` TEST helper | ~43 |
+
+The wins came from REMOVING premature decisions and fixing test helpers, not
+from adding channels. Every remaining defect is a missing channel: `h + 2.5`,
+`runSTArray` + `!`, `!` inside a fragment.
+
+**Interfaces.**
+- `TypeEnv::resolve_value(name) -> Option<(ValueKind, &ValueTy)>`, where
+  `ValueKind` is `Kernel` | `Foreign` | `Constructor` | `Method { instance }` |
+  `Definition`.
+- `Lowerer::apply_site(kind, sig, args, expected)` — ONE application: unify each
+  argument against the signature's parameter, then emit the body/kernel.
+- `TypedProgram::value_tys: HashMap<(usize, usize), ValueTy>` — the resolved type
+  of every expression, keyed by span. Replaces `literal_tys`,
+  `literal_instances`, `runst_payload_tys` and `dict_selections`.
+
+**ORDER CORRECTED (measured).** The channels are a SYMPTOM: each dispatch site
+decides a class variable on its own, so each grew its own map. Unifying the maps
+FIRST would faithfully carry whatever the split decisions produced. So the
+application rule comes first.
+
+**Step 0 — one application rule (do this BEFORE the channel work).**
+Ten places type an argument WITHOUT its parameter type
+(`infer_method_value_vty(ctx, arg, "argument")`) and six type it WITH. The ten
+are ten independent decisions about the same class variable. Measured on one
+family of programs: `(+)` infix and `member` FAIL while `not`, `map`+closure and
+`filter` succeed — different answers from the same shape.
+
+Requirement: every argument is typed AGAINST its parameter type, in
+`apply_args_curried` and nowhere else; the other sites delete their own copy.
+Each deletion owes a test that fails without it.
+
+**Steps.**
+1. Step 0 above.
+2. `value_tys` is ALREADY ADDED (`Ctx::value_tys` / `TypedProgram::value_tys`,
+   written by `infer_expr_expected`, read by nothing yet).
+3. Point ONE path at it, prove the tests still pass, delete that channel.
+4. Repeat until one channel remains.
+5. Then collapse the nine dispatch paths onto `resolve_value` +
+   `apply_site`, one kind at a time, each with its own test.
+
+**What `value_tys` proved about `h + 2.5` (first diagnostic a Task 10
+implementer should reproduce):**
+
+```
+[h]        = Var(39)      ← NOT decided
+[2.5]      = Double       ← decided
+```
+
+`(+) :: a -> a -> a` has ONE `a`, so those cannot differ — the defect is in
+INFERENCE, not in the channel, and the channel cannot fix it by itself.
+
+**Do NOT** do this inside Task 7: it is an architectural change, and the project
+rule forbids mixing independent defects in one task.
+
+---
+
 ### Task 8: an integer parameter reaches the language as an `Int`, not a `Double`
 
 **Files:**

@@ -133,8 +133,8 @@ fn array_from_list_bounds_and_elems_read_back() {
     let out = output(&prog);
     let (bounds, elems) = pair_values(&prog, &out);
     let (lo, hi) = pair_values(&prog, &bounds);
-    assert_eq!(lo, Value::Int(0), "lower bound reads back");
-    assert_eq!(hi, Value::Int(2), "upper bound reads back");
+    assert_eq!(integral(&lo), 0, "lower bound reads back");
+    assert_eq!(integral(&hi), 2, "upper bound reads back");
     assert_eq!(list_floats(&prog, &elems), vec![10.0, 20.0, 30.0]);
 }
 
@@ -191,8 +191,8 @@ fn array_seed_on_inverted_bounds_is_a_valid_empty_array() {
     let src = "main = arrayBounds (arraySeed (Pair { first: 0, second: -1 }) 1.0);";
     let prog = run(src);
     let (lo, hi) = pair_values(&prog, &output(&prog));
-    assert_eq!(lo, Value::Int(0));
-    assert_eq!(hi, Value::Int(-1));
+    assert_eq!(integral(&lo), 0);
+    assert_eq!(integral(&hi), -1);
 }
 
 #[test]
@@ -435,8 +435,8 @@ fn empty_array_has_the_empty_range_bounds_and_no_elements() {
     // track), so `-1` reaches the array as `Value::Int(-1)`. Before the
     // Int-preserving arithmetic change this was a `Double`, which the
     // interpreter accepted only through its integral-float tolerance.
-    assert_eq!(lo, Value::Int(0), "the empty lower bound reads back");
-    assert_eq!(hi, Value::Int(-1), "the empty upper bound reads back");
+    assert_eq!(integral(&lo), 0, "the empty lower bound reads back");
+    assert_eq!(integral(&hi), -1, "the empty upper bound reads back");
     assert_eq!(len, Value::Int(0), "the empty array has no elements");
 
     let msg = fault(&format!("main = arrayIndexFlat {empty} 0;"));

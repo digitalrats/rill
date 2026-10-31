@@ -121,12 +121,13 @@ fn list_ints(prog: &WorldState<f32, 256>, v: &Value) -> Vec<i64> {
         Value::List { elems } => elems.clone(),
         other => panic!("expected a List, got {other:?}"),
     };
+    // `range`'s element type follows the bounds operand, and an unconstrained
+    // bounds literal defaults to `Integer` (`default (Integer, Double)`); GHC
+    // 9.10.3 measures `ix = indices (listArray ((0,0),(2,2)) …)` as
+    // `[(Integer, Integer)]`. Both tracks denote the same index.
     elems
         .iter()
-        .map(|r| match prog.arena().get(*r) {
-            Some(Value::Int(i)) => *i,
-            other => panic!("expected an Int element, got {other:?}"),
-        })
+        .map(|r| integral(prog.arena().get(*r).expect("element resolves")))
         .collect()
 }
 
@@ -158,10 +159,7 @@ fn array_1d(prog: &WorldState<f32, 256>, v: &Value) -> (Vec<f64>, (i64, i64)) {
     let (bounds, elems) = array_parts(v);
     let bounds = prog.arena().get(bounds).expect("bounds resolve").clone();
     let (lo, hi) = pair_values(prog, &bounds);
-    let (lo, hi) = match (lo, hi) {
-        (Value::Int(lo), Value::Int(hi)) => (lo, hi),
-        other => panic!("expected Int bounds, got {other:?}"),
-    };
+    let (lo, hi) = (integral(&lo), integral(&hi));
     let values = elems
         .iter()
         .map(|r| match prog.arena().get(*r) {
@@ -301,10 +299,7 @@ fn ix_pair_range_is_row_major_and_empty_for_an_empty_dimension() {
             .map(|r| {
                 let cell = prog.arena().get(*r).expect("cell resolves").clone();
                 let (a, b) = pair_values(&prog, &cell);
-                match (a, b) {
-                    (Value::Int(a), Value::Int(b)) => (a, b),
-                    other => panic!("expected an Int pair cell, got {other:?}"),
-                }
+                (integral(&a), integral(&b))
             })
             .collect(),
         other => panic!("expected a List, got {other:?}"),
@@ -466,8 +461,8 @@ fn array_leaves_unlisted_positions_as_faulting_holes() {
     let (prog, v) = run(&src);
     let (b, cells) = pair_values(&prog, &v);
     let (lo, hi) = pair_values(&prog, &b);
-    assert_eq!(lo, Value::Int(0));
-    assert_eq!(hi, Value::Int(3));
+    assert_eq!(integral(&lo), 0);
+    assert_eq!(integral(&hi), 3);
     let (c0, c2) = pair_values(&prog, &cells);
     assert_eq!(c0, Value::Double(1.5));
     assert_eq!(c2, Value::Double(3.5));
@@ -505,8 +500,8 @@ fn bounds_and_elems_are_direct_reads_of_a_list_array() {
     let (prog, v) = run(&src);
     let (b, es) = pair_values(&prog, &v);
     let (lo, hi) = pair_values(&prog, &b);
-    assert_eq!(lo, Value::Int(-1));
-    assert_eq!(hi, Value::Int(0));
+    assert_eq!(integral(&lo), -1);
+    assert_eq!(integral(&hi), 0);
     assert_eq!(list_floats(&prog, &es), vec![7.0, 8.0]);
 }
 
@@ -536,9 +531,9 @@ fn assocs_pairs_each_index_with_its_element() {
         .map(|r| {
             let pair = prog.arena().get(*r).expect("pair resolves").clone();
             let (i, e) = pair_values(&prog, &pair);
-            match (i, e) {
-                (Value::Int(i), Value::Double(f)) => (i, f),
-                other => panic!("expected an (Int, Double) assoc, got {other:?}"),
+            match e {
+                Value::Double(f) => (integral(&i), f),
+                other => panic!("expected an (index, Double) assoc, got ({i:?}, {other:?})"),
             }
         })
         .collect();
@@ -556,10 +551,7 @@ fn list_cells(prog: &WorldState<f32, 256>, v: &Value) -> Vec<(i64, i64)> {
         .map(|r| {
             let cell = prog.arena().get(*r).expect("cell resolves").clone();
             let (i, j) = pair_values(prog, &cell);
-            match (i, j) {
-                (Value::Int(i), Value::Int(j)) => (i, j),
-                other => panic!("expected an (Int, Int) cell, got {other:?}"),
-            }
+            (integral(&i), integral(&j))
         })
         .collect()
 }
@@ -577,9 +569,11 @@ fn list_cell_assocs(prog: &WorldState<f32, 256>, v: &Value) -> Vec<((i64, i64), 
             let pair = prog.arena().get(*r).expect("pair resolves").clone();
             let (ix, e) = pair_values(prog, &pair);
             let (i, j) = pair_values(prog, &ix);
-            match (i, j, e) {
-                (Value::Int(i), Value::Int(j), Value::Double(e)) => ((i, j), e),
-                other => panic!("expected a ((Int, Int), Double) assoc, got {other:?}"),
+            match e {
+                Value::Double(e) => ((integral(&i), integral(&j)), e),
+                other => panic!(
+                    "expected a ((index, index), Double) assoc, got ({i:?}, {j:?}, {other:?})"
+                ),
             }
         })
         .collect()
@@ -719,8 +713,8 @@ fn ixmap_transposes_a_two_by_three_matrix() {
         (l1, l2, u1, u2, values)
     });
     assert_eq!(
-        (l1, l2, u1, u2),
-        (Value::Int(0), Value::Int(0), Value::Int(2), Value::Int(1)),
+        (integral(&l1), integral(&l2), integral(&u1), integral(&u2)),
+        (0, 0, 2, 1),
         "the result has the new 3x2 bounds"
     );
     // Row-major 3x2: (0,0)=m(0,0)=1, (0,1)=m(1,0)=4, (1,0)=m(0,1)=2, …

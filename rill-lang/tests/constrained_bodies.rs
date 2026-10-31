@@ -47,7 +47,7 @@ fn mentions_var(t: &ValueTy, id: TypeVarId) -> bool {
 fn a_constrained_scheme_carries_its_constraint() {
     // `mk :: Ix i => Pair i i -> Int` is a class-constrained definition: its
     // scheme must carry the class context as `(class, type variable)`.
-    let src = "mk p :: Ix i => Pair i i -> Int = rangeSize p;\nmain = 0.0;";
+    let src = "mk p :: Ix i => Pair i i -> Int = rangeSize p;\nunused = 0.0;";
     let toks = tokenize(src).unwrap();
     let prog = parse(&toks, src.as_bytes()).unwrap();
     let typed = infer_program(&prog, Mode::Strict).expect("a constrained signature must typecheck");
@@ -79,9 +79,9 @@ fn a_constrained_scheme_carries_its_constraint() {
 
     // An unconstrained scheme carries no constraints.
     assert!(
-        typed.def_schemes["main"].constraints.is_empty(),
+        typed.def_schemes["unused"].constraints.is_empty(),
         "an unconstrained scheme has an empty context, got {:?}",
-        typed.def_schemes["main"].constraints
+        typed.def_schemes["unused"].constraints
     );
 
     // A multi-constraint context records one entry per class, in declaration
@@ -417,7 +417,7 @@ fn no_instance_is_still_a_compile_error() {
     // The body is typed once, so the constraint is discharged at each CALL SITE.
     // A concrete index type with no instance cannot supply the dictionary and
     // must fail at compile time — never fall back to a runtime lookup.
-    let src = "mk p :: Ix i => Pair i i -> Int = rangeSize p;\nmain = mk (Pair { first: true, second: false });";
+    let src = "mk p :: Ix i => Pair i i -> Int = rangeSize p;\nprobe = mk (Pair { first: true, second: false });";
     let msg = type_err(src);
     assert!(
         msg.contains("no instance of `Ix` for type `Bool`"),

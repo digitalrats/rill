@@ -505,7 +505,7 @@ fn a_declared_binding_and_a_declared_result_reach_the_literal_in_both_modes() {
 
 #[test]
 fn an_integer_pattern_literal_takes_the_scrutinee_type_in_both_modes() {
-    // A `Pattern::LitInt` is an integer literal too, and its ONE expected type
+    // A `Pattern::IntegerLit` is an integer literal too, and its ONE expected type
     // is the scrutinee's. Pinning every such pattern to `Int` rejected
     // `f :: Integer -> Integer; f 2 = 5` (GHC accepts it) and made the lowered
     // constant a cross-kind comparison against an `Integer`/`Double`

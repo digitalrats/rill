@@ -142,7 +142,9 @@ fn a_type_variable_is_still_accepted() {
     assert_eq!(env.vty_of_name("a"), None);
 
     let out = compile("f :: Num a => a -> a; f x = x; main = f 1;").expect("must compile");
-    assert!(out.contains("Int(1)"), "got {out}");
+    // The call site leaves `a` ambiguous, so `default (Integer, Double)` takes
+    // its FIRST entry: GHC measures `f $dNum (IS 1#)` — an `Integer`.
+    assert!(out.contains("Integer(1)"), "got {out}");
 
     // A `forall`-bound variable and a class type variable are the same lexical
     // category, and neither is a declared type.

@@ -658,7 +658,7 @@ impl<'a> Parser<'a> {
             Tok::Int(v) => {
                 let v = v.clone();
                 self.bump();
-                Ok(Pattern::LitInt(v))
+                Ok(Pattern::IntegerLit(v))
             }
             Tok::FractionalLit(v, text) => {
                 self.bump();
@@ -2318,7 +2318,7 @@ impl<'a> Parser<'a> {
     fn parse_atom(&mut self, arg_list: bool) -> Result<Expr, CompileError> {
         let t = self.bump();
         match t.tok {
-            Tok::Int(v) => Ok(Expr::Int(v, t.span)),
+            Tok::Int(v) => Ok(Expr::IntegerLit(v, t.span)),
             Tok::FractionalLit(v, text) => Ok(Expr::FractionalLit(
                 Box::new(v.clone()),
                 text.clone(),
@@ -2365,9 +2365,10 @@ impl<'a> Parser<'a> {
                             )),
                             t.span,
                         )),
-                        Tok::Int(v) => {
-                            Ok(Expr::Neg(Box::new(Expr::Int(v.clone(), next.span)), t.span))
-                        }
+                        Tok::Int(v) => Ok(Expr::Neg(
+                            Box::new(Expr::IntegerLit(v.clone(), next.span)),
+                            t.span,
+                        )),
                         _ => Ok(Expr::Ref("-".into(), t.span)),
                     }
                 } else {
@@ -3166,7 +3167,7 @@ mod tests {
                 Some(("f", args)) => {
                     assert_eq!(args.len(), 2);
                     assert!(matches!(args[0], Expr::Ref(g, _) if g == "g"));
-                    assert!(matches!(&args[1], Expr::Int(v, _) if *v == 2.into()));
+                    assert!(matches!(&args[1], Expr::IntegerLit(v, _) if *v == 2.into()));
                 }
                 other => panic!("expected Apply, got {other:?}"),
             },
@@ -3390,7 +3391,7 @@ mod tests {
                     Expr::Record(fields, _) => {
                         assert_eq!(fields.len(), 1);
                         assert_eq!(fields[0].0, "channels");
-                        assert!(matches!(&fields[0].1, Expr::Int(v, _) if *v == 3.into()));
+                        assert!(matches!(&fields[0].1, Expr::IntegerLit(v, _) if *v == 3.into()));
                     }
                     other => panic!("expected Record, got {other:?}"),
                 }
@@ -3927,7 +3928,7 @@ mod tests {
             arms[0].guards[0].0.is_none(),
             "a bare `Circle r -> r` arm carries no guard at all"
         );
-        assert!(matches!(&arms[1].pattern, Pattern::LitInt(v) if *v == 0.into()));
+        assert!(matches!(&arms[1].pattern, Pattern::IntegerLit(v) if *v == 0.into()));
         assert!(matches!(arms[2].pattern, Pattern::Wild));
         assert!(matches!(&arms[3].pattern, Pattern::Var(v) if v == "n"));
         assert!(
@@ -4110,8 +4111,10 @@ mod tests {
         // `a ! i + 1` ≡ `(a ! i) + 1` — indexing sits just below application.
         match curry_head(&body("main = a ! i + 1")) {
             Some(("+", args)) => {
+                // Task 6b split the names: `!` desugars to `(!)`, not `index`.
+                // The stash's rename `Expr::Int` -> `Expr::IntegerLit` stands.
                 assert!(matches!(curry_head(args[0]), Some(("!", inner)) if inner.len() == 2));
-                assert!(matches!(&args[1], Expr::Int(v, _) if *v == 1.into()));
+                assert!(matches!(&args[1], Expr::IntegerLit(v, _) if *v == 1.into()));
             }
             other => panic!("expected `+` at the root, got {other:?}"),
         }
@@ -4138,7 +4141,7 @@ mod tests {
             panic!("expected a `(!)` application for `main = a!1`, got {e:?}");
         };
         assert_eq!(args.len(), 2);
-        assert!(matches!(&args[1], Expr::Int(v, _) if *v == 1.into()));
+        assert!(matches!(&args[1], Expr::IntegerLit(v, _) if *v == 1.into()));
     }
 
     #[test]

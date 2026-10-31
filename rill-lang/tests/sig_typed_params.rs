@@ -26,13 +26,21 @@ fn run_value(src: &str) -> Value {
     prog.arena().get(v).unwrap().clone()
 }
 
-/// Compile and run `src`, returning `main`'s value as a number. Value
-/// arithmetic preserves the `Int` track (`1 + 2` is `Int(3)`, not `Double(3.0)`),
-/// so an assertion compares through `f64` rather than pinning one spelling.
+/// Compile and run `src`, returning `main`'s value as a number.
+///
+/// An unconstrained arithmetic result is NOT a fixed spelling: the three stages
+/// settle it, and `default (Integer, Double)` takes its FIRST entry, so
+/// `1 + 2` is `Integer(3)` — GHC measures `Integer` for the same program. The
+/// helper therefore accepts all three numeric tracks and compares their value,
+/// which is the property the tests are about.
 fn run_num(src: &str) -> f64 {
     match run_value(src) {
         Value::Double(x) => x,
         Value::Int(i) => i as f64,
+        Value::Integer(i) => i
+            .to_string()
+            .parse::<f64>()
+            .expect("an Integer fits an f64 here"),
         other => panic!("expected a number, got {other:?}"),
     }
 }

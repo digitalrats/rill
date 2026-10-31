@@ -51,11 +51,10 @@ fn pair_projection_and_either() {
 fn pair_heterogeneous_fields() {
     let prog = run("p = Pair { first: 1.0, second: 2 }; main = p.second;");
     let v = prog.result().unwrap();
-    // p.second : Int(2) — heterogeneous Pair fields must typecheck.
-    assert_eq!(
-        prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Int(2)
-    );
+    // `p.second : Integer` — heterogeneous Pair fields must typecheck, and an
+    // unconstrained literal defaults along `default (Integer, Double)` to
+    // `Integer` (GHC 9.10.3 measures `p :: (Double, Integer)`).
+    assert_eq!(integral(prog.arena().get(v).unwrap()), 2);
 }
 
 #[test]

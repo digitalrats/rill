@@ -703,7 +703,7 @@ fn desugar_expr(e: Expr) -> Result<Expr, CompileError> {
             ty,
             span,
         },
-        other @ (Expr::Int(..)
+        other @ (Expr::IntegerLit(..)
         | Expr::FractionalLit(..)
         | Expr::Void(..)
         | Expr::Str(..)

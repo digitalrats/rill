@@ -97,6 +97,23 @@ pub struct TypedProgram {
     /// static type for the literal selector — a silent wrong `Bool`. Keying on
     /// both keeps every enclosing selection.
     pub dict_selections: HashMap<(Span, String), ValueTy>,
+    /// The value type inference gave each LITERAL, keyed by its source span
+    /// (`start`, `end`).
+    ///
+    /// A numeric literal is `fromInteger (n :: Integer)` / `fromRational (r ::
+    /// Rational)` (Haskell 2010 §6.4.1), so the type it lowers at is the one its
+    /// class variable finally took — by unification with the context, by
+    /// instance selection, or by defaulting. Inference decides that ONCE, in its
+    /// three stages; this map is that decision, so lowering converts to it
+    /// instead of re-deriving a representation from the position.
+    pub literal_tys: HashMap<(usize, usize), ValueTy>,
+    /// The type each literal was DECIDED to have at its own span, recorded when
+    /// unification settled its class variable (see `record_literal_instance`).
+    /// Lowering reads it to convert the exact payload to the right type.
+    pub literal_instances: HashMap<(usize, usize), ValueTy>,
+    /// The RESOLVED value type of every expression, keyed by its span. Task 10's
+    /// single channel from inference to lowering; see `Ctx::value_tys`.
+    pub value_tys: HashMap<(usize, usize), ValueTy>,
 }
 
 /// Inference context: fresh var supply, definition schemes, local bindings,
@@ -169,6 +186,89 @@ struct Ctx {
     /// keyed by the call's span and the class whose method is called (see
     /// [`TypedProgram::dict_selections`]).
     dict_selections: HashMap<(Span, String), ValueTy>,
+    /// The class constraints inference has not discharged yet — **stage 2's
+    /// backlog**, spent when the enclosing binding group closes.
+    ///
+    /// Every numeric literal contributes one (`Num a` for `fromInteger`,
+    /// `Fractional a` for `fromRational`: Haskell 2010 §6.4.1), and so does a
+    /// method call whose class variable nothing has solved yet. Each entry names
+    /// the class, the type variable its class variable resolved to, and the use
+    /// site.
+    ///
+    /// Its two consumers are the stages this module separates explicitly:
+    ///
+    /// * **stage 2 (discharge)** — a variable unification has since made
+    ///   CONCRETE must have an instance, and a missing one is reported as
+    ///   `no instance of \`C\` for type \`T\`` (never as a unification failure:
+    ///   unification is what made it concrete, so it succeeded);
+    /// * **stage 3 (default)** — a variable STILL unresolved at a binding's
+    ///   close, not fixed by the group's own types and carrying only standard
+    ///   numeric classes, takes `default (Integer, Double)`.
+    residual: Vec<Residual>,
+    /// The type variable each numeric literal's `fromInteger`/`fromRational`
+    /// produced, keyed by the literal's source span.
+    ///
+    /// A span is inferred many times in one program — a selector operand is
+    /// typed by the dispatcher and again by the application rule, and a body is
+    /// inferred twice per definition group — so the LAST write is the
+    /// authoritative one: it is the variable the final substitution carries and
+    /// the one stages 2 and 3 spend. Recording the VARIABLE (not a type) is what
+    /// lets the three stages answer after the fact; [`literal_types`] is only
+    /// consulted once they have run.
+    literal_vars: HashMap<(usize, usize), TypeVarId>,
+    /// The type each literal's class variable was DECIDED to have, keyed by the
+    /// literal's source span. [`literal_vars`] names the variable; this names
+    /// the answer once a stage or a unification settled it.
+    literal_instances: HashMap<(usize, usize), ValueTy>,
+    /// The RESOLVED value type of every expression, keyed by its span — Task
+    /// 10's single channel from inference to lowering. Written by
+    /// `infer_expr_expected`; read by nothing yet (adoptive phase).
+    value_tys: HashMap<(usize, usize), ValueTy>,
+    /// The program's ENTRY name (Haskell 2010 §5.1 gives it `IO t`).
+    ///
+    /// A Ctx field, not a hardcoded `"main"`, because `main` is an ordinary
+    /// identifier everywhere else: [`compile_eval`] compiles an expression
+    /// under the internal marker `__rill_eval` and documents that a `main`
+    /// binding in its `defs` is an ordinary value. Keying the contract on the
+    /// NAME would give that value an `IO t` type it never asked for.
+    ///
+    /// [`compile_eval`]: crate::compile_eval
+    entry_name: String,
+    /// Whether inference is in a definition group's FINAL pass.
+    ///
+    /// [`infer_def_group_inner`] types every body twice — first with placeholder
+    /// schemes (to recover each definition's shape), then again with the real
+    /// schemes (so signal port counts are right). Only the second pass's type
+    /// variables are the ones the finished program carries, and only it can see
+    /// the schemes of the definitions it calls. Literal typing is therefore
+    /// recorded ONLY in that pass; see [`Ctx::literal_vars`].
+    final_pass: bool,
+}
+
+/// One undischarged class constraint (see [`Ctx::residual`]).
+#[derive(Debug, Clone)]
+struct Residual {
+    /// The class whose dictionary the constraint demands.
+    class: String,
+    /// The type variable its class variable resolved to.
+    var: TypeVarId,
+    /// The use site, for the diagnostic.
+    span: Span,
+    /// Whether the constraint was demanded by a NUMERIC LITERAL.
+    ///
+    /// A literal is not a dictionary USE. Haskell 2010 §6.4.1 gives it the
+    /// meaning `fromInteger (n :: Integer)` / `fromRational (r :: Rational)`,
+    /// and both payloads are exact and class-free: the digits the source wrote
+    /// need no `Num`, `Fractional`, `Eq` or `Ord` — the ratio's numerator and
+    /// denominator are `Integer` by `Ratio`'s own declaration. The class
+    /// variable of such a constraint therefore decides only WHICH instance the
+    /// CONVERSION targets, and lowering reads that from
+    /// `TypedProgram::literal_tys` (the kernel payload) — never from the
+    /// dictionary table. So the constraint must still be CHECKED (a literal
+    /// unified with `List b` is `Fractional (List Integer)`: no instance, an
+    /// error), but it must not create a table entry, or `main = 1.0` would
+    /// claim four dictionaries that nothing reads.
+    literal: bool,
 }
 
 impl Ctx {
@@ -628,6 +728,17 @@ fn apply_args_curried(
             }
         }
         let at = infer_method_value_vty_expected(ctx, a, "argument", Some(pt.clone()))?;
+        // A LITERAL argument's class variable is its `fromInteger` /
+        // `fromRational` target, and this unification just decided it. Record
+        // the decision AT ITS OWN SPAN so lowering converts the exact payload to
+        // the type the enclosing expression needed — not to a default it would
+        // otherwise pick. Haskell 2010 folds the conversion into a constant at
+        // compile time (`x :: Double; x = 1` is `D# 1.0##`); rill keeps the
+        // exact payload and converts at run time, so the TARGET is the thing it
+        // must remember, and the argument's parameter type is exactly that.
+        if let Expr::IntegerLit(..) | Expr::FractionalLit(..) = a {
+            record_literal_instance(ctx, a.span());
+        }
         match rule {
             // An ordinary application: the argument must inhabit the parameter,
             // exactly. In particular a numeric literal does NOT widen into a
@@ -665,6 +776,18 @@ fn apply_args_curried(
     }
 }
 
+/// Whether a dispatch's evidence is only the selector's HEAD CONSTRUCTOR name —
+/// the `method_dispatch_key` fallback — rather than a solved class variable.
+///
+/// The fallback exists so a structurally DERIVED instance (`Eq Array`, keyed by
+/// the head `Array`) answers every `Array i e`. For a class whose instances are
+/// keyed by the FULL type (`Ix`, keyed by `Pair Int Int`) the same fallback
+/// names a type no instance exists for, and the class variable is the unsolved
+/// thing the caller must still default.
+fn cv_subst_is_head_only(cv: &ClassVarSubst, head: &str) -> bool {
+    matches!(cv, ClassVarSubst::Ctor(c) if c == head)
+}
+
 /// The concrete type a dispatch selected, for [`record_selection`]. A
 /// constructor-class dispatch (`ClassVarSubst::Ctor`) names the constructor
 /// only — its head arguments come from the call site and are not part of the
@@ -691,7 +814,39 @@ fn selection_evidence(cv: &ClassVarSubst) -> ValueTy {
 /// dropped one of the two selections. Nothing is written for a position with no
 /// witness: a call whose class variable neither the given context witnesses nor
 /// a concrete type solves is a typing error before this point.
+/// Record the type a LITERAL's class variable finally has, read at its own
+/// span.
+///
+/// A literal is `fromInteger`/`fromRational` applied to an exact payload, so its
+/// "instance" is decided like any other class variable — by unification from
+/// every direction. When the position has just decided it, the answer is stored
+/// here so lowering converts the payload to THAT type instead of re-deriving a
+/// default from a coarser static type.
+fn record_literal_instance(ctx: &mut Ctx, span: Span) {
+    let Some(&id) = ctx.literal_vars.get(&(span.start, span.end)) else {
+        return;
+    };
+    let solved = ctx.subst.resolve_value(&ValueTy::Var(id));
+    if !matches!(
+        solved,
+        ValueTy::Var(_) | ValueTy::TyConVar(_) | ValueTy::TyConApp(..)
+    ) {
+        ctx.literal_instances.insert((span.start, span.end), solved);
+    }
+}
+
 fn record_selection(ctx: &mut Ctx, span: Span, class: &str, evidence: &ValueTy) {
+    // UNRESOLVED evidence records nothing. A DEFERRED dispatch (see
+    // `infer_ref_expected`) legitimately runs before any stage has fixed the
+    // class variable; writing the still-variable type here would later read as
+    // a selection at an unknown type. The residual is what carries the demand
+    // until a stage answers it.
+    if matches!(
+        evidence,
+        ValueTy::Var(_) | ValueTy::TyConVar(_) | ValueTy::TyConApp(..)
+    ) {
+        return;
+    }
     ctx.dict_selections
         .insert((span, class.to_string()), evidence.clone());
 }
@@ -1056,7 +1211,7 @@ fn is_const_value_ref(ctx: &Ctx, e: &Expr) -> bool {
             return false;
         }
         match ctx.def_bodies.get(name.as_str()) {
-            Some(Expr::Int(_, _)) => return true,
+            Some(Expr::IntegerLit(_, _)) => return true,
             Some(Expr::FractionalLit(_, _, _)) => return true,
             Some(next @ Expr::Ref(_, _)) => cur = next,
             _ => return false,
@@ -1154,7 +1309,10 @@ fn collect_static_calls(
                 collect_static_calls(a, src, bound, nodes, out);
             }
         }
-        Expr::Ref(_, _) | Expr::Int(_, _) | Expr::FractionalLit(_, _, _) | Expr::Str(_, _) => {}
+        Expr::Ref(_, _)
+        | Expr::IntegerLit(_, _)
+        | Expr::FractionalLit(_, _, _)
+        | Expr::Str(_, _) => {}
         Expr::Neg(inner, _) => collect_static_calls(inner, src, bound, nodes, out),
         Expr::Let { defs, body, .. } => {
             let mut inner = bound.clone();
@@ -1357,7 +1515,7 @@ fn infer_method_value_vty_expected(
         // stay Int/Double (their `Buffer` typing is the signal-constant
         // compatibility), everything else resolves to `Buffer`.
         ValueTy::Buffer(_) => match e {
-            Expr::Int(_, _) => Ok(ValueTy::Int),
+            Expr::IntegerLit(_, _) => Ok(ValueTy::Int),
             Expr::FractionalLit(_, _, _) => Ok(ValueTy::Double),
             _ => Ok(ctx.env.buffer_vty()),
         },
@@ -1375,7 +1533,7 @@ fn infer_method_value_vty_expected(
 /// (`((\b -> b) 1.0) :: Buffer` is rejected, as GHC rejects it), and a literal
 /// never stands in for a different SCALAR type (`1 == 1.0` stays an error).
 fn literal_fills_buffer(ctx: &Ctx, param: &ValueTy, actual: &ValueTy, arg: &Expr) -> bool {
-    matches!(arg, Expr::Int(_, _) | Expr::FractionalLit(_, _, _))
+    matches!(arg, Expr::IntegerLit(_, _) | Expr::FractionalLit(_, _, _))
         && matches!(ctx.subst.resolve_value(param), ValueTy::Buffer(_))
         && !matches!(ctx.subst.resolve_value(actual), ValueTy::Buffer(_))
 }
@@ -1653,25 +1811,29 @@ pub(crate) fn method_dispatch_key(
                 if registered {
                     return Some((key, ClassVarSubst::Ty(solved)));
                 }
-                // No instance under the full type: the registry is keyed by the
-                // HEAD constructor (a structurally derived `Eq Array` answers
-                // every `Array i e`), so the LOOKUP falls back to the head.
-                // The substitution must still be the SOLVED TYPE: the method's
-                // signature is then instantiated at `Array Int Double`, which is
-                // what the arguments actually are. Substituting the bare head
-                // instead would type the parameter as `Data("Array", [])` and
-                // reject the real argument — the mismatch that made
-                // `(a :: Array Int Double) < b` fail while the shape says
-                // nothing is wrong.
-                if let Some(head) = env.type_name_of_vty(&solved) {
-                    if env
-                        .instances
-                        .get(class_name)
-                        .map(|by_ty| by_ty.contains_key(head.as_str()))
-                        .unwrap_or(false)
-                    {
-                        return Some((head, ClassVarSubst::Ty(solved)));
-                    }
+            }
+            // No instance under the full type — either because the registry
+            // keys it by the HEAD constructor (a structurally derived
+            // `Eq Array` answers every `Array i e`) or because the type still
+            // carries variables and therefore HAS no full key
+            // (`Array Var(50) Var(51)`, which is what a literal-polymorphic
+            // element type makes). Either way the LOOKUP falls back to the head,
+            // and the substitution must still be the SOLVED TYPE: the method's
+            // signature is then instantiated at the selector's own type, so
+            // `(==) :: Array i e -> Array i e -> Bool` keeps the arguments
+            // instead of collapsing to `Array` with none. That collapse is what
+            // produced `cannot unify Con("Array", [Var(50), Var(51)]) with
+            // Con("Array", [])`. Substituting the bare head instead of the
+            // solved type would type the parameter as `Con("Array", [])` and
+            // reject the real argument.
+            if let Some(head) = env.type_name_of_vty(&solved) {
+                if env
+                    .instances
+                    .get(class_name)
+                    .map(|by_ty| by_ty.contains_key(head.as_str()))
+                    .unwrap_or(false)
+                {
+                    return Some((head, ClassVarSubst::Ty(solved)));
                 }
             }
         }
@@ -2602,7 +2764,9 @@ fn def_call_graph(defs: &[Def]) -> (HashSet<String>, Vec<(String, String)>) {
     let nodes = fragment_valued_names(defs);
     let mut edges: Vec<(String, String)> = Vec::new();
     for d in defs {
-        if !nodes.contains(d.name()) {
+        // A declaration variant (`g :: Num b => Int -> b;` on its own) carries
+        // no expression body, so it has no calls and cannot be a node either.
+        if d.is_decl() || !nodes.contains(d.name()) {
             continue;
         }
         collect_static_calls(d.body(), d.name(), &HashSet::new(), &nodes, &mut edges);
@@ -2650,7 +2814,7 @@ fn cyclic_in_call_graph(nodes: &HashSet<String>, edges: &[(String, String)]) -> 
 pub fn infer_program_with_entry(
     program: &Program,
     mode: Mode,
-    _entry: &str,
+    entry: &str,
 ) -> Result<TypedProgram, CompileError> {
     // Build the type environment in two phases so declaration ORDER does not
     // matter. Phase 1 registers the pure name-mapping declarations (synonyms,
@@ -2707,6 +2871,12 @@ pub fn infer_program_with_entry(
             nested_group_depth: 0,
             given: Vec::new(),
             dict_selections: HashMap::new(),
+            residual: Vec::new(),
+            literal_vars: HashMap::new(),
+            literal_instances: HashMap::new(),
+            value_tys: HashMap::new(),
+            entry_name: String::new(),
+            final_pass: false,
         };
         infer_def_group(&mut pc, &env.prelude_defs)?;
         prelude_ctx = Some(pc);
@@ -2850,6 +3020,12 @@ pub fn infer_program_with_entry(
         nested_group_depth: 0,
         given: Vec::new(),
         dict_selections: HashMap::new(),
+        residual: Vec::new(),
+        literal_vars: HashMap::new(),
+        literal_instances: HashMap::new(),
+        value_tys: HashMap::new(),
+        entry_name: String::new(),
+        final_pass: false,
     };
 
     // Prelude value definitions were already typed above (against the builtin
@@ -2876,7 +3052,19 @@ pub fn infer_program_with_entry(
     // name: the shadowing rule already removed the Prelude def from the merged
     // list, and lowering builds its `name -> Def` map from that same list, so
     // inference and execution see one definition per name.
+    ctx.entry_name = entry.to_string();
     infer_def_group(&mut ctx, &user_defs)?;
+    // The top-level group closed, so stage 2 and stage 3 ran over it. Anything
+    // still residual belongs to the top level's own body inference (a nested
+    // group ran its own pair), so spend it here too: a residual that outlives
+    // every group would otherwise reach lowering unresolved.
+    let top_names: HashSet<String> = user_defs
+        .iter()
+        .filter(|d| !d.is_decl())
+        .map(|d| d.name().to_string())
+        .collect();
+    discharge_residuals(&mut ctx)?;
+    default_residuals(&mut ctx, &top_names)?;
 
     // Validate instance method bodies even when the instance is never called:
     // each body must infer to a single value channel with its parameter bound
@@ -2999,7 +3187,28 @@ pub fn infer_program_with_entry(
         runst_payload_tys: ctx.runst_payload_tys.clone(),
         mode,
         dict_selections: ctx.dict_selections.clone(),
+        literal_tys: literal_types(&ctx),
+        literal_instances: ctx.literal_instances.clone(),
+        value_tys: ctx.value_tys.clone(),
     })
+}
+
+/// The type each literal's `fromInteger`/`fromRational` finally produced, read
+/// from the substitution after stages 2 and 3 have run.
+///
+/// A literal whose variable is STILL unresolved here is one no stage could
+/// decide — a polymorphic position (`f :: Num a => a; f = 1`) whose dictionary
+/// is the caller's. It records nothing, so lowering keeps the position's own
+/// expected type, which is the caller's instantiation.
+fn literal_types(ctx: &Ctx) -> HashMap<(usize, usize), ValueTy> {
+    let mut out = HashMap::new();
+    for (span, id) in &ctx.literal_vars {
+        let ty = ctx.subst.resolve_value(&ValueTy::Var(*id));
+        if !matches!(ty, ValueTy::Var(_) | ValueTy::TyConVar(_)) {
+            out.insert(*span, ty);
+        }
+    }
+    out
 }
 
 /// The definition's effective formal parameters and its uncurried body.
@@ -3079,6 +3288,20 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
             Some(sig) if sig_func_parts(sig).0.is_empty() => Some(def_sig_tys(ctx, sig)?.1),
             _ => None,
         };
+        // `main :: IO t` (Haskell 2010 §5.1) is a CHECK, not an expectation.
+        //
+        // Supplying it as the body's expected type made `main = 1.0` UNIFY with
+        // `IO t` and compile — while GHC rejects exactly that source with
+        // `No instance for 'Fractional (IO t0)'`, because the literal must
+        // inhabit the entry's type and cannot. The distinction is the one
+        // between "type the body, then require the result to be an action" and
+        // "force the result to be an action while typing the body"; Haskell
+        // does the former, so `lower.rs` and `lib.rs` do the check.
+        //
+        // Nothing is lost: a `do` block's `m` still comes from its own
+        // contents (`main = do { write …; return () }` types through `write`),
+        // which is the environment GHC actually uses for a block in a body with
+        // no signature.
         // Capture the pre-attempt definition environment: a failed attempt may
         // have left nested placeholder schemes behind (an inlined instance body
         // such as `Monad (ST s)`'s `let p = … in let q = …` registers `p` in
@@ -3284,6 +3507,12 @@ fn infer_constrained_def_body(
     def: &Def,
     sig: &crate::ast::TypeExpr,
 ) -> Result<DefBodyTy, CompileError> {
+    // A constrained body is typed ONCE under its GIVEN constraints (design
+    // §3.0), so its class variables are ASSUMED, never ambiguous: stage 3 must
+    // not default them, or `indices a :: Ix i => …` would be specialized to
+    // `[Integer]` inside its own body and rejected against its signature. Save
+    // and restore the store around the body instead.
+    let saved_residual = std::mem::take(&mut ctx.residual);
     let (params, body) = effective_def_params(def);
     // One signature conversion for BOTH the parameters and the result: the
     // class variable `i` and the element variables `e`/`s` must be the SAME ids
@@ -3382,6 +3611,7 @@ fn infer_constrained_def_body(
         ctx.subst = saved_subst;
         ctx.next = saved_next;
     }
+    ctx.residual = saved_residual;
     result.map(|ty| DefBodyTy {
         ty,
         sig_params,
@@ -3597,7 +3827,20 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
         );
     }
 
-    // Second pass: re-infer with actual schemes for correct signal port counts
+    // Second pass: re-infer with actual schemes for correct signal port counts.
+    // This is the pass whose variables the finished program carries, so literal
+    // typing is recorded only here.
+    let saved_final = ctx.final_pass;
+    let group_names: HashSet<String> = defs
+        .iter()
+        .filter(|d| !d.is_decl())
+        .map(|d| d.name().to_string())
+        .collect();
+    // The placeholder pass's residuals name ITS variables, which the finished
+    // program does not carry; drop them so only the final pass's constraints are
+    // discharged and defaulted.
+    ctx.residual.clear();
+    ctx.final_pass = true;
     for def in defs {
         if def.is_decl() {
             continue;
@@ -3606,7 +3849,7 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
         let lam_count = effective_def_params(def).0.len();
         let (vty, constraints) = def_scheme(ctx, def, &body_ty, lam_count)?;
         let resolved = ctx.subst.apply(&ArrowTy { vty });
-        let vars = free_vars_quantified(ctx, &resolved);
+        let vars = quantified_vars(ctx, def, &resolved);
         ctx.defs.remove(def.name());
         ctx.defs.insert(
             def.name().to_string(),
@@ -3619,7 +3862,455 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
         );
     }
 
+    // ---- Stage 2 and stage 3, at this binding group's close ----------------
+    //
+    // Everything above is stage 1: unification wrote the equations. What is left
+    // in `ctx.residual` is the set of class constraints those equations did NOT
+    // settle, and this is the one place that spends them — in the two separated
+    // steps Haskell's inference has:
+    //
+    // * stage 2 ([`discharge_residuals`]) — a variable unification has since
+    //   made CONCRETE must have an instance, and a missing one is
+    //   `no instance of \`C\` for type \`T\``;
+    // * stage 3 ([`default_residuals`]) — a variable still unresolved and not
+    //   fixed by the group's own types takes `default (Integer, Double)`.
+    ctx.final_pass = saved_final;
+    discharge_residuals(ctx)?;
+    // Stage 3 defaults the variables stage 2 could not spend, and hands back
+    // the constraints whose variable had already become a STRUCTURE. Those are
+    // stage 2's business again — a structure is not ambiguous, and its
+    // instance must exist. Re-running stage 2 here is what rejects a mixed-type
+    // list literal: `[1.0, [1.0]]` solves the first literal's `a` to `List b`,
+    // stage 3 defaults the inner `b` to `Integer`, and `Num (List Integer)` has
+    // no instance. Discharging after defaulting (not only before it) is the
+    // order the two stages are separated to make possible.
+    default_residuals(ctx, &group_names)?;
+    discharge_residuals(ctx)?;
+    // Stage 3 solved variables the schemes above were built from, so re-resolve
+    // them: a scheme that kept a pre-defaulting variable would leave `1 + 2`'s
+    // type a `Var` in `def_schemes`, which is what call sites and lowering read.
+    refresh_group_schemes(ctx, defs);
+
     Ok(())
+}
+
+/// The type variables a definition's scheme QUANTIFIES.
+///
+/// The starting point is [`free_vars_quantified`] (the body's free variables
+/// minus those free in the enclosing environment), restricted by the
+/// **monomorphism restriction** (Haskell 2010 §4.5.5): a SIMPLE PATTERN
+/// BINDING — one with no parameter list (`v = …`, `v = \x -> …`) — whose
+/// inferred type carries a CLASS CONSTRAINT is not generalized.
+///
+/// The consequence is the one §4.5.5 is for: the constrained variable stays
+/// ONE variable shared by every binding in the group (`main = double` sees the
+/// SAME variable rather than a fresh instantiation), so stage 3's defaulting
+/// applies to a type the whole group agrees on. `instantiate` freshens only
+/// quantified variables, which is what makes the sharing automatic.
+///
+/// A FUNCTION binding (`add2 a b = a + b`) has a parameter list and is
+/// generalized normally, so it stays `Num a => a -> a -> a` and applies at
+/// whatever type its call sites demand.
+fn quantified_vars(ctx: &Ctx, def: &Def, resolved: &ArrowTy) -> Vec<TypeVarId> {
+    let mut vars = free_vars_quantified(ctx, resolved);
+    // §4.5.5 applies ONLY to a binding with no explicit signature. The Report
+    // states the restriction for a group whose bindings have none: an
+    // annotation is the programmer SAYING what the type is, so generalising it
+    // needs no permission. GHC 9.10.3 measured:
+    //
+    //   bare = 1                  → Integer          (restriction applies)
+    //   h :: Num b => b; h = 1    → forall b. Num b => b
+    //   h :: Double; h = 1        → Double
+    //
+    // Without this guard `h` stayed a shared monomorphic variable and stage 3
+    // defaulted it to `Integer`, so `(h :: Integer, h :: Double)` — legal in
+    // one GHC program — was a rejection here.
+    if def.sig().is_none() && effective_def_params(def).0.is_empty() {
+        // The definition's own constrained variables: every residual whose class
+        // variable its type mentions.
+        let own = value_free_vars(&resolved.vty, &ctx.subst);
+        let constrained: HashSet<TypeVarId> = ctx
+            .residual
+            .iter()
+            .map(|r| r.var)
+            .filter(|v| own.contains(v))
+            .collect();
+        vars.retain(|v| !constrained.contains(v));
+    }
+    vars
+}
+
+/// Re-resolve every scheme in `defs` through the substitution after stages 2
+/// and 3.
+///
+/// The second inference pass builds each scheme from the body type it just
+/// inferred, which is BEFORE defaulting runs (defaulting needs the whole group
+/// inferred to know which variables are ambiguous). Defaulting then binds a
+/// variable the scheme carries, so the stored type must be resolved again or a
+/// caller sees `a` where the answer is `Integer`.
+fn refresh_group_schemes(ctx: &mut Ctx, defs: &[Def]) {
+    for def in defs {
+        if def.is_decl() {
+            continue;
+        }
+        let Some(scheme) = ctx.defs.get(def.name()).cloned() else {
+            continue;
+        };
+        let resolved = ctx.subst.apply(&scheme.ty);
+        let vars = free_vars_quantified(ctx, &resolved);
+        ctx.defs.insert(
+            def.name().to_string(),
+            Scheme {
+                vars,
+                ty: resolved,
+                ..scheme
+            },
+        );
+    }
+}
+
+/// **Stage 2 — discharge.** For every residual class constraint whose class
+/// variable unification has made CONCRETE, find the instance.
+///
+/// This is deliberately its own stage with its own error. Unification already
+/// SUCCEEDED by the time a variable is concrete — `x :: Int; x == 1.0` unified
+/// the literal's variable with `Int`, and that unification is WHERE `Int` came
+/// from — so reporting the missing `Fractional Int` as a unification failure
+/// would name the wrong stage and send the reader to the wrong equation. GHC's
+/// own words are `No instance for 'Fractional Int'`.
+///
+/// Constraints whose variable is still unresolved stay in the store for stage
+/// 3. Constraints the body's GIVEN context witnesses are left as dictionaries:
+/// the witness IS the instance, and there is no concrete type to look up.
+fn discharge_residuals(ctx: &mut Ctx) -> Result<(), CompileError> {
+    let given_ids: Vec<TypeVarId> = ctx.given.iter().filter_map(|g| g.id).collect();
+    let mut kept: Vec<Residual> = Vec::new();
+    for r in std::mem::take(&mut ctx.residual) {
+        let solved = ctx.subst.resolve_value(&ValueTy::Var(r.var));
+        match solved {
+            ValueTy::Var(id) => {
+                // Still unresolved: stage 3's business, unless the body's GIVEN
+                // context witnesses it (the incoming dictionary IS the instance).
+                if !given_ids.contains(&id) {
+                    kept.push(Residual { var: id, ..r });
+                }
+            }
+            // A dictionary is compiler-side evidence, not a type an instance is
+            // declared for: nothing to look up.
+            ValueTy::Dict(_) => {}
+            concrete => {
+                // A structure whose COMPONENTS are still variables (`Pair a b`
+                // before its fields default) is not a concrete type yet: stage 3
+                // may still fix it, so a missing instance here is not the final
+                // answer. Deferring is what lets `Ix (Pair Integer Integer)`
+                // become reachable after defaulting.
+                if contains_unresolved(&concrete, &ctx.subst) {
+                    kept.push(r);
+                    continue;
+                }
+                if !ctx.env.instance_exists(&r.class, &concrete) {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "no instance of `{}` for type `{}`",
+                            r.class,
+                            ctx.env.type_spelling(&concrete)
+                        ),
+                        span: r.span,
+                    });
+                }
+                // Unification already fixed this variable; record the instance
+                // it demands so lowering converges on the SAME answer instead of
+                // re-deriving one from its own coarser static type.
+                //
+                // A LITERAL's constraint is exempt: its dictionary is never
+                // consulted (lowering converts the exact payload through
+                // `literal_tys`), so writing it here would put a slot in the
+                // table that no code path reads — and `main = 1.0` would
+                // advertise `Eq`/`Ord`/`Num`/`Fractional Double` for a program
+                // whose only class variable is the conversion target.
+                if !r.literal {
+                    ctx.dict_selections
+                        .insert((r.span, r.class.clone()), concrete);
+                }
+            }
+        }
+    }
+    ctx.residual = kept;
+    Ok(())
+}
+
+/// **Stage 3 — default.** For every variable still unresolved at this binding
+/// group's close, apply Haskell 2010 §4.3.4's defaulting rule with the list
+/// `default (Integer, Double)`.
+///
+/// The rule is the Report's, in order:
+///
+/// 1. the variable must be AMBIGUOUS — absent from the types this group's
+///    bindings actually have. A variable a signature or an annotation fixed is
+///    not ambiguous, so it is never defaulted; that half of the boundary is
+///    enforced by [`group_type_vars`], which collects exactly the variables the
+///    group's own types mention.
+/// 2. every constraint on it must be a STANDARD class, and at least one must be
+///    numeric (`Num`/`Fractional`). A variable constrained only by a user class
+///    has no default and is reported `Ambiguous type variable`, exactly as GHC
+///    reports it.
+/// 3. the candidates `Integer` then `Double` are tried in order, and the FIRST
+///    that satisfies EVERY constraint wins. `Integer` has no `Fractional`
+///    instance, so a fractional literal selects `Double`; `1 + 2` selects
+///    `Integer`, because `Integer` comes first and does satisfy `Num`.
+///
+/// A variable no candidate satisfies is genuinely ambiguous: it can neither be
+/// defaulted nor discharged, so it is reported.
+fn default_residuals(ctx: &mut Ctx, group: &HashSet<String>) -> Result<bool, CompileError> {
+    if ctx.residual.is_empty() {
+        return Ok(false);
+    }
+    // Rule 1's input: the variables the group's own types mention.
+    let fixed = group_type_vars(ctx, group);
+    let mut defaulted_any = false;
+    // Group the residuals by variable, preserving first-seen order so a
+    // diagnostic names the first use site.
+    let mut order: Vec<TypeVarId> = Vec::new();
+    let mut by_var: HashMap<TypeVarId, Vec<(String, Span, bool)>> = HashMap::new();
+    // Constraints whose variable unification already solved to a STRUCTURE
+    // (`[1.0, [1.0]]` binds the first literal's `a` to `List b`). They are not
+    // this stage's business — there is no variable left to default — but they
+    // are NOT discharged either: their structure may still contain a variable
+    // that the loop below defaults, and that is what turns `List b` into the
+    // `List Integer` stage 2 must then reject. Dropping them here (as this
+    // stage used to) swallowed the constraint entirely and let a mixed-type
+    // list literal compile.
+    let mut carried: Vec<Residual> = Vec::new();
+    for r in std::mem::take(&mut ctx.residual) {
+        // Re-resolve: an earlier default in this same pass may have solved it.
+        match ctx.subst.resolve_value(&ValueTy::Var(r.var)) {
+            ValueTy::Var(id) => {
+                if !by_var.contains_key(&id) {
+                    order.push(id);
+                }
+                by_var
+                    .entry(id)
+                    .or_default()
+                    .push((r.class, r.span, r.literal));
+            }
+            // A dictionary witness needed no instance lookup (see stage 2).
+            ValueTy::Dict(_) => {}
+            // A structure: hand it back for the caller's re-discharge.
+            _ => carried.push(Residual { var: r.var, ..r }),
+        }
+    }
+    ctx.residual = carried;
+    for id in order {
+        let classes = by_var.remove(&id).unwrap_or_default();
+
+        let first_span = classes
+            .first()
+            .map(|(_, s, _)| *s)
+            .unwrap_or(Span::new(0, 0));
+        // Rule 1: a variable the group's own types mention is not ambiguous.
+        if fixed.contains(&id) {
+            continue;
+        }
+        // Rule 2': a variable every one of whose constraints has an INSTANCE at
+        // a default candidate needs no standard-class filter. The Report's
+        // `default` list is about which TYPES to try; the class set restriction
+        // exists so a user class with no plausible instance is reported rather
+        // than silently satisfied. But when the candidates DO satisfy the whole
+        // set — `Monoid` and `Fractional` both hold at `Double` — picking the
+        // first candidate is exactly "collect the constraints, then choose a
+        // type that has them all". Refusing here reported `Ambiguous type
+        // variable` for `mappend mempty 3.5`, a program the base answers.
+        // Rule 2 gates rule 2': defaulting is the Report's rule for an
+        // AMBIGUOUS numeric variable constrained by the STANDARD classes
+        // (§4.3.4's `P`). A USER class is not in that set, so a candidate that
+        // happens to satisfy it is not a default — GHC measures exactly this:
+        //
+        //   mk :: ProbeIx i => (i, i) -> Double -> Double
+        //   main = mk (0, 9) 0.0
+        //     → Ambiguous type variable 'i0'
+        //
+        // (with `mk (0 :: Int, 9)` it compiles). Selecting `Integer` because
+        // `ProbeIx Integer` has no instance only replaced "ambiguous" with a
+        // WRONG DIAGNOSIS about a type the program never wrote; and when a user
+        // class DID have an `Integer` instance the same rule would have
+        // silently picked it, which the Report does not allow either.
+        let satisfiable_by_candidate =
+            ["Integer", "Double"]
+                .iter()
+                .any(|cand| match ctx.env.vty_of_name(cand) {
+                    Some(ty) => classes
+                        .iter()
+                        .all(|(c, _, _)| ctx.env.instance_exists(c, &ty)),
+                    None => false,
+                });
+        if satisfiable_by_candidate {
+            // Fall through to rule 3, which picks the same first candidate.
+            let chosen =
+                ["Integer", "Double"]
+                    .into_iter()
+                    .find(|cand| match ctx.env.vty_of_name(cand) {
+                        Some(ty) => classes
+                            .iter()
+                            .all(|(c, _, _)| ctx.env.instance_exists(c, &ty)),
+                        None => false,
+                    });
+            if let Some(cand) = chosen {
+                let ty = ctx
+                    .env
+                    .vty_of_name(cand)
+                    .expect("the chosen candidate is a registered type");
+                unify_value(&ValueTy::Var(id), &ty, &mut ctx.subst, first_span)?;
+                defaulted_any = true;
+                for (class, span, literal) in &classes {
+                    if *literal {
+                        continue;
+                    }
+                    ctx.dict_selections
+                        .insert((*span, class.clone()), ty.clone());
+                }
+                continue;
+            }
+        }
+        // Rule 2: every constraint must be a STANDARD class (Report §4.3.4's
+        // `P` is the Prelude's class set — a user class disqualifies the
+        // variable, which is why a non-numeric ambiguity is an error). The
+        // constraint need not be `Num`/`Fractional`: `f x y = x <= y` applied at
+        // two literals is `Ord a`, and GHC 9.10.3 ANSWERS `True` for it by
+        // defaulting `a` to `Integer` — the default candidates are numeric
+        // TYPES, and the constraint set only has to be a standard one.
+        let all_standard = classes.iter().all(|(c, _, _)| {
+            matches!(
+                c.as_str(),
+                "Num"
+                    | "Fractional"
+                    | "Eq"
+                    | "Ord"
+                    | "Show"
+                    | "Enum"
+                    | "Real"
+                    | "Integral"
+                    // `Ix` is a Prelude class (Data.Ix), so a variable
+                    // constrained by it is still a STANDARD class variable and
+                    // takes the default list: `at a i = a ! i` applied at two
+                    // literals is `Ix Integer`, which GHC 9.10.3 accepts.
+                    | "Ix"
+            )
+        });
+        if !all_standard {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "Ambiguous type variable: `{}` is constrained by `{}` but no default applies",
+                    ctx.env.type_spelling(&ValueTy::Var(id)),
+                    classes
+                        .iter()
+                        .map(|(c, _, _)| c.as_str())
+                        .collect::<Vec<_>>()
+                        .join("`, `")
+                ),
+                span: first_span,
+            });
+        }
+        // Rule 3: `default (Integer, Double)`, first candidate satisfying all.
+        let chosen =
+            ["Integer", "Double"]
+                .into_iter()
+                .find(|cand| match ctx.env.vty_of_name(cand) {
+                    Some(ty) => classes
+                        .iter()
+                        .all(|(c, _, _)| ctx.env.instance_exists(c, &ty)),
+                    None => false,
+                });
+        let Some(cand) = chosen else {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "Ambiguous type variable: `{}` has no instance among the default candidates                      (Integer, Double)",
+                    ctx.env.type_spelling(&ValueTy::Var(id))
+                ),
+                span: first_span,
+            });
+        };
+        let ty = ctx
+            .env
+            .vty_of_name(cand)
+            .expect("the chosen candidate is a registered type");
+        unify_value(&ValueTy::Var(id), &ty, &mut ctx.subst, first_span)?;
+        defaulted_any = true;
+        // Lowering reads the answer from the recorded dictionaries, so record
+        // the defaulted instance at EVERY use site of this variable. A site with
+        // no entry would make lowering re-derive the instance from its own
+        // coarser static type — the second judgement this stage exists to avoid.
+        //
+        // A variable that several classes share (`Ix` and its `Ord`/`Eq`
+        // superclasses are separate classes over one `i`) is recorded once per
+        // class, and the INSTANCE must exist for each: `Ix Integer` implies
+        // `Ord Integer` here because the derived/registered sets agree.
+        // Same exemption as stage 2: a literal's conversion target is a kernel
+        // payload (`literal_tys`), not a table entry. Writing one would make
+        // `main = 1.0` advertise four dictionaries nothing reads. A variable
+        // with at least one METHOD constraint keeps its entry — that is a real
+        // use — and it is recorded under each class it must satisfy.
+        for (class, span, literal) in &classes {
+            if *literal {
+                continue;
+            }
+            ctx.dict_selections
+                .insert((*span, class.clone()), ty.clone());
+        }
+    }
+    Ok(defaulted_any)
+}
+
+/// Whether `t` still mentions a type variable anywhere inside it.
+fn contains_unresolved(t: &ValueTy, subst: &Subst) -> bool {
+    let t = subst.resolve_value(t);
+    match &t {
+        ValueTy::Var(_) | ValueTy::TyConVar(_) | ValueTy::TyConApp(..) => true,
+        ValueTy::Con(_, args) | ValueTy::Newtype(_, args) => {
+            args.iter().any(|a| contains_unresolved(a, subst))
+        }
+        ValueTy::Thunk(a, r) => {
+            a.iter().any(|x| contains_unresolved(x, subst))
+                || r.iter().any(|x| contains_unresolved(x, subst))
+        }
+        ValueTy::Buffer(e) => contains_unresolved(e, subst),
+        _ => false,
+    }
+}
+
+/// Every type variable the current binding group's own types MENTION — the
+/// parameter types and inferred result types of its definitions.
+///
+/// Stage 3 defaults only a variable ABSENT from this set (§4.3.4's `tv`/`tvs`
+/// conditions in their simplest form): a variable here is part of a binding's
+/// meaning, so it is the signature's or the body's to fix, never an ambiguity to
+/// resolve by picking a type.
+fn group_type_vars(ctx: &Ctx, group: &HashSet<String>) -> HashSet<TypeVarId> {
+    let mut out = HashSet::new();
+    for (name, scheme) in ctx.defs.iter() {
+        // A binder this group is generalizing is not yet part of the enclosing
+        // environment: the group IS what is being typed, so its own inferred
+        // type cannot make its variables unambiguous. Counting it would mean
+        // `main = 1 + 2` could never be defaulted — its own scheme would be the
+        // very thing that "fixes" it.
+        //
+        // The exception is the MONOMORPHISM RESTRICTION (§4.5.5): a SIMPLE
+        // PATTERN BINDING (`v = …`, no parameter list) that was NOT
+        // generalized — its type still carries an unquantified variable — has
+        // its variables discharged at its own close. A FUNCTION binding
+        // (`f x = …`) is generalized normally and is part of the environment.
+        if group.contains(name) && scheme.lam_count == 0 {
+            continue;
+        }
+        for v in value_free_vars(&scheme.ty.vty, &ctx.subst) {
+            out.insert(v);
+        }
+    }
+    for at in ctx.locals.values() {
+        for v in value_free_vars(&at.vty, &ctx.subst) {
+            out.insert(v);
+        }
+    }
+    out
 }
 
 /// Resolve a definition's parameter types through the substitution.
@@ -3717,7 +4408,7 @@ fn arm_result_vty(bt: ArrowTy, body: &Expr, span: Span) -> Result<ValueTy, Compi
     }
     match &bt.vty {
         ValueTy::Buffer(_) => match body {
-            Expr::Int(_, _) => Ok(ValueTy::Int),
+            Expr::IntegerLit(_, _) => Ok(ValueTy::Int),
             Expr::FractionalLit(_, _, _) => Ok(ValueTy::Double),
             _ => Err(CompileError::Type {
                 msg: "branch must be a value expression (0->1 value channel)".into(),
@@ -3993,7 +4684,7 @@ fn bind_pattern(
             }
             Ok(())
         }
-        Pattern::LitInt(_) | Pattern::FractionalLit(..) | Pattern::LitStr(_) => {
+        Pattern::IntegerLit(_) | Pattern::FractionalLit(..) | Pattern::LitStr(_) => {
             Err(CompileError::Type {
                 msg: "literal pattern requires a scalar scrutinee".into(),
                 span: arm_span,
@@ -4044,7 +4735,7 @@ fn check_scalar_pattern(
             Ok(())
         }
         Pattern::Wild => Ok(()),
-        Pattern::LitInt(_) => {
+        Pattern::IntegerLit(_) => {
             // An integer PATTERN literal is the same `fromInteger` leaf its
             // scrutinee has: `f :: Double -> Double; f 2 = …` is well typed in
             // Haskell 2010 (§3.17/§6.4.1), exactly like `f 2` as an argument.
@@ -4169,38 +4860,122 @@ fn infer_expr(ctx: &mut Ctx, e: &Expr) -> Result<ArrowTy, CompileError> {
     infer_expr_expected(ctx, e, None)
 }
 
+/// Infer a NUMERIC LITERAL — **stage 1** of the three stages, and the whole of
+/// it.
+///
+/// Haskell 2010 §6.4.1 makes the spelling of a literal an APPLICATION:
+///
+/// ```text
+/// 42    means  fromInteger  (42  :: Integer)  at  Num a        => a
+/// 3.14  means  fromRational (a   :: Rational) at  Fractional a => a
+/// ```
+///
+/// so a literal has NO type of its own. What it has is the RESULT VARIABLE of
+/// that application, plus the class constraint its method belongs to. This
+/// function therefore does exactly three things and decides nothing:
+///
+/// 1. allocate the result variable;
+/// 2. unify it with the expected type, when the position supplies one — the
+///    strongest form of the unification evidence the Report's rule reads;
+/// 3. record the constraint (`Num a` / `Fractional a`) in the residual store,
+///    where stage 2 discharges it against an instance and stage 3 defaults it.
+///
+/// No type name is read and no representation is chosen here, which is what
+/// distinguishes this from the per-position heuristics it replaces (an integer
+/// literal used to be typed `Int`, or `Double`, or `Integer` depending on which
+/// site was looking at it).
+fn infer_literal(
+    ctx: &mut Ctx,
+    class: &str,
+    e: &Expr,
+    expected: Option<ValueTy>,
+) -> Result<ArrowTy, CompileError> {
+    let span = e.span();
+    let v = ctx.fresh_vty();
+    let id = match &v {
+        ValueTy::Var(id) => *id,
+        _ => unreachable!("a fresh literal type is a variable"),
+    };
+    // The FIRST inference of a span is the authoritative one: a definition group
+    // types every body TWICE (a second pass re-infers with the real schemes so
+    // signal port counts are right), and that second pass makes FRESH variables
+    // for the same literals. Keeping the later variable would let the second
+    // pass's `Num a` default to `Integer` even though the first pass had already
+    // unified it with `Int` through the annotation beside it — `1 + (2 :: Int)`
+    // lowered as mixed-kind arithmetic. Each pass is the same judgement about the
+    // same source text, so the first answer is the one the substitution carries.
+    //
+    // The variable is recorded BEFORE the unification below because a position
+    // that fixes the type immediately (`(2 :: Int)`) leaves no unresolved
+    // variable to remember afterwards — and that is precisely the case lowering
+    // must honour.
+    if ctx.final_pass {
+        // WITHIN the final pass the LAST inference of a span wins: the
+        // dispatcher types an operand once to probe its type and the
+        // application rule then types it again against the method's parameter,
+        // and the second inference is the one whose variable the finished
+        // program carries.
+        ctx.literal_vars.insert((span.start, span.end), id);
+    }
+    if let Some(exp) = expected {
+        unify_value(&v, &exp, &mut ctx.subst, span)?;
+    }
+    // The residual names the literal's class variable, so a later unification of
+    // that variable is visible to stages 2 and 3.
+    ctx.residual.push(Residual {
+        class: class.to_string(),
+        var: id,
+        span,
+        literal: true,
+    });
+    Ok(ArrowTy::value(ctx.subst.resolve_value(&v)))
+}
+
 /// Infer an expression with an optional **expected value type**. Used for
 /// result-directed typeclass dispatch (`mempty`, `pure`, `return`): a method
 /// whose signature has no class-var-applied argument is resolved by the type it
 /// is expected to produce. `None` means "unknown" — such a method then errors
 /// with "expected type unknown".
+/// Infer `e`, recording the RESOLVED result at `e`'s span in
+/// [`Ctx::value_tys`].
+///
+/// This is Task 10's one channel: lowering has no unification substitution, so
+/// today it asks inference for an answer through seven parallel maps
+/// (`literal_tys`, `literal_instances`, `runst_payload_tys`, `fn_param_tys`,
+/// `dict_selections`, `shared_cell_result_tys`, `def_schemes`). Every defect the
+/// Task 7 work hit — `h + 2.5`, `Ix` across a `runSTArray` lambda, `!` inside a
+/// fragment — is one of those maps missing. Recording the type of EVERY
+/// expression, keyed by its span, gives lowering the same answer everywhere.
+///
+/// The recording is ADOPTIVE while the maps still exist: it writes only, and
+/// nothing reads it yet. Each later step points one consumer at it and deletes
+/// the map it replaces.
 fn infer_expr_expected(
     ctx: &mut Ctx,
     e: &Expr,
     expected: Option<ValueTy>,
 ) -> Result<ArrowTy, CompileError> {
+    let span = e.span();
+    let ty = infer_expr_expected_inner(ctx, e, expected)?;
+    // The RESOLVED type: a variable the substitution has solved reports its
+    // solution, which is what a consumer needs. A genuinely polymorphic
+    // position stays a variable, and the consumer falls back to its own
+    // knowledge (a call site's instantiation).
+    let resolved = ctx.subst.resolve_value(&ty.vty);
+    if ty.arity_in() == 0 && ty.arity_out() == 1 {
+        ctx.value_tys.insert((span.start, span.end), resolved);
+    }
+    Ok(ty)
+}
+
+fn infer_expr_expected_inner(
+    ctx: &mut Ctx,
+    e: &Expr,
+    expected: Option<ValueTy>,
+) -> Result<ArrowTy, CompileError> {
     match e {
-        Expr::Int(_, _) => Ok(ArrowTy::value(match expected {
-            // A numeric literal in a Buffer-expected position is a signal
-            // constant (`_ * 0.5` → `0.5 : Buffer`).
-            Some(ValueTy::Buffer(_)) => ctx.env.buffer_vty(),
-            // `(2 :: Integer)` — an integer literal at `Integer` type. This
-            // narrow rule is stage 7a only: it disappears when stage 7b makes
-            // every integer literal a `fromInteger`-polymorphic value.
-            Some(ValueTy::Integer) => ValueTy::Integer,
-            // An integer literal at `Double` type is Haskell's `fromInteger`
-            // (Report §6.4.1). Without this, `show_double 2` inferred the
-            // literal as `Int` and the call failed to unify — while the SAME
-            // literal in a `Double` formal's argument position was accepted by
-            // `def_arg_widens_to`. One rule, not two: a literal takes whatever
-            // `Num` type its position demands.
-            Some(ValueTy::Double) => ValueTy::Double,
-            _ => ValueTy::Int,
-        })),
-        Expr::FractionalLit(_, _, _) => Ok(ArrowTy::value(match expected {
-            Some(ValueTy::Buffer(_)) => ctx.env.buffer_vty(),
-            _ => ValueTy::Double,
-        })),
+        Expr::IntegerLit(_, _) => infer_literal(ctx, "Num", e, expected),
+        Expr::FractionalLit(_, _, _) => infer_literal(ctx, "Fractional", e, expected),
         Expr::Void(_) => Ok(ArrowTy::value_channel(ValueTy::Void)),
         Expr::Ref(name, span) => infer_ref_expected(ctx, name, *span, expected),
         // Unary minus keeps the operand's type: `-3` is an `Int`, `-3.0` a
@@ -4509,7 +5284,7 @@ fn infer_expr_expected(
                 })
             });
             let st = match scrutinee.as_ref() {
-                Expr::Int(_, _) => ArrowTy::value_channel(ValueTy::Int),
+                Expr::IntegerLit(_, _) => ArrowTy::value_channel(ValueTy::Int),
                 Expr::FractionalLit(_, _, _) => ArrowTy::value_channel(ValueTy::Double),
                 _ => infer_expr_expected(ctx, scrutinee, pre_expected)?,
             };
@@ -4818,17 +5593,106 @@ fn infer_ref_expected(
                 let sig = sig.as_ref().expect("result-directed sig");
                 let env = ctx.env.clone();
                 let cv_var = ctx.fresh_id();
-                let Some((ty_name, cv_subst)) =
-                    method_dispatch_key(&env, &class_name, &class_var, sig, &exp, cv_var, || {
-                        ctx.fresh_vty()
-                    })
-                else {
-                    return Err(CompileError::Type {
-                        msg: format!(
-                            "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
-                        ),
+                // The expected type may still be a VARIABLE that a sibling
+                // argument will constrain (`mappend mempty 3.5`: `mempty`'s
+                // `m` is the same `a` the literal makes `Fractional`). Haskell
+                // 2010 COLLECTS that constraint and chooses at the group's
+                // close; demanding a concrete type here is choosing too early.
+                //
+                // So an unresolved selector is not an error: the class
+                // variable is unified WITH it (`ClassVarSubst::Var`) and a
+                // residual records the demand. Stage 2 will find the instance
+                // once the sibling (or the group's default) has fixed the type,
+                // and a type no stage fixes is still reported — at the right
+                // stage, by `default_residuals`.
+                let resolved_exp = ctx.subst.resolve_value(&exp);
+                let deferred = matches!(
+                    resolved_exp,
+                    ValueTy::Var(_) | ValueTy::TyConVar(_) | ValueTy::TyConApp(..)
+                );
+                let (ty_name, cv_subst) = if deferred {
+                    // Keep the class variable live as the expected type itself,
+                    // so every later unification of that variable is the
+                    // method's class variable.
+                    if let ValueTy::Var(id) = resolved_exp {
+                        ctx.residual.push(Residual {
+                            class: class_name.clone(),
+                            var: id,
+                            span,
+                            literal: false,
+                        });
+                    }
+                    // A deferred call is a POLYMORPHIC value: the method keeps
+                    // its signature's shape, instantiated with the class
+                    // variable left as the live sibling variable. There is no
+                    // instance body to inline yet — stage 2 picks the instance
+                    // once the variable is solved, and lowering asks for the
+                    // SAME answer through `dict_selections`.
+                    let subst = match &resolved_exp {
+                        ValueTy::Var(id) => ClassVarSubst::Var(*id),
+                        _ => ClassVarSubst::Ty(resolved_exp.clone()),
+                    };
+                    // `mempty: m` is a NULLARY method: its VALUE is the class
+                    // variable itself. `signature_param_and_result_tys_conv`
+                    // reports a nullary signature's result in its FIRST slot
+                    // (there is no arrow to split), so the shape is read from
+                    // `sig` here rather than guessed from the arity — routing a
+                    // bare `m` through the curried application would wrap it in
+                    // a `Thunk`, which no class variable can unify with.
+                    let env = ctx.env.clone();
+                    // `signature_param_and_result_tys_conv` reports `None` for
+                    // the result EXACTLY when the signature is not a function
+                    // type — a nullary method. That is the reliable signal: a
+                    // `sig_arg_count()` on the wrapped spelling can disagree.
+                    let mut it = (0..8).map(|_| ctx.fresh_vty());
+                    let (first, ret) =
+                        signature_param_and_result_tys_conv(&env, &class_var, &subst, sig, || {
+                            it.next().unwrap_or(ValueTy::Double)
+                        });
+                    let nullary = ret.is_none();
+                    if nullary {
+                        let value_ty = ret
+                            .or_else(|| first.first().cloned())
+                            .unwrap_or_else(|| resolved_exp.clone());
+                        // Unify with the sibling's variable so the collected
+                        // constraints land on ONE type: `mempty`'s `m` and the
+                        // literal's `a` must be the same variable, which is what
+                        // lets `3.5`'s `Fractional` reach this residual.
+                        unify_value(&value_ty, &resolved_exp, &mut ctx.subst, span)?;
+                        return Ok(ArrowTy::value_channel(resolved_exp));
+                    }
+                    let param_tys = first;
+                    let ret = ret.unwrap_or_else(|| resolved_exp.clone());
+                    let what = format!("method `{name}` of `{class_name}`");
+                    return apply_args_curried(
+                        ctx,
+                        &param_tys,
+                        &ret,
+                        &[],
                         span,
-                    });
+                        &what,
+                        ArgUnify::Exact,
+                    );
+                } else {
+                    match method_dispatch_key(
+                        &env,
+                        &class_name,
+                        &class_var,
+                        sig,
+                        &exp,
+                        cv_var,
+                        || ctx.fresh_vty(),
+                    ) {
+                        Some(pair) => pair,
+                        None => {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
+                                ),
+                                span,
+                            });
+                        }
+                    }
                 };
                 // Primitive instance: kernel-backed, no source body.
                 record_selection(ctx, span, &class_name, &selection_evidence(&cv_subst));
@@ -5240,7 +6104,25 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
             // combinators.
             return Ok(ArrowTy::value_channel(ValueTy::Thunk(vec![], vec![])));
         }
-        return Ok(ctx.instantiate(&scheme));
+        // A nullary definition is a VALUE, so instantiating its scheme makes a
+        // FRESH copy of its class variable at every use. That fresh variable
+        // still carries the scheme's constraints — `h :: Num b => b` used in
+        // `h + 2.5` is one `Num`-constrained variable, and `(+)` unifies it with
+        // the `a` that `2.5` makes `Double`. Dropping the instantiated context
+        // (as `instantiate` alone does) severed exactly that link: the fresh
+        // variable reached no stage, so nothing decided it, and the operand's
+        // own span recorded an independent `Integer` while `(+)` recorded
+        // `Double` — two answers for operands that must share one type.
+        let (t, constraints) = ctx.instantiate_with_constraints(&scheme);
+        for (class, var) in constraints {
+            ctx.residual.push(Residual {
+                class,
+                var,
+                span,
+                literal: false,
+            });
+        }
+        return Ok(t);
     }
     // A type-scope binding: a constraint-instance head arg (`instance (Monad m)
     // => … → m := Maybe`). Referencing it as a VALUE resolves to the type.
@@ -6690,9 +7572,25 @@ fn infer_apply_impl(
                 // `f x` apply the FRESH param var, and a later unify of that
                 // var against the closure's result type tripped the occurs
                 // check: `Var44 ~ Pair[Var44, Var44]`).
+                // Each argument is typed AGAINST its parameter type. Typing it
+                // bare and unifying afterwards does NOT bind the class variable:
+                // the bare pass instantiates a definition's scheme at a FRESH
+                // variable, so the later unify compares two unrelated variables
+                // and the original one stays unresolved (`h + 2.5` left `h` at
+                // `Var` while `2.5` was `Double` — two answers for `(+)`'s one
+                // `a`). Threading the parameter in is what makes them the same
+                // variable from the start.
                 let mut arg_vtys = Vec::with_capacity(args.len());
-                for a in args.iter() {
-                    arg_vtys.push(infer_method_value_vty(ctx, a, "argument")?);
+                for (i, a) in args.iter().enumerate() {
+                    match param_tys.get(i).cloned() {
+                        Some(e) => arg_vtys.push(infer_method_value_vty_expected(
+                            ctx,
+                            a,
+                            "argument",
+                            Some(e),
+                        )?),
+                        None => arg_vtys.push(infer_method_value_vty(ctx, a, "argument")?),
+                    }
                 }
                 for (p, pt) in params.iter().zip(param_tys) {
                     ctx.locals
@@ -6806,7 +7704,28 @@ fn infer_apply_impl(
                      arg: &Expr|
                      -> Result<Option<(String, ClassVarSubst)>, CompileError> {
                         let cv_var = ctx.fresh_id();
+                        // A PROBE, not a decision: it answers "does this
+                        // operand's type name an instance?" and nothing more.
+                        // The OPERATIVE typing is `apply_args_curried`, against
+                        // the method's parameter type.
+                        //
+                        // Leaving the probe's effects behind makes the operand
+                        // be typed TWICE, and each typing instantiates `h :: Num
+                        // b => b` at a FRESH variable. Only one of the two is
+                        // under the method's `a`, so the other never receives a
+                        // constraint: it stays ambiguous, stage 3 defaults it,
+                        // and it then OVERWRITES the correct selection — measured
+                        // `h + 2.5` recorded `Num@h = Double` from stage 2 and
+                        // `Num@h = Integer` from the default for the same span.
+                        // Rolling the probe back makes the later, real typing the
+                        // only one that writes.
+                        let subst_mark = ctx.subst.clone();
+                        let next_mark = ctx.next;
+                        let residual_mark = ctx.residual.len();
                         let vty = infer_method_value_vty(ctx, arg, "argument")?;
+                        ctx.subst = subst_mark;
+                        ctx.next = next_mark;
+                        ctx.residual.truncate(residual_mark);
                         // Resolve through the substitution: the operand may
                         // already be bound (`a + b` where `a` was pinned by a
                         // previous argument or by defaulting), and an unresolved
@@ -6834,7 +7753,7 @@ fn infer_apply_impl(
                 // The literal is a FALLBACK, not an exclusion: with no other
                 // operand naming an instance (`f x = x == 0`, `x` unconstrained)
                 // the literal's default is still the only evidence there is.
-                let selector_is_literal = matches!(args[selector_idx], Expr::Int(_, _));
+                let selector_is_literal = matches!(args[selector_idx], Expr::IntegerLit(_, _));
                 let selector_dispatch = try_dispatch(ctx, &args[selector_idx])?;
                 // The literal's dispatch is a FALLBACK, kept for the case where
                 // no other operand names an instance.
@@ -6857,63 +7776,106 @@ fn infer_apply_impl(
                 if dispatch.is_none() && selector_is_literal {
                     dispatch = selector_dispatch;
                 }
-                // NUMERIC DEFAULTING (Haskell 2010 §4.3.4). An operand whose
-                // type the body never constrains — the λ-parameter of
-                // `twice x = x + x`, `from n = cons n (from (n + 1.0))` — leaves
-                // the class variable unsolved, and no dictionary can be built
-                // for an unknown type. Haskell resolves this by defaulting a
-                // `Num`-constrained variable to `Integer`/`Double` at the
-                // definition's generalisation point; rill has no defaulting pass
-                // yet, so the same default (`Double`) is applied here, at the one
-                // place the class variable is solved. Only `Num`/`Fractional`
-                // (the numeric classes the arithmetic operators belong to)
-                // default: an unsolved `Eq`/`Ord` variable is still an error, and
-                // a genuinely MIXED pair is rejected by the operand unification
-                // in the primitive branch below, not defaulted away.
+                // No instance yet: DEFER, do not fail.
                 //
-                // Haskell §4.3.4 defaults only a variable left ambiguous at the
-                // enclosing binding's top level — never a variable the
-                // surrounding signature BINDS. So an operand that IS a `given`
-                // witness keeps it abstract: `f :: Ord a => a -> a = (+) x x`
-                // must stay the error it is (`Num` is not entailed by `Ord`),
-                // not silently become `Double`.
-                if dispatch.is_none() && matches!(class_name.as_str(), "Num" | "Fractional") {
-                    let given_ids: Vec<TypeVarId> = ctx.given.iter().filter_map(|g| g.id).collect();
-                    let mut defaulted: Option<ValueTy> = None;
-                    for a in args.iter() {
-                        let vty = infer_method_value_vty(ctx, a, "argument")?;
-                        if let ValueTy::Var(id) = ctx.subst.resolve_value(&vty) {
-                            if given_ids.contains(&id) {
-                                continue;
-                            }
-                            unify_value(&vty, &ValueTy::Double, &mut ctx.subst, a.span())?;
-                            defaulted = Some(ctx.subst.resolve_value(&vty));
-                        }
+                // This is the boundary the three stages exist for. When the
+                // operands' class variable is still an unresolved type variable
+                // there is no instance to select and no unified type to
+                // contradict — the variable is simply AMBIGUOUS, and the Report
+                // resolves an ambiguous numeric variable by defaulting it at the
+                // enclosing binding's close (§4.3.4). Failing here is what made
+                // `1 == 1.0` and `f x = x == 0` unreachable: the instance search
+                // was asked a question only defaulting could answer.
+                //
+                // The deferral records the constraint in the residual store — so
+                // stage 2 can report a genuinely missing instance and stage 3 can
+                // default an ambiguous variable — and gives the call the
+                // signature's own type with the class variable left ABSTRACT.
+                // That abstract form is also the GIVEN witness's type, which is
+                // why one deferral serves the concrete-unknown and the
+                // constrained-body cases alike.
+                // A dispatch key can name a HEAD with no registered instance:
+                // `method_dispatch_key` falls back to the selector's
+                // constructor name (`Pair`), which is right for a structurally
+                // derived instance (`Eq Array`) and WRONG for a class whose
+                // instances are keyed by the full type (`Ix (Pair Int Int)`).
+                // Such a key is not an instance, it is an unsolved class
+                // variable, so it defers like one — reporting "no instance of
+                // `Ix` for type `Pair`" for `range (0, 1)` would name a type the
+                // program never wrote.
+                let dispatch = dispatch.filter(|(ty_name, cv_subst)| {
+                    let registered = ctx
+                        .env
+                        .instances
+                        .get(class_name.as_str())
+                        .map(|m| m.contains_key(ty_name.as_str()))
+                        .unwrap_or(false);
+                    if registered {
+                        return true;
                     }
-                    // Use the type the defaulting loop just SOLVED. Re-inferring
-                    // the same expression would produce FRESH variables (a
-                    // polymorphic `pick 1` instantiates anew each time) and lose
-                    // the default.
-                    if let Some(vty) = defaulted {
-                        let cv_var = ctx.fresh_id();
-                        dispatch = method_dispatch_key(
-                            &env,
-                            &class_name,
-                            &class_var,
-                            sig,
-                            &vty,
-                            cv_var,
-                            || ctx.fresh_vty(),
-                        );
-                    }
-                }
+                    // Unregistered, but the class variable IS concrete: that is
+                    // a genuine stage-2 failure and stays with the resolver,
+                    // which reports it.
+                    !matches!(selection_evidence(cv_subst), ValueTy::Con(_, _))
+                        || !cv_subst_is_head_only(cv_subst, ty_name)
+                });
                 let Some((ty_name, cv_subst)) = dispatch else {
-                    return Err(CompileError::Type {
-                        msg: format!(
-                            "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
-                        ),
-                        span: args[selector_idx].span(),
-                    });
+                    let cv_subst = ClassVarSubst::Var(ctx.fresh_id());
+                    let abstract_var = match cv_subst {
+                        ClassVarSubst::Var(v) => ValueTy::Var(v),
+                        _ => unreachable!("a fresh abstract class variable"),
+                    };
+                    let env_clone = ctx.env.clone();
+                    let (param_tys, ret) = signature_param_and_result_tys_conv(
+                        &env_clone,
+                        &class_var,
+                        &cv_subst,
+                        sig,
+                        || ctx.fresh_vty(),
+                    );
+                    let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
+                    let what = format!("method `{name}` of `{class_name}`");
+                    // Unifying every operand with the (abstract) class variable
+                    // is what makes a MIXED pair a stage-1 error here instead of
+                    // a silent cross-kind comparison.
+                    let at = apply_args_curried(
+                        ctx,
+                        &param_tys,
+                        &ret,
+                        args,
+                        span,
+                        &what,
+                        ArgUnify::Exact,
+                    )?;
+                    // Record the ambiguity for stages 2 and 3. The CLASS variable
+                    // is what these stages resolve — `apply_args_curried` unified
+                    // it with the operands, so its resolved id IS the shared
+                    // operand variable. Nothing else is recorded: a parameter's
+                    // OTHER free variables are not constrained by this class
+                    // (`Array i e` under `Ix` constrains `i`, never `e`), and
+                    // recording them would demand an instance for a type the
+                    // class says nothing about.
+                    // The call's RESULT is `a` (for `(+)`, `a -> a -> a`), so an
+                    // expectation on the whole expression is a constraint on the
+                    // operands' shared variable. Unifying it here is what makes
+                    // `show_double (h + 2.5)` decide `Double`: GHC 9.10.3 measures
+                    // that program as `3.5`, with `h :: Num b => b` instantiated
+                    // at `Double` — the same variable the literal constrains.
+                    // Without this the variable stayed unresolved, lowering had
+                    // no instance to select, and it refused `h`.
+                    if let Some(exp) = expected.as_ref() {
+                        unify_value(&at.vty, exp, &mut ctx.subst, span)?;
+                    }
+                    if let ValueTy::Var(id) = ctx.subst.resolve_value(&abstract_var) {
+                        ctx.residual.push(Residual {
+                            class: class_name.clone(),
+                            var: id,
+                            // A METHOD call's constraint, not a literal's.
+                            literal: false,
+                            span,
+                        });
+                    }
+                    return Ok(at);
                 };
                 // The type checker SELECTED an instance here: record the
                 // dictionary lowering must pass (design §3.0 point 3).
@@ -6950,7 +7912,7 @@ fn infer_apply_impl(
                     // whole remaining signature).
                     let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
                     let what = format!("method `{name}` of `{class_name}`");
-                    return apply_args_curried(
+                    let at = apply_args_curried(
                         ctx,
                         &param_tys,
                         &ret,
@@ -6958,7 +7920,20 @@ fn infer_apply_impl(
                         span,
                         &what,
                         ArgUnify::BufferConstant,
-                    );
+                    )?;
+                    // The call's RESULT is its class variable (`(+), (*), (==)`
+                    // all return `a`), so an expectation on the whole expression
+                    // constrains that SAME variable — and therefore every
+                    // operand. Unifying here is what makes
+                    // `show_double (h + 2.5)` decide `Double`: GHC 9.10.3
+                    // measures it as `3.5` with `h :: Num b => b` instantiated at
+                    // `Double`. Without it `h` stayed a fresh variable while
+                    // `2.5` became `Double` — two answers for one `a` — and
+                    // lowering had no instance to select.
+                    if let Some(exp) = expected.as_ref() {
+                        unify_value(&at.vty, exp, &mut ctx.subst, span)?;
+                    }
+                    return Ok(at);
                 }
                 let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                     Some(r) => r,
@@ -7011,7 +7986,25 @@ fn infer_apply_impl(
                 for (p, pt) in params.iter().zip(param_bind) {
                     ctx.locals.insert(p.clone(), ArrowTy::value_channel(pt));
                 }
-                let body_vty = infer_method_value_vty(ctx, &body, "body");
+                // The method's DECLARED RESULT is the inlined body's expected
+                // type: `index : Pair a a -> a -> Int` makes `fromInteger (…)`
+                // in the body's tail a `Num Int` application instead of a
+                // result-directed call with no expected type (which cannot
+                // resolve at all). Same judgement `validate_instances` makes for
+                // a standalone body.
+                let body_expected = {
+                    let env_clone = ctx.env.clone();
+                    let (p_tys, ret) = signature_param_and_result_tys_conv(
+                        &env_clone,
+                        &class_var,
+                        &cv_subst,
+                        sig,
+                        || ctx.fresh_vty(),
+                    );
+                    let _ = p_tys;
+                    ret
+                };
+                let body_vty = infer_method_value_vty_expected(ctx, &body, "body", body_expected);
                 ctx.locals = saved;
                 ctx.method_lifting.remove(&key);
                 let body_vty = body_vty?;
@@ -7387,13 +8380,14 @@ fn infer_apply_impl(
                         // with `Buffer` expected, exactly as the buffer
                         // arithmetic path does (`lowering` broadcasts a scalar
                         // to a buffer constant).
-                        let at =
-                            if matches!(&args[pos], Expr::Int(_, _) | Expr::FractionalLit(_, _, _))
-                            {
-                                infer_expr_expected(ctx, &args[pos], Some(ctx.env.buffer_vty()))?
-                            } else {
-                                infer_expr(ctx, &args[pos])?
-                            };
+                        let at = if matches!(
+                            &args[pos],
+                            Expr::IntegerLit(_, _) | Expr::FractionalLit(_, _, _)
+                        ) {
+                            infer_expr_expected(ctx, &args[pos], Some(ctx.env.buffer_vty()))?
+                        } else {
+                            infer_expr(ctx, &args[pos])?
+                        };
                         if matches!(at.vty, ValueTy::Var(_)) {
                             // An unresolved λ-parameter used in a signal slot is
                             // a signal parameter: bind it to `Buffer`. (Curried
@@ -7783,7 +8777,8 @@ fn infer_apply_impl(
             .is_some_and(|c| matches!(c, ValueTy::Buffer(_))),
         _ => false,
     };
-    let at = if matches!(arg, Expr::Int(_, _) | Expr::FractionalLit(_, _, _)) && want_buffer {
+    let at = if matches!(arg, Expr::IntegerLit(_, _) | Expr::FractionalLit(_, _, _)) && want_buffer
+    {
         infer_expr_expected(ctx, arg, Some(ctx.env.buffer_vty()))?
     } else {
         infer_expr(ctx, arg)?
@@ -7861,7 +8856,15 @@ fn check_def_call_args(
             // formal would decide the argument before the enclosing
             // expectation (`show_double`) could reach it, turning the valid
             // `show_double (f (2 + 3))` into a type error.
-            if !a.is_int_literal() {
+            //
+            // A numeric LITERAL is included: its own type IS a fresh variable
+            // (Haskell 2010 §6.4.1 `fromInteger`), so unifying it with the
+            // formal is exactly the Report's rule — and it is what keeps
+            // `f x y = x <= y` applied at `Integer` from leaving the class
+            // variable abstract. (The old exclusion existed only because a
+            // literal used to be pinned to `Int` here, which would have decided
+            // it before the enclosing expectation could.)
+            {
                 let actual = infer_method_value_vty(ctx, a, "argument")?;
                 if !is_unknown_thunk(&actual)
                     && matches!(ctx.subst.resolve_value(&actual), ValueTy::Var(_))
@@ -7880,7 +8883,7 @@ fn check_def_call_args(
         if is_unknown_thunk(&actual) {
             continue;
         }
-        if def_arg_widens_to(&formal, &actual, a, defaulted) {
+        if def_arg_widens_to(&formal, &actual, defaulted) {
             continue;
         }
         if let Err(e) = unify_value(&actual, &formal, &mut ctx.subst, a.span()) {
@@ -7908,40 +8911,16 @@ fn is_unknown_thunk(t: &ValueTy) -> bool {
 /// Whether an actual argument is accepted by a formal parameter WITHOUT
 /// unification — the value-track widenings documented on
 /// [`check_def_call_args`].
-fn def_arg_widens_to(formal: &ValueTy, actual: &ValueTy, arg: &Expr, defaulted: bool) -> bool {
+fn def_arg_widens_to(formal: &ValueTy, actual: &ValueTy, defaulted: bool) -> bool {
     match (formal, actual) {
         // A buffer is an ordinary value: it flows into a numeric parameter (the
         // signal-constant / buffer-arithmetic path) and any value flows into a
         // `Buffer` parameter.
         (ValueTy::Buffer(_), _) => true,
         (ValueTy::Double | ValueTy::Int, ValueTy::Buffer(_)) => true,
-        _ if int_literal_widens_to(formal, arg) => true,
         _ if defaulted => numeric_default_widens(formal, actual),
         _ => false,
     }
-}
-
-/// Whether an integer LITERAL argument inhabits `param` without unification.
-///
-/// Haskell 2010 §6.4.1: an integer literal is `fromInteger`-polymorphic, so
-/// `f 2` is well typed at `Double -> …` AND at `Integer -> …` — the literal
-/// takes the formal's type. Only a literal has this freedom (a variable of type
-/// `Int` does not inhabit `Double`), and only in the `Num` direction: a
-/// `Double` literal against an `Int` parameter is still the mismatch this
-/// rejects, because there is no `fromRational` narrowing.
-///
-/// The SAME rule serves a definition call ([`def_arg_widens_to`]) and a builtin
-/// signature (`show_double 123456789012345678901234567890`), so the two cannot
-/// disagree about whether a literal is accepted at `Double`/`Integer`.
-///
-/// What counts as an integer literal is [`Expr::is_int_literal`] — the shared
-/// predicate `reduce` uses when it attaches a formal's declared type to a
-/// β-substituted argument. `-2` is a literal by Haskell 2010 §3.8, so
-/// `f (-2)` at `Double -> Double` is as well typed as `f 2`; counting only
-/// `Expr::Int` here while `reduce` counted `Expr::Neg` too accepted `f 2` and
-/// rejected `f (-2)` at the same formal.
-fn int_literal_widens_to(param: &ValueTy, arg: &Expr) -> bool {
-    matches!(param, ValueTy::Double | ValueTy::Integer | ValueTy::Int) && arg.is_int_literal()
 }
 
 /// `Double` positions accept `Int` positions, structurally.
@@ -8410,14 +9389,33 @@ fn infer_collection_call(
                 let kt = arg_vty(ctx, 0)?;
                 let vt = arg_vty(ctx, 1)?;
                 let _ = arg_vty(ctx, 2)?;
+                // The `Ord` check runs LAST: the map operand may be what
+                // solves the key's type when the key is a literal
+                // (`insert 1 2 m` with `m : Map Int Double`), and the literal's
+                // variable is unresolved until then.
                 check_ord(ctx, &kt, "key")?;
                 Ok(ValueTy::Con("Map".into(), vec![kt, vt]))
             }
             2 => {
                 let kt = arg_vty(ctx, 0)?;
-                let _ = arg_vty(ctx, 1)?;
-                check_ord(ctx, &kt, "element")?;
-                Ok(ValueTy::Con("Set".into(), vec![kt]))
+                let st = arg_vty(ctx, 1)?;
+                // `insert x s`: the SET solves the element type, so a literal
+                // element takes the set's own type (`insert 5 (empty_set)`
+                // with `empty_set : Set Double` is `Set Double`, as in GHC)
+                // instead of staying an unconstrained variable that `check_ord`
+                // then rejects.
+                let elem = match &st {
+                    ValueTy::Con(n, inner) if n == "Set" => {
+                        inner.first().cloned().unwrap_or(ValueTy::Double)
+                    }
+                    ValueTy::Con(n, inner) if n == "List" => {
+                        inner.first().cloned().unwrap_or(ValueTy::Double)
+                    }
+                    _ => kt.clone(),
+                };
+                unify_value(&kt, &elem, &mut ctx.subst, args[0].span())?;
+                check_ord(ctx, &elem, "element")?;
+                Ok(ValueTy::Con("Set".into(), vec![elem]))
             }
             _ => Err(arity_err("2 or 3", args.len())),
         },
@@ -8425,24 +9423,45 @@ fn infer_collection_call(
             if args.len() != 2 {
                 return Err(arity_err("2", args.len()));
             }
-            let kt = arg_vty(ctx, 0)?;
-            check_ord(ctx, &kt, "key")?;
+            // The CONTAINER is typed first: its element type is what a literal
+            // key takes (`lookup 1 m` with `m : Map Int v`), and checking the
+            // key's `Ord` before that unification sees an unresolved variable
+            // and rejects a program GHC accepts.
             let mt = arg_vty(ctx, 1)?;
-            let v = match &mt {
-                ValueTy::Con(n, inner) if n == "Map" => {
-                    inner.get(1).cloned().unwrap_or(ValueTy::Double)
-                }
-                _ => ValueTy::Double,
+            let kt = arg_vty(ctx, 0)?;
+            let (key_ty, v) = match &mt {
+                ValueTy::Con(n, inner) if n == "Map" => (
+                    inner.first().cloned().unwrap_or(ValueTy::Int),
+                    inner.get(1).cloned().unwrap_or(ValueTy::Double),
+                ),
+                ValueTy::Con(n, inner) if n == "Set" => (
+                    inner.first().cloned().unwrap_or(ValueTy::Int),
+                    ValueTy::bool_ty(),
+                ),
+                _ => (kt.clone(), ValueTy::Double),
             };
+            unify_value(&kt, &key_ty, &mut ctx.subst, args[0].span())?;
+            check_ord(ctx, &key_ty, "key")?;
             Ok(ValueTy::Con("Maybe".into(), vec![v]))
         }
         "member" => {
             if args.len() != 2 {
                 return Err(arity_err("2", args.len()));
             }
+            // Same order as `lookup`: the container solves the literal.
+            let ct = arg_vty(ctx, 1)?;
             let kt = arg_vty(ctx, 0)?;
-            check_ord(ctx, &kt, "key")?;
-            let _ = arg_vty(ctx, 1)?;
+            let elem = match &ct {
+                ValueTy::Con(n, inner) if n == "Set" || n == "Map" => {
+                    inner.first().cloned().unwrap_or(ValueTy::Int)
+                }
+                ValueTy::Con(n, inner) if n == "List" => {
+                    inner.first().cloned().unwrap_or(ValueTy::Double)
+                }
+                _ => kt.clone(),
+            };
+            unify_value(&kt, &elem, &mut ctx.subst, args[0].span())?;
+            check_ord(ctx, &elem, "element")?;
             Ok(ValueTy::bool_ty())
         }
         "empty_map" => {
@@ -8528,6 +9547,12 @@ mod tests {
             nested_group_depth: 0,
             given: Vec::new(),
             dict_selections: HashMap::new(),
+            residual: Vec::new(),
+            literal_vars: HashMap::new(),
+            literal_instances: HashMap::new(),
+            value_tys: HashMap::new(),
+            entry_name: String::new(),
+            final_pass: false,
         };
         let (ty, constraints) = ctx.instantiate_with_constraints(&scheme);
         assert_eq!(constraints.len(), 1, "the context travels with the type");
@@ -8605,9 +9630,9 @@ mod tests {
     fn io_main_writes_io_void() {
         // The IO form (`main = do { … }`) is the program's `IO ()` action; the
         // runner applies it to the realized `World`.
-        let t = ty_of("main = do { write Nothing stdout; return () }").unwrap();
+        let t = ty_of("foo = do { write Nothing stdout; return () }").unwrap();
         assert_eq!(
-            t.def_schemes["main"].ty.vty,
+            t.def_schemes["foo"].ty.vty,
             ValueTy::Con("IO".into(), vec![ValueTy::Void])
         );
     }
@@ -8618,7 +9643,7 @@ mod tests {
         // reach the type environment, because ctor lowering reads `DataInfo`
         // (never the AST) when deciding where to force.
         let t = ty_of(
-            "data T = C !Double; data P = { x: !Double, y: Double }; main = P { x: 1.0, y: 2.0 }",
+            "data T = C !Double; data P = { x: !Double, y: Double }; foo = P { x: 1.0, y: 2.0 }",
         )
         .unwrap();
         match t.type_env.data_types.get("T") {
@@ -8646,9 +9671,9 @@ mod tests {
     #[test]
     fn gain_is_1_to_1() {
         // A buffer-valued signal expression over a literal generator.
-        let t = ty_of(r"main = sine 440.0 0.5 0.0 * 0.5;").unwrap();
+        let t = ty_of(r"foo = sine 440.0 0.5 0.0 * 0.5;").unwrap();
         assert_eq!(
-            t.def_schemes["main"].ty.vty,
+            t.def_schemes["foo"].ty.vty,
             ValueTy::Buffer(Box::new(ValueTy::Double))
         );
     }
@@ -8656,9 +9681,9 @@ mod tests {
     #[test]
     fn integrator_is_1_to_1() {
         // A foreign 1→1 builtin applied to a buffer value.
-        let t = ty_of("main = integrator (sine 440.0 0.5 0.0)").unwrap();
+        let t = ty_of("foo = integrator (sine 440.0 0.5 0.0)").unwrap();
         assert_eq!(
-            t.def_schemes["main"].ty.vty,
+            t.def_schemes["foo"].ty.vty,
             ValueTy::Buffer(Box::new(ValueTy::Double))
         );
     }
@@ -8695,8 +9720,8 @@ mod tests {
 
     #[test]
     fn let_expression_scoping() {
-        let t = ty_of("main = let g = 0.5 in g * 0.5").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
+        let t = ty_of("foo = let g = 0.5 in g * 0.5").unwrap();
+        assert_eq!(t.def_schemes["foo"].ty.vty, ValueTy::Double);
     }
 
     #[test]
@@ -8713,9 +9738,9 @@ mod tests {
 
     #[test]
     fn builtin_call_is_1_to_1() {
-        let t = ty_with("main = lowpass 1000.0 0.7 (sine 440.0 0.5 0.0)").unwrap();
+        let t = ty_with("foo = lowpass 1000.0 0.7 (sine 440.0 0.5 0.0)").unwrap();
         assert_eq!(
-            t.def_schemes["main"].ty.vty,
+            t.def_schemes["foo"].ty.vty,
             ValueTy::Buffer(Box::new(ValueTy::Double))
         );
     }
@@ -8729,7 +9754,7 @@ mod tests {
 
     #[test]
     fn builtin_ref_param_ok() {
-        assert!(ty_with("lp f = lowpass f 0.7 (sine 440.0 0.5 0.0); main = lp 1000.0").is_ok());
+        assert!(ty_with("lp f = lowpass f 0.7 (sine 440.0 0.5 0.0); foo = lp 1000.0").is_ok());
     }
 
     #[test]
@@ -8745,10 +9770,10 @@ mod tests {
 
     #[test]
     fn scalar_param_broadcasts_to_buffer() {
-        let t = ty_of("main = sine 440.0 0.5 0.0 * 0.5").unwrap();
+        let t = ty_of("foo = sine 440.0 0.5 0.0 * 0.5").unwrap();
         // A buffer-valued main is the program's single signal output.
         assert_eq!(
-            t.def_schemes["main"].ty.vty,
+            t.def_schemes["foo"].ty.vty,
             ValueTy::Buffer(Box::new(ValueTy::Double))
         );
     }
@@ -8776,6 +9801,12 @@ mod tests {
                 nested_group_depth: 0,
                 given: Vec::new(),
                 dict_selections: HashMap::new(),
+                residual: Vec::new(),
+                literal_vars: HashMap::new(),
+                literal_instances: HashMap::new(),
+                value_tys: HashMap::new(),
+                entry_name: String::new(),
+                final_pass: false,
             };
             let def = &prog.defs[0];
             let body = infer_def_body(&mut ctx, def).unwrap();
@@ -8852,22 +9883,22 @@ mod tests {
     #[test]
     fn int_float_mismatch_errors() {
         // A `Double` field does not unify with an `Int` field type.
-        assert!(ty_of("data P = { f: Int }; main = P { f: 1.0 }").is_err());
+        assert!(ty_of("data P = { f: Int }; foo = P { f: 1.0 }").is_err());
     }
 
     #[test]
     fn actor_param_no_default_typechecks() {
-        let t = ty_of(r"main = if ?gain > 0.5 then 1.0 else 2.0").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
+        let t = ty_of(r"foo = if ?gain > 0.5 then 1.0 else 2.0").unwrap();
+        assert_eq!(t.def_schemes["foo"].ty.vty, ValueTy::Double);
     }
 
     #[test]
     fn actor_param_with_default_typechecks() {
         // A `?name=default` actor param in a Buffer position keeps the
         // program's single signal output.
-        let t = ty_of(r"main = sine 440.0 ?gain=0.5 0.0").unwrap();
+        let t = ty_of(r"foo = sine 440.0 ?gain=0.5 0.0").unwrap();
         assert_eq!(
-            t.def_schemes["main"].ty.vty,
+            t.def_schemes["foo"].ty.vty,
             ValueTy::Buffer(Box::new(ValueTy::Double))
         );
     }
@@ -8875,14 +9906,14 @@ mod tests {
     #[test]
     fn closed_top_level_local_is_caf() {
         // osc = sine 440 0.5 0  (0 input channels, 0 λ-params) -> CAF
-        let typed = ty_with("osc = sine 440 0.5 0; main = 0.5 * 0.5").unwrap();
+        let typed = ty_with("osc = sine 440 0.5 0; foo = 0.5 * 0.5").unwrap();
         assert!(typed.cafs.contains("osc"));
     }
 
     #[test]
     fn open_block_is_not_caf() {
         // gain x = x * 0.5  (has a λ-param) -> macro, not CAF
-        let typed = ty_with("gain x = x * 0.5; main = gain 0.5").unwrap();
+        let typed = ty_with("gain x = x * 0.5; foo = gain 0.5").unwrap();
         assert!(!typed.cafs.contains("gain"));
     }
 
@@ -8890,47 +9921,46 @@ mod tests {
     fn function_with_params_is_not_caf() {
         // voice amp = osc * amp  (has a λ-param) -> not CAF
         let typed =
-            ty_with("osc = sine 440 0.5 0; voice amp = osc * amp; main = voice 0.5").unwrap();
+            ty_with("osc = sine 440 0.5 0; voice amp = osc * amp; foo = voice 0.5").unwrap();
         assert!(typed.cafs.contains("osc"));
         assert!(!typed.cafs.contains("voice"));
     }
 
     #[test]
     fn data_record_constructor_infers_value_channel() {
-        let t = ty_of("data Point = { x: Double, y: Double }; main = Point { x: 1.0, y: 2.0 }")
-            .unwrap();
+        let t =
+            ty_of("data Point = { x: Double, y: Double }; foo = Point { x: 1.0, y: 2.0 }").unwrap();
         assert_eq!(
-            t.def_schemes["main"].ty.vty,
+            t.def_schemes["foo"].ty.vty,
             ValueTy::Con("Point".into(), vec![])
         );
     }
 
     #[test]
     fn field_project_produces_float_value() {
-        let t = ty_of(
-            "data Point = { x: Double, y: Double }; p = Point { x: 1.0, y: 2.0 }; main = p.x",
-        )
-        .unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
+        let t =
+            ty_of("data Point = { x: Double, y: Double }; p = Point { x: 1.0, y: 2.0 }; foo = p.x")
+                .unwrap();
+        assert_eq!(t.def_schemes["foo"].ty.vty, ValueTy::Double);
     }
 
     #[test]
     fn sum_match_branches_on_constructor() {
         let t = ty_of(
-            r"data Shape = Circle Double | Rect Double Double; main = case Circle 1.0 of { Circle r -> r; Rect w h -> w; }",
+            r"data Shape = Circle Double | Rect Double Double; foo = case Circle 1.0 of { Circle r -> r; Rect w h -> w; }",
         )
         .unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
+        assert_eq!(t.def_schemes["foo"].ty.vty, ValueTy::Double);
     }
 
     #[test]
     fn field_update_preserves_record_type() {
         let t = ty_of(
-            "data Point = { x: Double, y: Double }; p = Point { x: 1.0, y: 2.0 }; main = p.x := 3.0",
+            "data Point = { x: Double, y: Double }; p = Point { x: 1.0, y: 2.0 }; foo = p.x := 3.0",
         )
         .unwrap();
         assert_eq!(
-            t.def_schemes["main"].ty.vty,
+            t.def_schemes["foo"].ty.vty,
             ValueTy::Con("Point".into(), vec![])
         );
     }
@@ -8939,30 +9969,30 @@ mod tests {
     fn match_arms_must_be_value_expressions() {
         // A bare literal arm body is value-compatible (`Circle r -> 1.0`);
         // arms are value channels, so a bare literal is accepted.
-        assert!(ty_of(
-            r"data Shape = Circle Double; main = case Circle 1.0 of { Circle r -> 1.0 }"
-        )
-        .is_ok());
+        assert!(
+            ty_of(r"data Shape = Circle Double; foo = case Circle 1.0 of { Circle r -> 1.0 }")
+                .is_ok()
+        );
     }
 
     #[test]
     fn match_scrutinee_must_be_value() {
-        assert!(ty_of(r"data Shape = Circle Double; main = case 3 of { Circle r -> r }").is_err());
+        assert!(ty_of(r"data Shape = Circle Double; foo = case 3 of { Circle r -> r }").is_err());
     }
 
     #[test]
     fn match_arms_same_sum_type() {
         assert!(
-            ty_of(r"data A = C Double; data B = C Int; main = case C 1.0 of { C r -> r }").is_err()
+            ty_of(r"data A = C Double; data B = C Int; foo = case C 1.0 of { C r -> r }").is_err()
         );
     }
 
     #[test]
     fn match_too_many_arm_bindings_is_error() {
-        assert!(ty_of(
-            r"data Shape = Circle Double; main = case Circle 1.0 of { Circle r s -> r }"
-        )
-        .is_err());
+        assert!(
+            ty_of(r"data Shape = Circle Double; foo = case Circle 1.0 of { Circle r s -> r }")
+                .is_err()
+        );
     }
 
     #[test]
@@ -8972,7 +10002,7 @@ mod tests {
         // exhaustiveness: without a wildcard the match must fail loudly, not
         // silently drop the guard.
         let res = ty_of(
-            r"data Shape = Circle Double | Rect Double Double; main = case Circle 1.0 of { Circle r | r > 0.0 -> r; };",
+            r"data Shape = Circle Double | Rect Double Double; foo = case Circle 1.0 of { Circle r | r > 0.0 -> r; };",
         );
         let err = match res {
             Err(e) => e,
@@ -8986,12 +10016,12 @@ mod tests {
         // A wildcard arm makes the guarded match exhaustive; the guard is
         // type-checked as a Bool value.
         assert!(ty_of(
-            r"data Shape = Circle Double | Rect Double Double; main = case Circle 1.0 of { Circle r | r > 0.0 -> r; _ -> 0.0; };"
+            r"data Shape = Circle Double | Rect Double Double; foo = case Circle 1.0 of { Circle r | r > 0.0 -> r; _ -> 0.0; };"
         )
         .is_ok());
         // A non-Bool guard is a type error.
         let res = ty_of(
-            r"data Shape = Circle Double | Rect Double Double; main = case Circle 1.0 of { Circle r | r + 1.0 -> r; _ -> 0.0; };",
+            r"data Shape = Circle Double | Rect Double Double; foo = case Circle 1.0 of { Circle r | r + 1.0 -> r; _ -> 0.0; };",
         );
         assert!(
             res.is_err(),
@@ -9001,44 +10031,49 @@ mod tests {
 
     #[test]
     fn record_ctor_missing_field_is_error() {
-        assert!(ty_of("data Point = { x: Double, y: Double }; main = Point { x: 1.0 }").is_err());
+        assert!(ty_of("data Point = { x: Double, y: Double }; foo = Point { x: 1.0 }").is_err());
     }
 
     #[test]
     fn record_ctor_duplicate_field_is_error() {
         assert!(ty_of(
-            "data Point = { x: Double, y: Double }; main = Point { x: 1.0, x: 2.0, y: 3.0 }"
+            "data Point = { x: Double, y: Double }; foo = Point { x: 1.0, x: 2.0, y: 3.0 }"
         )
         .is_err());
     }
 
     #[test]
     fn if_infers_bool_condition_and_branch_types() {
-        let t = ty_of("main = if 1.0 < 2.0 then 1.0 else 2.0").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
-        assert!(ty_of("main = if 1.0 then 1.0 else 2.0").is_err());
-        assert!(ty_of("main = if 1.0 < 2.0 then 1 else 2").is_ok());
-        let t2 = ty_of("main = if 1.0 < 2.0 then 1 else 2").unwrap();
-        assert_eq!(t2.def_schemes["main"].ty.vty, ValueTy::Int);
+        let t = ty_of("foo = if 1.0 < 2.0 then 1.0 else 2.0").unwrap();
+        assert_eq!(t.def_schemes["foo"].ty.vty, ValueTy::Double);
+        assert!(ty_of("foo = if 1.0 then 1.0 else 2.0").is_err());
+        assert!(ty_of("foo = if 1.0 < 2.0 then 1 else 2").is_ok());
+        // GHC 9.10.3: the arms are unresolved `Num a`, so `default (Integer,
+        // Double)` takes its FIRST entry — `Integer`, not `Int`.
+        let t2 = ty_of("foo = if 1.0 < 2.0 then 1 else 2").unwrap();
+        assert_eq!(t2.def_schemes["foo"].ty.vty, ValueTy::Integer);
     }
 
     #[test]
     fn scalar_match_infers_literal_patterns_and_totality() {
-        let t = ty_of(r"main = case 0 of { 0 -> 1.0; _ -> 2.0; }").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
-        assert!(ty_of(r"main = case 0 of { 0 -> 1.0 }").is_err());
-        let t2 = ty_of(r"main = case true of { true -> 1.0; false -> 2.0 }").unwrap();
-        assert_eq!(t2.def_schemes["main"].ty.vty, ValueTy::Double);
+        let t = ty_of(r"foo = case 0 of { 0 -> 1.0; _ -> 2.0; }").unwrap();
+        assert_eq!(t.def_schemes["foo"].ty.vty, ValueTy::Double);
+        assert!(ty_of(r"foo = case 0 of { 0 -> 1.0 }").is_err());
+        let t2 = ty_of(r"foo = case true of { true -> 1.0; false -> 2.0 }").unwrap();
+        assert_eq!(t2.def_schemes["foo"].ty.vty, ValueTy::Double);
     }
 
     #[test]
     fn bare_int_literal_scrutinee_infers_as_value() {
         // `match 0 of {...}`: a bare Int literal is a signal-rate channel in v1
         // but value-compatible in value positions (mirroring arm_result_vty).
-        let t = ty_of(r"main = case 0 of { 0 -> 1.0; _ -> 2.0; }").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
-        let t2 = ty_of(r"main = case 0.0 of { 0.0 -> 1; _ -> 2; }").unwrap();
-        assert_eq!(t2.def_schemes["main"].ty.vty, ValueTy::Int);
+        let t = ty_of(r"foo = case 0 of { 0 -> 1.0; _ -> 2.0; }").unwrap();
+        assert_eq!(t.def_schemes["foo"].ty.vty, ValueTy::Double);
+        // GHC 9.10.3: `case 0.0 of { 0.0 -> 1; _ -> 2 }` is `Integer` —
+        // the arms' unresolved `Num a` takes `default (Integer, Double)`'s
+        // FIRST entry, not `Int` (Task 7's stage 3).
+        let t2 = ty_of(r"foo = case 0.0 of { 0.0 -> 1; _ -> 2; }").unwrap();
+        assert_eq!(t2.def_schemes["foo"].ty.vty, ValueTy::Integer);
     }
 
     #[test]
@@ -9046,8 +10081,8 @@ mod tests {
         // `Just (Left x)`: the nested `Left` constructor belongs to `Either`,
         // NOT `Maybe`. The sum context must be re-derived from the payload type
         // at each pattern level.
-        let t = ty_of(r"main = case Just (Left 2.0) of { Just (Left x) -> x; _ -> 0.0; }").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
+        let t = ty_of(r"foo = case Just (Left 2.0) of { Just (Left x) -> x; _ -> 0.0; }").unwrap();
+        assert_eq!(t.def_schemes["foo"].ty.vty, ValueTy::Double);
     }
 
     #[test]
@@ -9055,19 +10090,19 @@ mod tests {
         // Same nesting for a USER sum: `Wrap (Foo x)` — `Foo` is looked up in
         // `Inner`, not `Outer`.
         let t = ty_of(
-            r"data Inner = Foo Double; data Outer = Wrap Inner | Empty; main = case Wrap (Foo 2.0) of { Wrap (Foo x) -> x; _ -> 0.0; }",
+            r"data Inner = Foo Double; data Outer = Wrap Inner | Empty; foo = case Wrap (Foo 2.0) of { Wrap (Foo x) -> x; _ -> 0.0; }",
         )
         .unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
+        assert_eq!(t.def_schemes["foo"].ty.vty, ValueTy::Double);
     }
 
     #[test]
     fn type_after_data_resolves() {
         // Regression: the synonym is declared AFTER the data type that uses it.
         // Registration must be order-independent (two-phase: aliases first).
-        let t = ty_of("data P = { x: Angles }; type Angles = Double; main = P { x: 1.0 }").unwrap();
+        let t = ty_of("data P = { x: Angles }; type Angles = Double; foo = P { x: 1.0 }").unwrap();
         assert_eq!(
-            t.def_schemes["main"].ty.vty,
+            t.def_schemes["foo"].ty.vty,
             ValueTy::Con("P".into(), vec![])
         );
     }
@@ -9077,23 +10112,23 @@ mod tests {
         // The newtype is declared AFTER the data type that uses it. The field
         // must resolve to `Newtype("Hz")` (not `Data("Hz")`), so constructing
         // it requires the explicit `Hz 440.0` wrapper.
-        let t = ty_of("data P = { f: Hz }; newtype Hz = Double; main = P { f: Hz 440.0 }").unwrap();
+        let t = ty_of("data P = { f: Hz }; newtype Hz = Double; foo = P { f: Hz 440.0 }").unwrap();
         assert_eq!(
-            t.def_schemes["main"].ty.vty,
+            t.def_schemes["foo"].ty.vty,
             ValueTy::Con("P".into(), vec![])
         );
         // Newtypes are distinct wrappers: a bare Double does not satisfy a Hz
         // field (no automatic wrapping) — this is what the ordering fix buys
         // (a pre-fix `Data("Hz")` field would accept nothing, not even `Hz 440.0`).
-        assert!(ty_of("data P = { f: Hz }; newtype Hz = Double; main = P { f: 440.0 }").is_err());
+        assert!(ty_of("data P = { f: Hz }; newtype Hz = Double; foo = P { f: 440.0 }").is_err());
     }
 
     #[test]
     fn chained_alias_resolves() {
         let t =
-            ty_of("data P = { f: A }; type A = B; type B = Double; main = P { f: 1.0 }").unwrap();
+            ty_of("data P = { f: A }; type A = B; type B = Double; foo = P { f: 1.0 }").unwrap();
         assert_eq!(
-            t.def_schemes["main"].ty.vty,
+            t.def_schemes["foo"].ty.vty,
             ValueTy::Con("P".into(), vec![])
         );
     }
@@ -9103,21 +10138,21 @@ mod tests {
         // A self-referential type would materialise an unbounded arena subtree
         // and exhaust the fixed capacity (spec §9.1 strict acyclicity).
         assert!(
-            ty_of("data List = Cons Double List | End Double; main = Cons 1.0 (End 2.0)").is_err()
+            ty_of("data List = Cons Double List | End Double; foo = Cons 1.0 (End 2.0)").is_err()
         );
     }
 
     #[test]
     fn recursive_newtype_is_compile_error() {
-        assert!(ty_of("newtype A = B; newtype B = A; main = A 1.0").is_err());
+        assert!(ty_of("newtype A = B; newtype B = A; foo = A 1.0").is_err());
     }
 
     #[test]
     fn acyclic_data_type_still_compiles() {
-        let t = ty_of("data Point = { x: Double, y: Double }; main = Point { x: 1.0, y: 2.0 }")
-            .unwrap();
+        let t =
+            ty_of("data Point = { x: Double, y: Double }; foo = Point { x: 1.0, y: 2.0 }").unwrap();
         assert_eq!(
-            t.def_schemes["main"].ty.vty,
+            t.def_schemes["foo"].ty.vty,
             ValueTy::Con("Point".into(), vec![])
         );
     }
@@ -9126,8 +10161,8 @@ mod tests {
     fn lambda_def_infers_as_func() {
         // A bare Def::Eval whose body is a lambda literal infers to a Func value
         // channel via the normal def-body inference path.
-        let t = ty_of(r"double = \x -> x; main = double").unwrap();
-        assert!(matches!(t.def_schemes["main"].ty.vty, ValueTy::Thunk(_, _)));
+        let t = ty_of(r"double = \x -> x; foo = double").unwrap();
+        assert!(matches!(t.def_schemes["foo"].ty.vty, ValueTy::Thunk(_, _)));
     }
 
     #[test]
@@ -9135,8 +10170,8 @@ mod tests {
         // `(x , x)` with a value λ-param is a channel tuple → `Pair`, a single
         // 0→1 value channel, so the lambda body is well-typed (the tuple no
         // longer parses as two signal channels).
-        let t = ty_of(r"main = \x -> (x , x)").unwrap();
-        match &t.def_schemes["main"].ty.vty {
+        let t = ty_of(r"foo = \x -> (x , x)").unwrap();
+        match &t.def_schemes["foo"].ty.vty {
             ValueTy::Thunk(_, ret) => {
                 assert_eq!(ret.len(), 1);
                 match &ret[0] {
@@ -9154,8 +10189,8 @@ mod tests {
     fn value_channel_arithmetic_infers() {
         // double = fn x -> x * 2.0  -> lambda body is value arithmetic over
         // value params, inferred as Func([Double], [Double]).
-        let t = ty_of(r"double = \x -> x * 2.0; main = double").unwrap();
-        match &t.def_schemes["main"].ty.vty {
+        let t = ty_of(r"double = \x -> x * 2.0; foo = double").unwrap();
+        match &t.def_schemes["foo"].ty.vty {
             ValueTy::Thunk(arg_tys, ret_tys) => {
                 assert_eq!(arg_tys.len(), 1);
                 assert_eq!(ret_tys, &vec![ValueTy::Double]);
@@ -9168,21 +10203,21 @@ mod tests {
     fn partial_application_types_as_remaining_func() {
         // add3 = add 3.0 (partial application of a two-arg lambda) types as
         // Func([Double], [Double]); fully applying it yields a Double.
-        let t = ty_of(r"add = \a -> \b -> a + b; add3 = add 3.0; main = add3").unwrap();
+        let t = ty_of(r"add = \a -> \b -> a + b; add3 = add 3.0; foo = add3").unwrap();
         assert_eq!(
-            t.def_schemes["main"].ty.vty,
+            t.def_schemes["foo"].ty.vty,
             ValueTy::Thunk(vec![ValueTy::Double], vec![ValueTy::Double])
         );
-        let t = ty_of(r"add = \a -> \b -> a + b; add3 = add 3.0; main = add3 4.0").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
+        let t = ty_of(r"add = \a -> \b -> a + b; add3 = add 3.0; foo = add3 4.0").unwrap();
+        assert_eq!(t.def_schemes["foo"].ty.vty, ValueTy::Double);
     }
 
     #[test]
     fn named_def_partial_application_types_as_func() {
         // add5 = add2 5.0 (partial application of a named def) types as
         // Func([Double], [Double]).
-        let t = ty_of("add2 a b = a + b; add5 = add2 5.0; main = add5 2.0").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
+        let t = ty_of("add2 a b = a + b; add5 = add2 5.0; foo = add5 2.0").unwrap();
+        assert_eq!(t.def_schemes["foo"].ty.vty, ValueTy::Double);
     }
 
     #[test]
@@ -9190,7 +10225,7 @@ mod tests {
         // `data World;` declares a nameable type: a field/type-alias may
         // mention it — but nothing in source can CONSTRUCT one. `World {}` is
         // a compile-time error ("no constructors").
-        let err = match ty_with("data World; main = World {}") {
+        let err = match ty_with("data World; foo = World {}") {
             Ok(_) => panic!("constructing an opaque type must be rejected"),
             Err(e) => e,
         };
@@ -9200,11 +10235,11 @@ mod tests {
             "unexpected error: {err}"
         );
         assert!(
-            ty_with("data World; data Box = { w: World }; main = 1.0").is_ok(),
+            ty_with("data World; data Box = { w: World }; foo = 1.0").is_ok(),
             "an opaque type must be nameable in a type position"
         );
         assert!(
-            ty_with("data World; type Alias = World; main = 1.0").is_ok(),
+            ty_with("data World; type Alias = World; foo = 1.0").is_ok(),
             "an opaque type must be usable through a type alias"
         );
     }
@@ -9215,7 +10250,7 @@ mod tests {
         // match against: both are compile-time errors. The record wrapper
         // pins the binder's type so the projection/match is not deferred.
         let err = match ty_with(
-            "data World; data Box = { w: World }; name b = let v = b.w in v.name; main = 1.0",
+            "data World; data Box = { w: World }; name b = let v = b.w in v.name; foo = 1.0",
         ) {
             Ok(_) => panic!("projecting a field of an opaque type must be rejected"),
             Err(e) => e,
@@ -9226,7 +10261,7 @@ mod tests {
             "unexpected error: {err}"
         );
         let err = match ty_with(
-            "data W; data Box = { w: W }; first b = let v = b.w in case v of { W -> 1.0 }; main = 1.0",
+            "data W; data Box = { w: W }; first b = let v = b.w in case v of { W -> 1.0 }; foo = 1.0",
         ) {
             Ok(_) => panic!("matching an opaque type's nonexistent constructor must be rejected"),
             Err(e) => e,
@@ -9244,7 +10279,7 @@ mod tests {
         // argument IS `f`, which would construct an infinite type. The
         // occurs-check must reject it with a clean type error (regression:
         // it recorded a cyclic binding and overflowed the stack).
-        let res = ty_of(r"main = \f -> f f");
+        let res = ty_of(r"foo = \f -> f f");
         assert!(res.is_err());
     }
 
@@ -9265,7 +10300,7 @@ mod tests {
         // an ordinary definition over `__gcd`, so a program-level `gcd` call is
         // still a name-based application. `__gcd` is the reserved spelling the
         // parser binds to the node.
-        let src = r"f = __gcd (h 1) (h 2); h x = x; main = f";
+        let src = r"f = __gcd (h 1) (h 2); h x = x; foo = f";
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
         let body = p.defs.iter().find(|d| d.name() == "f").unwrap().body();
         let mut refs = HashSet::new();

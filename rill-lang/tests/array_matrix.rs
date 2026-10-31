@@ -121,10 +121,8 @@ fn pair_values(prog: &WorldState<f32, 256>, v: &Value) -> (Value, Value) {
 }
 
 fn int_pair(prog: &WorldState<f32, 256>, v: &Value) -> (i64, i64) {
-    match pair_values(prog, v) {
-        (Value::Int(lo), Value::Int(hi)) => (lo, hi),
-        other => panic!("expected an Int pair, got {other:?}"),
-    }
+    let (lo, hi) = pair_values(prog, v);
+    (integral(&lo), integral(&hi))
 }
 
 /// `(flat elements, ((lo1, hi1), (lo2, hi2)))` of a matrix value.

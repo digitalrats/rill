@@ -107,7 +107,7 @@ fn array_from_buffer_is_zero_indexed_over_the_live_block() {
     // The bounds are `(0, len - 1)`: the whole block, no offset.
     let prog = run("main = bounds (arrayFromBuffer (sine 440.0 0.5 0.0));");
     let (lo, hi) = pair_values(&prog, &output(&prog));
-    assert_eq!(lo, Value::Int(0), "the first sample is index 0");
+    assert_eq!(integral(&lo), 0, "the first sample is index 0");
     assert_eq!(
         hi,
         Value::Int(BLOCK as i64 - 1),

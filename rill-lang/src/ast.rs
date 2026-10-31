@@ -89,10 +89,9 @@ pub enum Pattern {
     /// Matches anything, binds nothing (`_`).
     Wild,
     /// Integer literal, at arbitrary precision. A case-pattern integer is
-    /// matched against an `Int` scrutinee, so lowering converts it with
-    /// `literal_to_i64` (GHC's truncation) — the pattern stays on the `Int`
-    /// track.
-    LitInt(BigInt),
+    /// matched against the scrutinee's `Num` type, so lowering converts it with
+    /// the same `fromInteger` conversion the expression form uses.
+    IntegerLit(BigInt),
     /// Fractional literal, at arbitrary precision: the EXACT value the source
     /// digits denote, plus the source spelling.
     ///
@@ -150,10 +149,12 @@ pub struct MatchArm {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Expr {
     /// Integer literal, at arbitrary precision — `123456789012345678901234567890`
-    /// is a valid literal. Which value track it lands on is decided at
-    /// lowering time (an `Integer`-annotated literal keeps every digit; an
-    /// unannotated one converts with `literal_to_i64`).
-    Int(BigInt, Span),
+    /// is a valid literal. The value IS the Haskell 2010 `Integer` the Report's
+    /// literal denotes (§6.4.1), so the node names no *type*: which `Num` type
+    /// it lands on is decided at lowerering by the `fromInteger` application it
+    /// becomes (`fromInteger (42 :: Integer)`), and by unification with the
+    /// position's expected type.
+    IntegerLit(BigInt, Span),
     /// Fractional literal, at arbitrary precision: the EXACT value the source
     /// digits denote, plus the source spelling.
     ///
@@ -378,7 +379,7 @@ impl Expr {
     /// expected type alone.
     ///
     /// `-3` counts: the parser folds the sign into an [`Expr::Neg`] over
-    /// [`Expr::Int`], and Haskell 2010 §3.8's negative literal is one literal,
+    /// [`Expr::IntegerLit`], and Haskell 2010 §3.8's negative literal is one literal,
     /// not an application of `negate` to a literal. This is the ONE definition
     /// of "integer literal" in the compiler — `reduce`'s annotation carrier,
     /// inference's widening rule and the `fromInteger` typing of a literal all
@@ -391,7 +392,7 @@ impl Expr {
     /// inference and lowering sites, which is stronger than the widening rule.
     pub fn is_int_literal(&self) -> bool {
         match self {
-            Expr::Int(_, _) => true,
+            Expr::IntegerLit(_, _) => true,
             Expr::Neg(inner, _) => inner.is_int_literal(),
             _ => false,
         }
@@ -405,7 +406,7 @@ impl Expr {
     /// only the FINAL `Int`/`Double` conversion truncates or rounds.
     pub fn int_literal_value(&self) -> Option<BigInt> {
         match self {
-            Expr::Int(v, _) => Some(v.clone()),
+            Expr::IntegerLit(v, _) => Some(v.clone()),
             Expr::Neg(inner, _) => inner.int_literal_value().map(|v| -v),
             _ => None,
         }
@@ -414,7 +415,7 @@ impl Expr {
     /// The source span of this node.
     pub fn span(&self) -> Span {
         match self {
-            Expr::Int(_, s)
+            Expr::IntegerLit(_, s)
             | Expr::FractionalLit(_, _, s)
             | Expr::Void(s)
             | Expr::Str(_, s)

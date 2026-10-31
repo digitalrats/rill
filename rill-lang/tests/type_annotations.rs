@@ -163,10 +163,15 @@ fn annotation_tighter_than_arithmetic() {
     // and is rejected. So `true` proves the loose grouping.
     assert_eq!(run_value("main = 1 < 2 :: Bool;"), Value::bool(true));
 
+    // The tight reading annotates an INT literal as `Bool`, and the failure is
+    // the missing INSTANCE, not a unification: GHC 9.10.3 reports
+    // `No instance for 'Num Bool' arising from the literal '1'` for exactly this
+    // source. (This used to say `cannot unify … Int … Bool`, which named the
+    // wrong stage — the three-stage split made the diagnostic correct.)
     let tight = compile_err("main = 1 < (2 :: Bool);");
     assert!(
-        tight.contains("Bool") && tight.contains("Int"),
-        "expected the annotation mismatch, got: {tight}"
+        tight.contains("Bool") && (tight.contains("Num") || tight.contains("no instance")),
+        "the rejection must be the missing `Num Bool` instance, got: {tight}"
     );
 
     // The same split at the arithmetic level: `3 + 4 :: Int` annotates the sum
@@ -181,10 +186,15 @@ fn annotation_tighter_than_arithmetic() {
 fn mismatched_annotation_is_a_type_error() {
     // A `Double` literal cannot be annotated `Int`: the annotation pins the
     // inner type, so the two must unify.
+    // GHC 9.10.3: `No instance for 'Fractional Int' arising from the literal
+    // '1.5'` — the annotation fixes `a := Int` by UNIFICATION, and it is the
+    // INSTANCE search that fails. The old wording ("a mismatch between Int and
+    // Double") named the wrong stage; the three-stage split fixed it.
     let mismatched = compile_err("main = 1.5 :: Int;");
     assert!(
-        mismatched.contains("Int") && mismatched.contains("Double"),
-        "expected a type mismatch between Int and Double, got: {mismatched}"
+        mismatched.contains("Int")
+            && (mismatched.contains("Fractional") || mismatched.contains("no instance")),
+        "the rejection must be the missing `Fractional Int` instance, got: {mismatched}"
     );
     // …and the same literal without the annotation compiles, so the error is
     // the annotation's doing and not the literal's.

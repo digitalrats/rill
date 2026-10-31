@@ -1176,6 +1176,7 @@ fn ks(kernel: KernelId) -> &'static str {
         KernelId::Abs => "Abs",
         KernelId::Signum => "Signum",
         KernelId::FromInteger => "FromInteger",
+        KernelId::FromRational => "FromRational",
         KernelId::Recip => "Recip",
     }
 }
@@ -1377,7 +1378,7 @@ fn the_table_does_not_change_what_a_program_computes() {
             "(1.0 + 2.0) * 3.0 - 4.0 / 2.0",
             Value::Double(7.0),
         ),
-        ("Int math", "", "1 + 2 * 3", Value::Int(7)),
+        ("Int math", "", "1 + 2 * 3", Value::Integer(7.into())),
         (
             "comparison",
             "",

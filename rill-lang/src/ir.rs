@@ -10,6 +10,7 @@
 
 use crate::builtin::BuiltinKind;
 use num_bigint::BigInt;
+use num_rational::BigRational;
 
 /// A register index into the per-sample scratch file.
 pub type Reg = usize;
@@ -283,25 +284,28 @@ pub enum CmpOp {
     Ge,
 }
 
-/// The numeric TRACK a [`ValueInstr::ValueFromInteger`] builds its result on.
+/// The numeric TRACK a [`ValueInstr::ValueFromInteger`] /
+/// [`ValueInstr::ValueFromRational`] conversion builds its result on.
 ///
 /// `fromInteger`'s instance decides the type, and an unbound `dst` register
 /// cannot, so the target travels with the instruction.
 ///
-/// **There is deliberately no `Int` variant.** `Int` is the one type whose
-/// conversion from `Integer` is a TRUNCATION, and Haskell 2010's truncation
-/// lives in exactly one place: `literal_to_i64` (design §2.5: "Two places doing
-/// the same conversion would be the dual representation §0 forbids"). Lowering
-/// therefore never asks this kernel for an `Int`: the argument of
-/// `fromInteger :: Int -> a` applied at `Int` is already an `Int`, so the
-/// instruction is just a copy (`ValueCopy`) and no conversion happens at all.
+/// **`Int` IS a variant**, and it exists precisely because Haskell 2010's
+/// `fromInteger :: Integer -> Int` is a TRUNCATION: `123456789012345678901234567890
+/// :: Int` must keep GHC's low-64-bit answer, which is only reachable by
+/// converting the literal's EXACT `Integer` payload at the instance. That makes
+/// [`literal_to_i64`](crate::lower::literal_to_i64) the ONE truncation boundary
+/// and this instruction its single execution site, instead of the old
+/// per-position guess that truncated before it knew the target.
 ///
-/// **There is no `Ratio` variant either**, for the same "one representation"
-/// reason: `Ratio`'s `fromInteger` is a SOURCE equation
-/// (`fromInteger n = Ratio { num: n, den: 1 }`), so a `Ratio` target is built
-/// from ordinary record construction, never from this instruction.
+/// **There is no `Ratio` variant**, for the "one representation" reason:
+/// `Ratio`'s `fromInteger` is a SOURCE equation (`fromInteger n = Ratio { num:
+/// n, den: 1 }`), so a `Ratio` target is built from ordinary record
+/// construction, never from this instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueTyTag {
+    /// `Int`: the Haskell 2010 `fromInteger` truncation to 64 bits.
+    Int,
     /// `Integer`: arbitrary precision, exact — never through `f64`.
     Integer,
     /// `Double`: correctly rounded (`Int as f64`, or the correctly rounded
@@ -450,12 +454,23 @@ pub enum ValueInstr {
         /// The value. Boxed: an `Integer` payload is wider than a register.
         value: Box<BigInt>,
     },
-    /// Create a Double value.
+    /// Create a `Double` value.
     ValueConstDouble {
         /// Destination value register.
         dst: usize,
         /// The value.
         value: f64,
+    },
+    /// Create an exact `Rational` value — the payload Haskell 2010 §6.4.1's
+    /// fractional literal denotes (Task 6 keeps it exact from the source
+    /// digits, never via `f64`). `fromRational` converts it at the instance.
+    ///
+    /// Boxed: a `BigRational` payload is wider than a register.
+    ValueConstRational {
+        /// Destination value register.
+        dst: usize,
+        /// The value.
+        value: Box<BigRational>,
     },
     /// Element-wise arithmetic on two value channels: reads the numeric
     /// payloads of the value registers `a` and `b` and allocates the result into
@@ -588,6 +603,23 @@ pub enum ValueInstr {
         /// Destination value register.
         dst: usize,
         /// The source value register (an `Int` or an `Integer`).
+        src: usize,
+        /// The numeric track to build.
+        target: ValueTyTag,
+    },
+    /// `fromRational r`: convert an exact `Rational` to the instance's type —
+    /// Haskell 2010 §6.4.1's `fromRational :: Rational -> a`, the companion of
+    /// [`ValueInstr::ValueFromInteger`] and the operator every FRACTIONAL
+    /// literal denotes.
+    ///
+    /// `target` is required for the same reason: the instance decides the type
+    /// and an unbound `dst` register cannot (see [`ValueTyTag`]). The source is
+    /// an exact [`BigRational`] leaf, so a `Double` target performs the ONE
+    /// correctly-rounded conversion the lexer's exact payload deserves.
+    ValueFromRational {
+        /// Destination value register.
+        dst: usize,
+        /// The source value register (an exact `Rational`).
         src: usize,
         /// The numeric track to build.
         target: ValueTyTag,
@@ -1166,6 +1198,10 @@ pub struct Ir {
     /// This static flag resolves the ambiguity — the erased unit encoding is
     /// accepted only when `main` is typed `IO ()`.
     pub main_io_unit: bool,
+    /// Whether the entry is an `IO t` action, for ANY `t` (Haskell 2010 §5.1:
+    /// `main :: IO t`). The payload is DISCARDED at run time, so `t` is free.
+    /// A source whose entry is not an `IO` action at all is still rejected.
+    pub main_is_io: bool,
     /// Number of program inputs. At most one: architecturally there are no
     /// signal programs (no input channels) and lambdas take 0 or 1 arguments,
     /// so this is `0` or `1`.

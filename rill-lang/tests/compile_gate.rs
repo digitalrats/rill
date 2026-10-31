@@ -15,7 +15,10 @@ use rill_lang::CompileError;
 
 /// The compile-gate message, verbatim from the source (`lib.rs`, the
 /// `ir.main_io_unit` check).
-const IO_UNIT_GATE: &str = "`main` must have type `IO ()`";
+/// The compile-gate message: the entry must be an `IO t` ACTION (Haskell 2010
+/// §5.1 declares `main :: IO t`, with the payload DISCARDED at run time — so
+/// `IO ()` is the common case, not a requirement).
+const IO_UNIT_GATE: &str = "`main` must have type `IO t`";
 
 /// A foreign registry carrying the DSP generators (`sine`, `square`, …).
 fn ffi_with_generators() -> ForeignRegistry<f32> {
@@ -99,16 +102,28 @@ fn an_effect_final_main_runs_and_a_non_unit_result_is_rejected() {
         .expect("an effect-final program must run to completion");
     assert_eq!(runner.stdout(), ["ok"]);
 
-    // (b) `do { …; return 1.0 }` types as `IO Double`, so the gate rejects it at
-    // COMPILE time — the world is never built and the program never runs. The
-    // runtime latch in `run_main_io` (`the final action's result is not ()`) is
-    // belt-and-braces for a payload the static type cannot classify; through
-    // the public `compile` surface this source cannot reach it.
-    let err = rejected(
+    // (b) `do { …; return 1.0 }` types as `IO Double`. Haskell 2010 §5.1 gives
+    // the entry `IO t` with `t` FREE and DISCARDS the payload, and GHC 9.10.3
+    // measures this: `main = do { print 1; return 42 }` is `IO Integer`, prints
+    // `1`, and exits 0. So this is NOT a gate failure — it compiles and runs,
+    // and the payload is dropped.
+    let mut runner = compile::<f32, 256>(
         r#"main = do { write (Just "a") stdout; return 1.0 };"#,
         ForeignRegistry::new(),
-    );
+    )
+    .expect("an `IO t` main with a non-unit payload is a legal program");
+    runner
+        .run()
+        .expect("the action runs; its result is discarded");
+    assert_eq!(runner.stdout(), ["a"]);
+}
 
+#[test]
+fn a_non_io_main_is_rejected_at_compile() {
+    // The gate that REMAINS: the entry must be an `IO t` ACTION. A bare scalar
+    // has no action to run — GHC agrees (`main = 1.0` is `No instance for
+    // 'Fractional (IO t0)'`).
+    let err = rejected("main = 1.0;", ForeignRegistry::new());
     let message = err.to_string();
     assert!(
         matches!(err, CompileError::Unsupported(_)),
@@ -116,7 +131,7 @@ fn an_effect_final_main_runs_and_a_non_unit_result_is_rejected() {
     );
     assert!(
         message.contains(IO_UNIT_GATE),
-        "expected the `IO ()` gate message, got: {message}"
+        "expected the `IO t` gate message, got: {message}"
     );
 }
 

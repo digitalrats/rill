@@ -18,6 +18,12 @@ fn run_float(src: &str) -> f64 {
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Double(f) => *f,
         rill_lang::arena::Value::Int(i) => *i as f64,
+        // An unconstrained numeric literal defaults along
+        // `default (Integer, Double)`, so `7` is `Integer` — GHC measures the
+        // same type for it. The scalar view is the same number.
+        rill_lang::arena::Value::Integer(i) => {
+            f64::from(i.to_string().parse::<f64>().unwrap_or(0.0))
+        }
         other => panic!("unexpected output {other:?}"),
     }
 }

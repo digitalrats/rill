@@ -10,6 +10,7 @@
 pub use rill_core::memory::{Arena, ArenaError, ArenaRef, ArenaValue, BufferPool};
 
 use num_bigint::BigInt;
+use num_rational::BigRational;
 
 /// Call-by-need state of a thunk cell.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -44,6 +45,9 @@ pub enum ValueKind {
     Double,
     /// Arbitrary-precision integer value (`Integer`).
     Integer,
+    /// Arbitrary-precision rational value (`Rational`): an exact fractional
+    /// literal's payload.
+    Rational,
     /// String value.
     String,
     /// Record with named fields stored as arena refs.
@@ -161,6 +165,9 @@ pub enum KernelId {
     /// `fromInteger`: widen an `Int`/`Integer` operand to the instance's type
     /// (`ValueFromInteger`). Literal elaboration needs it.
     FromInteger,
+    /// `fromRational`: convert an exact `Rational` operand to the instance's
+    /// type. Fractional literal elaboration needs it.
+    FromRational,
     /// `recip`: `1 / x` (`ValueRecip`).
     Recip,
 }
@@ -178,6 +185,18 @@ pub enum Value {
     /// arena children, exactly like [`Value::Int`]. `Int` and `Integer` are
     /// DISTINCT types; nothing widens one into the other implicitly.
     Integer(BigInt),
+    /// Arbitrary-precision RATIONAL payload — Haskell 2010 `Rational`, the
+    /// exact value a fractional literal denotes.
+    ///
+    /// A leaf like [`Value::Integer`]: no arena children. It exists because
+    /// `fromRational :: Rational -> a` (Report §6.4.1) takes an EXACT rational,
+    /// so the literal's payload must not be rounded to `f64` before the
+    /// instance converts it.
+    ///
+    /// BOXED: a `BigRational` is two `BigInt`s (64 bytes), which would grow the
+    /// `Value` enum past its 48-byte ceiling — the same reason the AST boxes
+    /// `Expr::FractionalLit`'s payload.
+    Rational(Box<BigRational>),
     /// String payload.
     String(String),
     /// Record fields, one arena ref per field.
@@ -291,6 +310,7 @@ impl Value {
             Value::Int(_) => ValueKind::Int,
             Value::Double(_) => ValueKind::Double,
             Value::Integer(_) => ValueKind::Integer,
+            Value::Rational(_) => ValueKind::Rational,
             Value::String(_) => ValueKind::String,
             Value::Record(_) => ValueKind::Record,
             Value::Sum(_, _) => ValueKind::Sum,

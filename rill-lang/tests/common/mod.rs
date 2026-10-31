@@ -102,3 +102,19 @@ pub fn buffers(world: &WorldState<f32, 256>, dst: &mut [f32]) -> bool {
         None => false,
     }
 }
+
+/// An integral value as `i64`, whichever numeric track the compiler chose.
+///
+/// An unconstrained bounds literal defaults by `default (Integer, Double)`,
+/// whose FIRST entry is `Integer` — so `listArray (Pair 0 2) xs` stores
+/// `Integer` bounds, exactly as GHC 9.10.3 types
+/// `listArray (0,2) [...]` as `Array Integer e` (measured). `Int` and
+/// `Integer` are the SAME number on every bounds either can express, so a test
+/// reading a bound must accept both tracks instead of pinning one.
+pub fn integral(v: &Value) -> i64 {
+    match v {
+        Value::Int(i) => *i,
+        Value::Integer(i) => i64::try_from(i).expect("a bound must fit an i64"),
+        other => panic!("expected an integral bound, got {other:?}"),
+    }
+}

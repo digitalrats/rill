@@ -77,30 +77,20 @@ main = do { xs <- fromList (from 0.0); return () };
 }
 
 #[test]
-fn non_void_main_result_is_a_compile_error() {
-    // `main : IO ()` constrains the ACTION's result, not just the action: an
-    // `IO Double` main is malformed and is rejected by the compile-time gate on
-    // the compile entry (`ir.main_io_unit`), before any world exists — not
-    // latched at run time. (`main = return 1.0` on its own does not compile —
-    // the monad is unconstrained — so the result type is fixed by an effect in
-    // the block.)
-    for src in [
-        r#"main = do { write (Just "a") stdout; return 1.0 };"#,
-        // The value track erases `()` to `Double(0.0)` inside a closure cell,
-        // so this case pins the static-type distinction: the block is typed
-        // `IO Double`, hence a 0.0 payload is NOT accepted as unit.
-        r#"main = do { write (Just "a") stdout; return 0.0 };"#,
-        r#"main = do { write (Just "a") stdout; return "s" };"#,
+fn non_void_main_result_runs_and_discards_the_payload() {
+    // Haskell 2010 §5.1 gives the entry `IO t` with `t` FREE, and the payload is
+    // DISCARDED. GHC 9.10.3 measures it: `main = do { print 1; return 42 }` is
+    // typed `IO Integer`, prints `1`, and exits 0. So a non-`()` result is a
+    // legal program, not a gate failure — this test used to pin the opposite.
+    for (src, want) in [
+        (r#"main = do { write (Just "a") stdout; return 1.0 };"#, "a"),
+        (r#"main = do { write (Just "a") stdout; return 0.0 };"#, "a"),
+        (r#"main = do { write (Just "a") stdout; return "s" };"#, "a"),
     ] {
-        let err = match compile::<f32, 256>(src, ForeignRegistry::new()) {
-            Ok(_) => panic!("a non-`()` main result must be rejected"),
-            Err(e) => e,
-        };
-        let message = err.to_string();
-        assert!(
-            message.contains("IO ()"),
-            "expected the `IO ()` contract error, got: {message}\nsource:\n{src}"
-        );
+        let mut r = runner(src);
+        r.run()
+            .unwrap_or_else(|e| panic!("an `IO t` main must run: {e}\nsource:\n{src}"));
+        assert_eq!(r.stdout(), [want]);
     }
 }
 

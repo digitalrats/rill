@@ -137,8 +137,8 @@ fn starray_bounds_and_elems_read_the_whole_cell() {
     let (prog, v) = run(&src);
     let (bounds, elems) = pair_values(&prog, &v);
     let (lo, hi) = pair_values(&prog, &bounds);
-    assert_eq!(lo, Value::Int(0), "the lower bound reads back");
-    assert_eq!(hi, Value::Int(2), "the upper bound reads back");
+    assert_eq!(integral(&lo), 0, "the lower bound reads back");
+    assert_eq!(integral(&hi), 2, "the upper bound reads back");
     let (count, overwritten) = pair_values(&prog, &elems);
     assert_eq!(count, Value::Int(3), "getElems returns every element");
     assert_eq!(
@@ -179,8 +179,8 @@ fn runst_array_freezes_to_an_immutable_array() {
 
     let bounds = prog.arena().get(bounds).expect("bounds resolve").clone();
     let (lo, hi) = pair_values(&prog, &bounds);
-    assert_eq!(lo, Value::Int(0), "the frozen array keeps its bounds");
-    assert_eq!(hi, Value::Int(2), "the frozen array keeps its bounds");
+    assert_eq!(integral(&lo), 0, "the frozen array keeps its bounds");
+    assert_eq!(integral(&hi), 2, "the frozen array keeps its bounds");
 }
 
 #[test]

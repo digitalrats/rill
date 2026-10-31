@@ -1,6 +1,8 @@
 //! IR evaluator: the block-only executor.
 
 use num_bigint::{BigInt, BigUint};
+use num_rational::BigRational;
+use num_traits::ToPrimitive;
 use rill_core::buffer::FixedBuffer;
 use rill_core::math::vector::ScalarVector4;
 use rill_core::math::Transcendental;
@@ -298,30 +300,15 @@ pub(crate) fn run_main_io<T: Transcendental, const BUF: usize>(
                     };
                     applied = payload.is_some();
                     if let Some(payload) = payload {
-                        let payload = force(ir, world, payload, &mut drops);
-                        // `main : IO ()`: the contract is on the action's
-                        // RESULT, not merely on it being an action. A program
-                        // whose `main` yields a non-`()` value (e.g.
-                        // `main = return 1.0`) is malformed even though it is
-                        // an `IO` value, so report it cleanly instead of
-                        // silently discarding the payload.
-                        //
-                        // The value track's closure-cell encoding erases `()`
-                        // to `Double(0.0)` (a cell's un-set state is `Void`, so
-                        // a stored unit reads back as 0.0), so the erased form
-                        // is accepted ONLY when `main` is statically `IO ()`
-                        // (`ir.main_io_unit`): `main = do { …; return 0.0 }`
-                        // is typed `IO Double` and is still rejected.
-                        let payload_is_unit = match world.arena.get(payload) {
-                            Some(Value::Void) => true,
-                            Some(Value::Double(f)) => ir.main_io_unit && *f == 0.0,
-                            _ => false,
-                        };
-                        if !payload_is_unit {
-                            latch_fault(ir, world,
-                                "`main` must have type `IO ()`: the final action's result is not `()`",
-                            );
-                        }
+                        // The entry's RESULT is DISCARDED (Haskell 2010 §5.1:
+                        // `main :: IO t`). GHC 9.10.3 measures this: `main =
+                        // return 42` is `IO Integer` and runs, printing nothing;
+                        // `main = do { print 1; return 42 }` prints `1` and
+                        // runs. Forcing the payload keeps the run's strict
+                        // boundary (the final effect materializes before the
+                        // pair and its environment are released) without
+                        // imposing a `()` requirement the Report does not.
+                        let _ = force(ir, world, payload, &mut drops);
                     }
                     world.arena.drop_ref(pair);
                 }
@@ -922,6 +909,8 @@ fn kind_rank(v: &Value) -> i8 {
         // `Integer` is a fresh variant; appended so every existing rank keeps
         // its cross-kind meaning.
         Integer(_) => 20,
+        // `Rational` likewise appends, so every rank above keeps its meaning.
+        Rational(_) => 21,
     }
 }
 
@@ -946,6 +935,9 @@ enum ValueArith {
 enum ArithmeticOperand {
     Int(i64),
     Integer(BigInt),
+    /// An exact `Rational`: the payload a fractional literal carries into
+    /// `fromRational` (Haskell 2010 §6.4.1).
+    Rational(BigRational),
     Double(f64),
     Bottom,
     /// The register held nothing, or held a non-numeric value. The caller
@@ -970,6 +962,7 @@ fn arithmetic_operand<T: Transcendental, const BUF: usize>(
         Some(Value::Bottom) => ArithmeticOperand::Bottom,
         Some(Value::Int(i)) => ArithmeticOperand::Int(*i),
         Some(Value::Integer(i)) => ArithmeticOperand::Integer(i.clone()),
+        Some(Value::Rational(r)) => ArithmeticOperand::Rational((**r).clone()),
         Some(Value::Double(f)) => ArithmeticOperand::Double(*f),
         _ => ArithmeticOperand::Absent,
     }
@@ -1083,10 +1076,10 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
     let av = match av {
         ArithmeticOperand::Int(i) => i as f64,
         ArithmeticOperand::Double(f) => f,
-        // An `Integer` never mixes with a floating operand: the type system
-        // keeps the two apart, so reaching here is a lowering bug. Latch a
-        // fault rather than rounding a bignum into an f64.
-        ArithmeticOperand::Integer(_) => {
+        // An `Integer`/`Rational` never mixes with a floating operand: the type
+        // system keeps the tracks apart, so reaching here is a lowering bug.
+        // Latch a fault rather than silently rounding an exact value into f64.
+        ArithmeticOperand::Integer(_) | ArithmeticOperand::Rational(_) => {
             latch_fault(
                 ir,
                 world,
@@ -1104,7 +1097,7 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
         ArithmeticOperand::Double(f) => f,
         // See the `av` arm above: mixed-kind arithmetic is a fault, not a
         // rounding.
-        ArithmeticOperand::Integer(_) => {
+        ArithmeticOperand::Integer(_) | ArithmeticOperand::Rational(_) => {
             latch_fault(
                 ir,
                 world,
@@ -1246,6 +1239,32 @@ fn exec_value_unary<T: Transcendental, const BUF: usize>(
             ValueUnOp::Signum => signum_f64(f),
             ValueUnOp::Recip => 1.0 / f,
         }),
+        // An exact `Rational` operand: `recip` is exact (`1 / (n/d) = d/n`),
+        // the other three keep the payload exact. The numeric kernels never
+        // reach a `Ratio` in a well-typed program (its methods are SOURCE
+        // equations), so this arm exists to keep the match exhaustive over the
+        // operand kind rather than to serve a `Ratio` instance.
+        ArithmeticOperand::Rational(r) => Value::Rational(Box::new(match op {
+            ValueUnOp::Negate => -r,
+            ValueUnOp::Abs => {
+                if r < num_rational::BigRational::from_integer(BigInt::from(0)) {
+                    -r
+                } else {
+                    r
+                }
+            }
+            ValueUnOp::Signum => {
+                let zero = num_rational::BigRational::from_integer(BigInt::from(0));
+                if r < zero {
+                    num_rational::BigRational::from_integer(BigInt::from(-1))
+                } else if r > zero {
+                    num_rational::BigRational::from_integer(BigInt::from(1))
+                } else {
+                    zero
+                }
+            }
+            ValueUnOp::Recip => r.recip(),
+        })),
     };
     world.value_regs[dst] = alloc_owned(ir, world, result);
 }
@@ -1413,6 +1432,26 @@ fn exec_value_from_integer<T: Transcendental, const BUF: usize>(
     // The exact `BigInt`/`i64` the target needs, computed WITHOUT an `f64`
     // round-trip on the `Integer`/`Buffer` tracks.
     match target {
+        // `fromInteger :: Integer -> Int`: the ONE truncation boundary
+        // (`literal_to_i64`'s arithmetic) applied to the literal's EXACT
+        // payload, so `123456789012345678901234567890 :: Int` keeps GHC's low-
+        // 64-bit answer.
+        crate::ir::ValueTyTag::Int => {
+            let out = match v {
+                ArithmeticOperand::Int(i) => i,
+                ArithmeticOperand::Integer(ref i) => crate::lower::literal_to_i64(i),
+                _ => {
+                    latch_fault(
+                        ir,
+                        world,
+                        "`fromInteger` needs an integer operand (an Int or an Integer)",
+                    );
+                    world.value_regs[dst + base] = None;
+                    return;
+                }
+            };
+            world.value_regs[dst + base] = alloc_owned(ir, world, Value::Int(out));
+        }
         crate::ir::ValueTyTag::Integer => {
             let out = match v {
                 ArithmeticOperand::Int(i) => BigInt::from(i),
@@ -1474,6 +1513,60 @@ fn exec_value_from_integer<T: Transcendental, const BUF: usize>(
             let di = buffer_index(ir, world, dst, base);
             world.buffers[di].with_data_mut(|b| b[..n].fill(out));
             world.value_regs[dst + base] = alloc_owned(ir, world, Value::Buffer(di));
+        }
+    }
+}
+
+/// Execute a [`ValueInstr::ValueFromRational`] conversion and store the result
+/// in `dst`.
+///
+/// The source is an exact [`Value::Rational`] and `target` names the numeric
+/// track to build. `Double` is the one scalar target — the only `Fractional`
+/// instance without a source body — and it performs the SAME correctly-rounded
+/// conversion `literal_to_f64`/`rational_to_f64` performs, so a literal and a
+/// computed rational agree. The `Buffer` target fills the whole block, the
+/// numeric-constant behaviour a buffer's `Num`/`Fractional` instance has.
+fn exec_value_from_rational<T: Transcendental, const BUF: usize>(
+    ir: &Ir,
+    world: &mut WorldState<T, BUF>,
+    dst: usize,
+    src: usize,
+    target: crate::ir::ValueTyTag,
+    base: usize,
+    drops: &mut Vec<ArenaRef>,
+) {
+    let v = arithmetic_operand(ir, world, src + base, drops);
+    // Release the previous `dst` occupant AFTER the operand is read.
+    if let Some(r) = world.value_regs.get_mut(dst + base).and_then(|r| r.take()) {
+        drops.push(r);
+    }
+    match v {
+        ArithmeticOperand::Bottom => {
+            world.value_regs[dst + base] = alloc_owned(ir, world, Value::Bottom);
+        }
+        ArithmeticOperand::Rational(ref r) => {
+            let exact = r.to_f64().unwrap_or(f64::NAN);
+            match target {
+                crate::ir::ValueTyTag::Buffer => {
+                    let out = T::from_f64(exact);
+                    let n = world.block_len;
+                    let di = buffer_index(ir, world, dst, base);
+                    world.buffers[di].with_data_mut(|b| b[..n].fill(out));
+                    world.value_regs[dst + base] = alloc_owned(ir, world, Value::Buffer(di));
+                }
+                // `Integer` has no `Fractional` instance (Haskell 2010 §6.4.4),
+                // so a `Rational` reaching it is a typing bug: keep the only
+                // honest answer rather than silently truncating.
+                _ => {
+                    world.value_regs[dst + base] = alloc_owned(ir, world, Value::Double(exact));
+                }
+            }
+        }
+        // An `Int`/`Integer`/`Double` operand is a lowering bug — a
+        // `fromRational` whose argument was not the literal payload.
+        _ => {
+            latch_fault(ir, world, "`fromRational` needs a Rational operand");
+            world.value_regs[dst + base] = None;
         }
     }
 }
@@ -1631,6 +1724,15 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         ValueInstr::ValueConstDouble { dst, value } => {
             world.value_regs[*dst + base] = alloc_owned(ir, world, Value::Double(*value));
         }
+        ValueInstr::ValueConstRational { dst, value } => {
+            // Release the previous occupant first: the payload is a heap
+            // `BigRational`, exactly like `ValueConstInteger`'s `BigInt`.
+            if let Some(old) = world.value_regs[*dst + base].take() {
+                drops.push(old);
+            }
+            world.value_regs[*dst + base] =
+                alloc_owned(ir, world, Value::Rational(Box::new((**value).clone())));
+        }
         ValueInstr::ValueAdd { dst, a, b } => exec_value_arith(
             ir,
             world,
@@ -1695,6 +1797,9 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         }
         ValueInstr::ValueFromInteger { dst, src, target } => {
             exec_value_from_integer(ir, world, *dst, *src, *target, base, drops)
+        }
+        ValueInstr::ValueFromRational { dst, src, target } => {
+            exec_value_from_rational(ir, world, *dst, *src, *target, base, drops)
         }
         ValueInstr::ValueConstructRecord { dst, fields } => {
             world.value_regs[*dst + base] =
@@ -2788,10 +2893,18 @@ fn array_shape<T: Transcendental, const BUF: usize>(
     };
     let f0 = force(ir, world, b0, drops);
     let f1 = force(ir, world, b1, drops);
-    // Dim1: both sides are plain `Int`s. Dim2: both sides are 2-field records
-    // of `Int`s (nested order: `lo = (lo1, lo2)`, `hi = (hi1, hi2)`).
+    // Dim1: both sides are integral SCALARS. Dim2: both sides are 2-field
+    // records of integral scalars (nested order: `lo = (lo1, lo2)`,
+    // `hi = (hi1, hi2)`).
+    //
+    // "Integral" covers `Int` AND `Integer`: `default (Integer, Double)` types an
+    // unconstrained bounds literal `Integer` (Haskell 2010 §4.3.4, and exactly
+    // what GHC 9.10.3 answers), so the standard `Ix Integer` /
+    // `Ix (Pair Integer Integer)` instances reach here. Both tracks denote the
+    // same number for any bounds an arena can hold.
+    let integral = |v: &Value| matches!(v, Value::Int(_) | Value::Integer(_));
     match (world.arena.get(f0), world.arena.get(f1)) {
-        (Some(Value::Int(_)), Some(Value::Int(_))) => {
+        (Some(a), Some(b)) if integral(a) && integral(b) => {
             let (Some(lo), Some(hi)) = (
                 forced_i64(ir, world, f0, drops),
                 forced_i64(ir, world, f1, drops),
@@ -2963,6 +3076,26 @@ fn alloc_int_bounds<T: Transcendental, const BUF: usize>(
     }
 }
 
+/// Force a value register and read an `Integer` operand, boxing an `Int` into
+/// one. `None` for any other value.
+///
+/// This is the `Integer`-accepting sibling of [`forced_i64`], used where the
+/// standard `Ix Integer` instance (and `default (Integer, Double)`) makes an
+/// integral pair arrive on the `Integer` track.
+fn forced_bigint<T: Transcendental, const BUF: usize>(
+    ir: &Ir,
+    world: &mut WorldState<T, BUF>,
+    r: ArenaRef,
+    drops: &mut Vec<ArenaRef>,
+) -> Option<BigInt> {
+    let r = force(ir, world, r, drops);
+    match world.arena.get(r) {
+        Some(Value::Int(i)) => Some(BigInt::from(*i)),
+        Some(Value::Integer(i)) => Some(i.clone()),
+        _ => None,
+    }
+}
+
 /// Read a value register as an `Integer` operand for a pure `Integer` kernel
 /// (`gcd`, `%`). The declared signatures are `Integer -> Integer -> …`, so a
 /// non-`Integer` operand is a lowering bug or a rejected mixed-track call —
@@ -2978,7 +3111,9 @@ fn integer_operand<T: Transcendental, const BUF: usize>(
         ArithmeticOperand::Integer(v) => Ok(v),
         ArithmeticOperand::Bottom => Err(what),
         ArithmeticOperand::Absent => Err(what),
-        ArithmeticOperand::Int(_) | ArithmeticOperand::Double(_) => Err(what),
+        ArithmeticOperand::Int(_)
+        | ArithmeticOperand::Double(_)
+        | ArithmeticOperand::Rational(_) => Err(what),
     }
 }
 
@@ -4178,12 +4313,80 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 world.value_regs[dst] = None;
                 return;
             }
-            let lo = forced_i64(ir, world, fields[0], drops);
-            let hi = forced_i64(ir, world, fields[1], drops);
-            let (Some(lo), Some(hi)) = (lo, hi) else {
+            // An `Int` bounds pair is the ordinary case; an `Integer` pair is
+            // what `Ix Integer` (the standard instance, and where defaulting
+            // lands an unconstrained bounds literal) hands over. Both are read
+            // here because they are the same concept — an integral bounds pair
+            // — and the enumerated list's ELEMENT type follows the operand.
+            //
+            // The element kind must be read off the operand BEFORE any
+            // narrowing: `forced_i64` answers for an `Integer` slot too (it
+            // narrows through `i64::try_from`), so asking it first classified a
+            // pair of `Integer`s as an `Int` pair and enumerated `Int` elements
+            // for an `Integer` index type. The list then disagreed with its own
+            // declared element type, and `indices a` on an `Array Integer e`
+            // handed out `Int`s that no `Ix Integer` method accepts — reading
+            // `a ! ix` over `indices a` faulted out of range because the offset
+            // came from the `Ix Integer` instance while the stored flat layout
+            // was addressed with the narrowed value. Classifying by the
+            // OPERAND's own kind keeps the two in step.
+            let integral_kind = |v: &Value| match v {
+                Value::Integer(_) => Some(true),
+                Value::Int(_) => Some(false),
+                _ => None,
+            };
+            let (k0, k1) = match (
+                world
+                    .arena
+                    .get(fields[0])
+                    .map(|v| integral_kind(v).is_some()),
+                world
+                    .arena
+                    .get(fields[1])
+                    .map(|v| integral_kind(v).is_some()),
+            ) {
+                (Some(true), Some(true)) => (true, true),
+                _ => (false, false),
+            };
+            if !(k0 && k1) {
                 latch_fault(ir, world, "listRange: bounds are not integral numbers");
                 world.value_regs[dst] = None;
                 return;
+            }
+            // Any `Integer` operand makes the range an `Integer` range: the
+            // element type follows the WIDEST operand, and a pair is always
+            // homogeneous in a well-typed program.
+            let integer = world
+                .arena
+                .get(fields[0])
+                .map(|v| matches!(v, Value::Integer(_)))
+                .unwrap_or(false)
+                || world
+                    .arena
+                    .get(fields[1])
+                    .map(|v| matches!(v, Value::Integer(_)))
+                    .unwrap_or(false);
+            let (lo, hi) = match (
+                forced_bigint(ir, world, fields[0], drops),
+                forced_bigint(ir, world, fields[1], drops),
+            ) {
+                (Some(lo), Some(hi)) => match (i64::try_from(&lo), i64::try_from(&hi)) {
+                    (Ok(lo), Ok(hi)) => (lo, hi),
+                    _ => {
+                        latch_fault(
+                            ir,
+                            world,
+                            "listRange: bounds exceed the arena's element space",
+                        );
+                        world.value_regs[dst] = None;
+                        return;
+                    }
+                },
+                _ => {
+                    latch_fault(ir, world, "listRange: bounds are not integral numbers");
+                    world.value_regs[dst] = None;
+                    return;
+                }
             };
             let n = if hi < lo {
                 0usize
@@ -4215,7 +4418,12 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             };
             let mut ok = true;
             for k in 0..n {
-                match alloc_owned(ir, world, Value::Int(lo + k as i64)) {
+                let elem = if integer {
+                    Value::Integer(BigInt::from(lo + k as i64))
+                } else {
+                    Value::Int(lo + k as i64)
+                };
+                match alloc_owned(ir, world, elem) {
                     Some(r) => elems.push(r),
                     None => {
                         ok = false;
@@ -5072,6 +5280,10 @@ fn forced_i64<T: Transcendental, const BUF: usize>(
     let r = force(ir, world, r, drops);
     match world.arena.get(r) {
         Some(Value::Int(i)) => Some(*i),
+        // An `Integer` index is what `default (Integer, Double)` produces for an
+        // unconstrained bounds/index literal; an offset that fits an `i64` is the
+        // same offset on either integral track.
+        Some(Value::Integer(i)) => i64::try_from(i).ok(),
         Some(Value::Double(f)) if f.is_finite() && f.fract() == 0.0 => Some(*f as i64),
         _ => None,
     }
@@ -6859,6 +7071,7 @@ mod closure_dispatch_tests {
         // output register.
         let ir = Ir {
             main_io_unit: false,
+            main_is_io: true,
             num_inputs: 0,
             num_outputs: 0,
             state: Default::default(),
@@ -6930,6 +7143,7 @@ mod closure_dispatch_tests {
         // register 3 is that argument (9).
         let ir = Ir {
             main_io_unit: false,
+            main_is_io: true,
             num_inputs: 0,
             num_outputs: 0,
             state: Default::default(),
@@ -7035,6 +7249,7 @@ mod value_track_tests {
     ) -> (Ir, WorldState<f32, 256>) {
         let ir = Ir {
             main_io_unit: false,
+            main_is_io: true,
             num_inputs: 0,
             num_outputs: 0,
             state: StateLayout::default(),
@@ -7874,6 +8089,7 @@ mod lazy_track_tests {
     ) -> (Ir, WorldState<f32, 256>) {
         let ir = Ir {
             main_io_unit: false,
+            main_is_io: true,
             num_inputs: 0,
             num_outputs: 0,
             state: StateLayout::default(),
@@ -8284,6 +8500,7 @@ mod dictionary_walker_tests {
     fn world() -> (Ir, WorldState<f32, 256>) {
         let ir = Ir {
             main_io_unit: false,
+            main_is_io: true,
             num_inputs: 0,
             num_outputs: 0,
             state: StateLayout::default(),

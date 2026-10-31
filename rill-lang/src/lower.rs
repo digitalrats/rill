@@ -297,11 +297,24 @@ fn concrete_or_double(t: ValueTy) -> ValueTy {
 /// through a closure cell, so the static type recorded here is the only way
 /// the runner can accept the erased unit without also accepting an `IO Double`
 /// that returns `0.0`.
-fn main_result_is_io_unit(t: &ValueTy) -> bool {
+/// Whether the entry has the language's SHAPE for a program entry: an `IO t`
+/// action, for ANY `t`.
+///
+/// Haskell 2010 §5.1 declares `main :: IO t` — the payload is a VARIABLE, and
+/// GHC 9.10.3 measures it as usable for every `t`:
+///
+/// | program | GHC | runs |
+/// |---|---|---|
+/// | `main = return ()` | `IO ()` | yes |
+/// | `main = return 42` | `IO Integer` | yes (result discarded) |
+/// | `main = do { print 1; return 42 }` | `IO Integer` | yes, prints `1` |
+///
+/// So the entry's RESULT is discarded, not required to be `()`. Requiring
+/// `IO ()` rejects programs Haskell accepts; that was this crate's own
+/// restriction, not the Report's.
+fn main_is_io_action(t: &ValueTy) -> bool {
     match t {
-        ValueTy::Con(name, args) => {
-            name == "IO" && args.len() == 1 && matches!(args.first(), Some(ValueTy::Void))
-        }
+        ValueTy::Con(name, args) => name == "IO" && args.len() == 1,
         _ => false,
     }
 }
@@ -703,6 +716,17 @@ struct Lowerer<'a> {
     /// answer: a method call that finds one uses it instead of re-deriving the
     /// instance from the coarser type.
     dict_selections: HashMap<(Span, String), ValueTy>,
+    /// The value type inference gave each LITERAL, keyed by its source span —
+    /// stage 1 unified it, stage 2 discharged it, or stage 3 defaulted it.
+    ///
+    /// This is the literal's ANSWER, and reading it is what makes lowering free
+    /// of per-position heuristics: a literal's representation is decided once, by
+    /// inference, and never re-guessed from where it happens to sit.
+    literal_tys: HashMap<(usize, usize), ValueTy>,
+    /// The type each literal was DECIDED to have at its own span, from
+    /// inference's `record_literal_instance`. Takes precedence over `literal_tys`
+    /// because it is written at the moment unification settled the variable.
+    literal_instances: HashMap<(usize, usize), ValueTy>,
     /// Fresh-name counter for capture-avoiding method instantiation. Every
     /// instantiation renames the method's own parameters to `$`-prefixed names
     /// carrying this value, so two instantiations never share a binding name
@@ -907,23 +931,125 @@ impl<'a> Lowerer<'a> {
         r
     }
 
-    /// Lower one fractional literal to a `Double` constant.
+    /// Lower a numeric literal's exact payload and the conversion that makes it
+    /// the value it denotes: `fromInteger (n :: Integer)` for an integer literal
+    /// and `fromRational (r :: Rational)` for a fractional one (Haskell 2010
+    /// §6.4.1).
     ///
-    /// Kept out of line (`#[inline(never)]`): the arm sits in the deeply
-    /// recursive `lower_value_expected` dispatch, and the exact-ratio payload
-    /// made its inline frame large enough to overflow the stack on a nested
-    /// program (a 2-D `assocs`).
+    /// `expected` is the type INFERENCE decided for this literal — stage 1
+    /// unified it, stage 2 discharged it, or stage 3 defaulted it. Lowering
+    /// therefore converts to that type and guesses nothing: the per-position
+    /// heuristics this replaces (`Int` here, `Double` there, `Integer` under an
+    /// annotation) are gone.
+    ///
+    /// The payload is always the EXACT value from the source digits. An `Int`
+    /// target converts through `ValueFromInteger` too — that is where the ONE
+    /// truncation (`literal_to_i64`) lives, exactly as GHC's `fromInteger ::
+    /// Integer -> Int` truncates — so a literal past 2^63 keeps GHC's low-64-bit
+    /// answer while the `Integer`/`Double` tracks stay exact.
+    ///
+    /// Kept out of line: `lower_value`'s stack frame is at its ceiling (five
+    /// prior tasks needed the same treatment), and two literal arms inline would
+    /// push it over.
+    #[inline(never)]
+    fn lower_integer_literal(
+        &mut self,
+        v: &BigInt,
+        expected: Option<ValueTy>,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        // An exact `Integer` payload register: the literal's own value.
+        let exact = self.emitter_integer(v);
+        // `fromInteger`'s target is the literal's type. With no expectation at
+        // all — which only a bare, unconstrained literal reaches — the Haskell
+        // 2010 default for an ambiguous numeric variable applies, and stage 3
+        // has already made that decision; `Integer` is the list's first entry.
+        let target = expected.unwrap_or(ValueTy::Integer);
+        let dst = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueFromInteger {
+            dst,
+            src: exact,
+            target: self.conversion_tag(&target),
+        });
+        Ok((dst, target))
+    }
+
+    /// Emit the exact `Integer` register for a literal payload. A separate
+    /// helper so both literal kinds and the negated-constant path share one
+    /// emission site.
+    fn emitter_integer(&mut self, v: &BigInt) -> usize {
+        let dst = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueConstInteger {
+            dst,
+            value: Box::new(v.clone()),
+        });
+        dst
+    }
+
+    /// The instance inference gave a LITERAL at `span`, if it recorded one.
+    ///
+    /// A literal's type is decided ONCE, by the three inference stages
+    /// (`Num a`'s `fromInteger` / `Fractional a`'s `fromRational`), so lowering
+    /// asks for that answer instead of guessing from the position. A literal no
+    /// stage could decide (a polymorphic `Num a => a` position) has no entry:
+    /// lowering then keeps the position's own expected type, which IS the
+    /// caller's instantiation.
+    fn literal_instance(&self, span: Span) -> Option<ValueTy> {
+        self.literal_instances
+            .get(&(span.start, span.end))
+            .or_else(|| self.literal_tys.get(&(span.start, span.end)))
+            .cloned()
+    }
+
+    /// The `ValueTyTag` a `fromInteger`/`fromRational` conversion builds for the
+    /// target type the literal's inference settled on.
+    ///
+    /// `Int` is the truncation target (`fromInteger :: Integer -> Int` in
+    /// Haskell 2010 truncates), `Integer`/`Double` are exact, and a buffer
+    /// target fills the block. A target the conversion cannot serve (a `Ratio`,
+    /// whose `fromInteger` is a SOURCE equation) is reported rather than
+    /// guessed — lowering must never invent an instance.
+    fn conversion_tag(&self, target: &ValueTy) -> crate::ir::ValueTyTag {
+        match target {
+            ValueTy::Int => crate::ir::ValueTyTag::Int,
+            ValueTy::Integer => crate::ir::ValueTyTag::Integer,
+            ValueTy::Buffer(_) => crate::ir::ValueTyTag::Buffer,
+            ValueTy::Double => crate::ir::ValueTyTag::Double,
+            // An unresolved target is a position inference never pinned (a
+            // polymorphic signature-less definition's λ-parameter). Stage 3's
+            // `default (Integer, Double)` takes its FIRST entry that satisfies
+            // the literal's `Num` constraint — `Integer`.
+            _ => crate::ir::ValueTyTag::Integer,
+        }
+    }
+
+    /// Lower `fromRational (r :: Rational)`.
     #[inline(never)]
     fn lower_fractional_literal(
         &mut self,
         v: &BigRational,
+        expected: Option<ValueTy>,
     ) -> Result<(usize, ValueTy), CompileError> {
-        let dst = self.fresh_value_reg();
-        self.emit_value(ValueInstr::ValueConstDouble {
-            dst,
-            value: rational_to_f64(v),
+        // The exact payload the source digits denote (Task 6 keeps it exact).
+        let exact = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueConstRational {
+            dst: exact,
+            value: Box::new(v.clone()),
         });
-        Ok((dst, ValueTy::Double))
+        // `fromRational`'s target: `Fractional`'s only scalar instance is
+        // `Double`, plus the buffer constant. Stage 3 never lands a fractional
+        // literal on `Integer` (it has no `Fractional` instance), so `Double` is
+        // the fallback only when the position was not resolved to a buffer.
+        let target = match expected {
+            Some(t @ ValueTy::Buffer(_)) => t,
+            _ => ValueTy::Double,
+        };
+        let dst = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueFromRational {
+            dst,
+            src: exact,
+            target: self.conversion_tag(&target),
+        });
+        Ok((dst, target))
     }
 
     /// Emit a function application: eager `ValueCallFunc` in strict mode,
@@ -1125,7 +1251,24 @@ impl<'a> Lowerer<'a> {
             op: ValueEffectOp::RunSTArray,
             args: vec![body_reg],
         });
-        Ok((dst, concrete_or_double(payload)))
+        // The frozen `Array i e` is returned with its STRUCTURE intact.
+        // `concrete_or_double` collapsed the whole type to `Double` whenever a
+        // COMPONENT was still a variable, so an index the region never pinned
+        // (the common case: `newListArray (Pair 0 2) xs` leaves `i` free at the
+        // `runSTArray` site) made the result a bare `Double`. Indexing that with
+        // `!` then had no `Array i e` to read and reported "no instance of `Ix`
+        // for type `Pair`". The element half still needs the numeric fallback
+        // (a `Double` element is the value track's scalar), but the ARRAY — and
+        // so its index — must survive.
+        let frozen = match payload {
+            ValueTy::Con(name, args) if name == "Array" && args.len() == 2 => {
+                let index = args[0].clone();
+                let elem = concrete_or_double(args[1].clone());
+                ValueTy::Con("Array".into(), vec![index, elem])
+            }
+            other => concrete_or_double(other),
+        };
+        Ok((dst, frozen))
     }
 
     /// Lower one STArray primitive (`newArrayFlat` … `getElems`): the operand
@@ -1368,7 +1511,7 @@ impl<'a> Lowerer<'a> {
             }
             Expr::Lambda { .. }
             | Expr::FractionalLit(_, _, _)
-            | Expr::Int(_, _)
+            | Expr::IntegerLit(_, _)
             | Expr::Str(_, _) => {
                 let (r, _) = self.lower_value_expected(e, expected)?;
                 return Ok(r);
@@ -1381,7 +1524,7 @@ impl<'a> Lowerer<'a> {
                 Expr::Ref(..)
                 | Expr::Lambda { .. }
                 | Expr::FractionalLit(_, _, _)
-                | Expr::Int(_, _)
+                | Expr::IntegerLit(_, _)
                 | Expr::Str(_, _) => {
                     let (r, _) = self.lower_value_expected(e, expected)?;
                     return Ok(r);
@@ -1489,40 +1632,18 @@ impl<'a> Lowerer<'a> {
         expected: Option<&ValueTy>,
     ) -> Result<(usize, ValueTy), CompileError> {
         match e {
-            Expr::Int(v, _) => {
-                let dst = self.fresh_value_reg();
-                // An integer literal under an `:: Integer` annotation is an
-                // `Integer` constant (`(2 :: Integer)`). This narrow rule is
-                // stage 7a only: it disappears when stage 7b makes every
-                // integer literal a `fromInteger`-polymorphic value.
-                if matches!(expected, Some(ValueTy::Integer)) {
-                    self.emit_value(ValueInstr::ValueConstInteger {
-                        dst,
-                        value: Box::new(v.clone()),
-                    });
-                    return Ok((dst, ValueTy::Integer));
-                }
-                // An integer literal in a `Double` position is Haskell's
-                // `fromInteger` (Report §6.4.1), which `def_arg_widens_to`
-                // already accepts. The conversion must happen from the
-                // arbitrary-precision value, NOT from the truncated `i64`
-                // widening the `Int` track: `f 9223372036854775808` is
-                // `9.223372036854776e18`, not the negated double that the low
-                // 64 bits happen to spell.
-                if matches!(expected, Some(ValueTy::Double)) {
-                    self.emit_value(ValueInstr::ValueConstDouble {
-                        dst,
-                        value: literal_to_f64(v),
-                    });
-                    return Ok((dst, ValueTy::Double));
-                }
-                self.emit_value(ValueInstr::ValueConstInt {
-                    dst,
-                    value: literal_to_i64(v),
-                });
-                Ok((dst, ValueTy::Int))
-            }
-            Expr::FractionalLit(v, _, _) => self.lower_fractional_literal(v),
+            // `fromInteger (n :: Integer)` (Haskell 2010 §6.4.1). The literal's
+            // EXACT `Integer` payload is emitted first (never a truncated
+            // `i64`), then `ValueFromInteger` converts it to the instance's
+            // target. `expected` is the type inference gave the literal — the
+            // answer stages 1–3 settled — so no representation is guessed here.
+            Expr::IntegerLit(v, sp) => self
+                .lower_integer_literal(v, self.literal_instance(*sp).or_else(|| expected.cloned())),
+            // `fromRational (r :: Rational)`, the fractional companion.
+            Expr::FractionalLit(v, _, sp) => self.lower_fractional_literal(
+                v,
+                self.literal_instance(*sp).or_else(|| expected.cloned()),
+            ),
             Expr::Ref(name, span) => self.lower_value_ref_expected(name, *span, expected),
             // `e :: T` erases: lowering the inner expression with the same
             // expected type AND returning its own type means the annotation
@@ -2017,6 +2138,18 @@ impl<'a> Lowerer<'a> {
                     src: e_reg,
                 });
                 self.set_value_term(self.cur_value_block, ValueTerm::Fallthrough(join));
+                // A branch whose static type lowering never resolved is the
+                // RECURSIVE-call shape (`countdown n = … else countdown (n -
+                // 1.0)`): the placeholder scheme of a def being lowered carries
+                // a bare variable for its own result, so the recursive branch
+                // has no type of its own. Inference already unified the two
+                // branches, so the branch's type IS the other one's — take it
+                // rather than rejecting a program that type-checked.
+                let (t_ty, e_ty) = match (&t_ty, &e_ty) {
+                    (ValueTy::Var(_), other) => (other.clone(), other.clone()),
+                    (other, ValueTy::Var(_)) => (other.clone(), other.clone()),
+                    _ => (t_ty, e_ty),
+                };
                 if t_ty != e_ty {
                     return Err(CompileError::Type {
                         msg: "if branches must have the same type".into(),
@@ -2896,8 +3029,19 @@ impl<'a> Lowerer<'a> {
                         );
                         if result_directed {
                             // `pure x` / `return x`: the container comes from the
-                            // expected result type. No class-var-applied argument.
-                            let exp = match expected {
+                            // expected result type — or, when inference already
+                            // recorded the decision for this call, from THAT.
+                            // Re-asking for `expected` here made lowering repeat
+                            // a judgement inference had made (`f :: IO Int; f =
+                            // return 42` infers fine and was rejected with
+                            // "expected type unknown").
+                            let recorded =
+                                self.recorded_selection(*span, &class_name)
+                                    .map(|(key, subst)| match subst {
+                                        crate::types::infer::ClassVarSubst::Ty(t) => t,
+                                        _ => self.env.vty_of_name(&key).unwrap_or(ValueTy::Double),
+                                    });
+                            let exp = match expected.cloned().or(recorded) {
                                 Some(t) => t,
                                 None => {
                                     return Err(CompileError::Type {
@@ -2916,7 +3060,7 @@ impl<'a> Lowerer<'a> {
                                     &class_name,
                                     &class_var,
                                     sig,
-                                    exp,
+                                    &exp,
                                     cv_var,
                                     || {
                                         let v = self.next_tyvar;
@@ -2935,7 +3079,7 @@ impl<'a> Lowerer<'a> {
                             // Constraint instance: bind head args from the
                             // expected container's leading args and discharge
                             // the constraints before inlining the body.
-                            self.bind_head_args_and_discharge(&class_name, &ty_name, exp, *span)?;
+                            self.bind_head_args_and_discharge(&class_name, &ty_name, &exp, *span)?;
                             // A primitive (kernel-backed) instance has no
                             // source body: dispatch it to the arithmetic /
                             // comparison kernel for (class, type, method) pHere
@@ -2950,6 +3094,17 @@ impl<'a> Lowerer<'a> {
                                 // instead of an `Int`: without it the kernel
                                 // received `[Integer, Int]` for
                                 // `(2 :: Integer) == 2`.
+                                //
+                                // The caller's EXPECTATION is the other half of
+                                // the judgement (§6.4.1): `g 0 + 2.5` makes
+                                // `(+)`'s `a` `Double`, so the operand's own
+                                // `Num b` is `Double` too.
+                                let (ty_name, cv_subst) = self.instance_from_expectation(
+                                    &class_name,
+                                    expected,
+                                    ty_name.as_str(),
+                                    cv_subst,
+                                );
                                 let param_tys = crate::types::infer::signature_param_tys_conv(
                                     self.env,
                                     &class_var,
@@ -3041,7 +3196,7 @@ impl<'a> Lowerer<'a> {
                             }
                             self.value_locals.push(scope);
                             self.value_local_ctors.push(ctor_scope);
-                            let res = self.lower_value_expected(&body, Some(exp));
+                            let res = self.lower_value_expected(&body, Some(&exp));
                             self.value_locals.pop();
                             self.value_local_ctors.pop();
                             self.method_lifting.remove(&key);
@@ -3118,19 +3273,32 @@ impl<'a> Lowerer<'a> {
                             let dispatch = match dispatch {
                                 Some(d) => Some(d),
                                 None => {
-                                    // NUMERIC DEFAULTING, mirroring inference
-                                    // (Haskell 2010 §4.3.4): an operand whose
-                                    // static type lowering never resolved (`a`
-                                    // in `\a -> \b -> a + b` with no call site
-                                    // pinning it) is the defaulted `Double`.
-                                    let arg_dispatch_vty =
-                                        if matches!(class_name.as_str(), "Num" | "Fractional")
-                                            && matches!(arg_vty, ValueTy::Var(_))
-                                        {
-                                            ValueTy::Double
-                                        } else {
-                                            arg_vty.clone()
-                                        };
+                                    // STAGE 3's default, mirrored (Haskell 2010
+                                    // §4.3.4 + §4.5.5): an operand whose static
+                                    // type lowering never resolved is the first
+                                    // `default (Integer, Double)` candidate that
+                                    // has the instance — `Integer` before
+                                    // `Double`.
+                                    //
+                                    // Inference already decided this. Lowering
+                                    // only arrives here when it has no recorded
+                                    // selection (a position inference never
+                                    // reached, or a polymorphic scheme), and
+                                    // re-deriving the SAME first-satisfying
+                                    // candidate is what keeps the two passes
+                                    // agreeing. `Num`/`Fractional`/`Ord`/`Eq` are
+                                    // all standard classes, so all of them default
+                                    // (`\a -> \b -> a <= b` applied at two
+                                    // literals is GHC's `Ord Integer`).
+                                    let arg_dispatch_vty = if matches!(arg_vty, ValueTy::Var(_)) {
+                                        ["Integer", "Double"]
+                                            .into_iter()
+                                            .filter_map(|n| self.env.vty_of_name(n))
+                                            .find(|t| self.env.instance_exists(&class_name, t))
+                                            .unwrap_or(ValueTy::Double)
+                                    } else {
+                                        arg_vty.clone()
+                                    };
                                     let cv_var = self.next_tyvar;
                                     self.next_tyvar += 1;
                                     crate::types::infer::method_dispatch_key(
@@ -3163,6 +3331,12 @@ impl<'a> Lowerer<'a> {
                             // in an `Integer` position lowers as an `Integer`
                             // (see the result-directed path above).
                             if self.is_primitive_instance(&class_name, ty_name.as_str()) {
+                                let (ty_name, cv_subst) = self.instance_from_expectation(
+                                    &class_name,
+                                    expected,
+                                    ty_name.as_str(),
+                                    cv_subst,
+                                );
                                 let param_tys = crate::types::infer::signature_param_tys_conv(
                                     self.env,
                                     &class_var,
@@ -3903,7 +4077,7 @@ impl<'a> Lowerer<'a> {
                 // `zero - inner`.
                 //
                 // The result keeps the OPERAND's track: an integer literal
-                // negates to a `Value::Int` (an `Expr::Int` is Int-track
+                // negates to a `Value::Int` (an `Expr::IntegerLit` is Int-track
                 // unconditionally, so `-3` must be too) unless the expected
                 // type is `Integer`, in which case it folds to a
                 // `ValueConstInteger` — `-3 :: Integer` must be a typed-`Integer`
@@ -3914,31 +4088,33 @@ impl<'a> Lowerer<'a> {
                 // and an `Ix` offset computed from a negative lower bound then
                 // failed the interpreter's "index is not an Int" check.
                 if let Some(v) = const_bigint(inner) {
+                    // A negated literal is ONE literal (Haskell 2010 §3.8), so it
+                    // is the same `fromInteger` application its positive form is —
+                    // with the sign already applied to the EXACT payload. Negating
+                    // in arbitrary precision FIRST is what makes
+                    // `f (-9223372036854775809)` the negated double of the
+                    // literal's value rather than the negation of its low 64 bits.
+                    let target = expected
+                        .cloned()
+                        .or_else(|| self.literal_instance(inner.span()))
+                        .unwrap_or(ValueTy::Integer);
+                    let exact = self.emitter_integer(&-v);
                     let dst = self.fresh_value_reg();
-                    if matches!(expected, Some(ValueTy::Integer)) {
-                        self.emit_value(ValueInstr::ValueConstInteger {
-                            dst,
-                            value: Box::new(-v),
-                        });
-                        return Ok((dst, ValueTy::Integer));
-                    }
-                    // The `fromInteger` widening (see the `Expr::Int` arm):
-                    // negate in arbitrary precision FIRST, then convert, so
-                    // `f (-9223372036854775809)` is the negated double of the
-                    // literal's value rather than the negation of its low 64
-                    // bits.
-                    if matches!(expected, Some(ValueTy::Double)) {
-                        self.emit_value(ValueInstr::ValueConstDouble {
-                            dst,
-                            value: literal_to_f64(&-v),
-                        });
-                        return Ok((dst, ValueTy::Double));
-                    }
-                    self.emit_value(ValueInstr::ValueConstInt {
+                    self.emit_value(ValueInstr::ValueFromInteger {
                         dst,
-                        value: literal_to_i64(&-v),
+                        src: exact,
+                        target: self.conversion_tag(&target),
                     });
-                    return Ok((dst, ValueTy::Int));
+                    return Ok((dst, target));
+                }
+                // A negated FRACTIONAL literal is `fromRational` of the exact
+                // negated ratio, for exactly the same reason.
+                if let Expr::FractionalLit(r, _text, sp) = &**inner {
+                    let neg = std::ops::Neg::neg(&**r);
+                    return self.lower_fractional_literal(
+                        &neg,
+                        expected.cloned().or_else(|| self.literal_instance(*sp)),
+                    );
                 }
                 match const_f64(inner) {
                     Some(v) => {
@@ -4624,8 +4800,20 @@ impl<'a> Lowerer<'a> {
                 vec![ValueTy::Int, ValueTy::Double],
             )),
             "bufferFromArray" => Ok(self.env.buffer_vty()),
-            // `listRange (l, u)`: the inclusive Int range as a flat list.
-            "listRange" => Ok(ValueTy::Con("List".into(), vec![ValueTy::Int])),
+            // `listRange (l, u)`: the inclusive range as a flat list, whose
+            // ELEMENT type is the bounds pair's own index type. It is not always
+            // `Int`: `Ix Integer`'s `range` is `listRange b` over an `Integer`
+            // pair, and `default (Integer, Double)` is what makes an
+            // unconstrained bounds literal arrive there. Hardcoding `Int` here
+            // made the lowered type disagree with inference (which instantiates
+            // the signature per call) and with the interpreter (which builds the
+            // elements on the operand's own track), so a constrained definition
+            // whose body is `range (arrayBounds a)` was rejected against its own
+            // signature.
+            "listRange" => Ok(ValueTy::Con(
+                "List".into(),
+                vec![pair_index_ty(args.first())],
+            )),
             // `arrayFromListChecked bounds rangeSize elems`: the element list is
             // the THIRD operand (the size sits between bounds and elements), so
             // the assembled type reads the index off the bounds and the element
@@ -5117,6 +5305,45 @@ impl<'a> Lowerer<'a> {
         // expectation is concrete. Scalar/record parameters keep the
         // expectation-free lowering (their argument's own form types them).
         let mut bindings: HashMap<String, ValueTy> = HashMap::new();
+        // Haskell 2010 solves a signature's variables from the POSITION the
+        // call flows into as well as from its arguments (measured: GHC passes
+        // the same `$dNumDouble` into `g :: Num b => Int -> b` that `(+)`
+        // selected for `g 0 + 2.5`). Binding here — BEFORE any argument is
+        // lowered — is what makes the later `lower_value_expected` calls below
+        // see the solved variable; binding after would leave the class
+        // variable unsolved for the whole argument pass.
+        //
+        // The expectation is only a candidate SOURCE for one variable: it may
+        // also be a variable itself, or a type the result merely CONTAINS
+        // (`Pair i i` for an index pair). Binding it blindly replaced every
+        // signature variable with whatever the position happened to say, which
+        // turned `ixmap`'s index into `Double`. So the candidate is used only
+        // when the result is the bare class variable (or a plain type variable)
+        // — the `g :: Num b => Int -> b` shape, where the position genuinely IS
+        // that variable's type.
+        let exp_ty = expected.map(|e| match e {
+            ValueTy::Thunk(_, rets) if rets.len() == 1 => rets[0].clone(),
+            other => other.clone(),
+        });
+        if let Some(exp) = &exp_ty {
+            let bare_var = match ret_te {
+                crate::ast::TypeExpr::TName(n) => {
+                    !crate::types::infer::is_declared_type_name(env, n)
+                }
+                // Look through the wrappers a signature may carry.
+                crate::ast::TypeExpr::TForall(_, inner)
+                | crate::ast::TypeExpr::TConstrained(_, inner) => match inner.as_ref() {
+                    crate::ast::TypeExpr::TName(n) => {
+                        !crate::types::infer::is_declared_type_name(env, n)
+                    }
+                    _ => false,
+                },
+                _ => false,
+            };
+            if bare_var && is_concrete_ty(exp) {
+                crate::types::infer::bind_sig_type_vars(env, ret_te, exp, &mut bindings);
+            }
+        }
         let mut lowered: Vec<(usize, ValueTy)> = Vec::with_capacity(call_args.len());
         for (i, a) in call_args.iter().enumerate() {
             let expected_arg = match arg_tes.get(i) {
@@ -5129,6 +5356,15 @@ impl<'a> Lowerer<'a> {
                         &mut vars,
                         &mut || self.fresh_sig_var(),
                     )?;
+                    // EVERY argument is lowered at its signature parameter
+                    // type once the variables are solved — not only a
+                    // function-shaped one. A scalar parameter that is now
+                    // concrete is exactly what makes the operand instantiate at
+                    // the right numeric type instead of defaulting: without it
+                    // `g 0` lowered its body at `Integer` while the position
+                    // demanded `Double`, and the kernel faulted on a mixed-kind
+                    // pair. An unsolved parameter type passes no expectation, so
+                    // a genuinely polymorphic argument keeps its own inference.
                     matches!(vty, ValueTy::Thunk(_, _)).then_some(vty)
                 }
                 None => None,
@@ -5513,12 +5749,36 @@ impl<'a> Lowerer<'a> {
         expected: Option<&ValueTy>,
     ) -> Result<(usize, ValueTy), CompileError> {
         // A class-constrained definition has no standalone value: its body is
-        // specialized per CALL SITE, where the argument types solve the class
-        // variable. A bare reference (`f = mk`) has no such site, so report it
+        // specialized per CALL SITE, where the arguments — or the POSITION the
+        // reference flows into — solve the class variable. A bare reference with
+        // NEITHER (`f = mk`, no expectation) has no site at all, so report it
         // here instead of lowering the deferred body against an unsolved
-        // variable — which would surface a misleading `no instance of … for
+        // variable, which would surface a misleading `no instance of … for
         // Double`. A `where`-local of the same name shadows the definition.
+        //
+        // The expectation IS such a site: `h :: Num b => b; h = 1` is a
+        // constrained DEFINITION with no parameter list, and
+        // `show_double (h :: Double)` fixes its `b` exactly as a call argument
+        // would (Haskell 2010 §4.5.5 does not restrict a signed binding, and
+        // measured GHC keeps `h :: forall b. Num b => b`). Refusing here made
+        // every use of such a definition unreachable, however concrete its
+        // position.
+        // The class variable is SOLVED when inference recorded a selection for
+        // THIS reference — that is the one judgement about the program
+        // (`h + 2.5` decides `Double` for both `h` and `(+)`), and lowering only
+        // has to read it. A concrete `expected` is the weaker, local form of the
+        // same fact (an annotated reference).
+        let recorded = self.dict_selections.iter().any(|((sp, _), _)| *sp == span);
+        let position_solves = recorded
+            || expected.is_some_and(|e| {
+                let e = match e {
+                    ValueTy::Thunk(_, rets) if rets.len() == 1 => rets[0].clone(),
+                    other => other.clone(),
+                };
+                is_concrete_ty(&e)
+            });
         if self.env.constrained_defs.contains_key(name)
+            && !position_solves
             && !self.value_locals.iter().any(|s| s.contains_key(name))
         {
             return Err(CompileError::Type {
@@ -5528,6 +5788,37 @@ impl<'a> Lowerer<'a> {
                 ),
                 span,
             });
+        }
+        // The position fixes the class variable: specialize the body HERE, the
+        // same way a call site does. Only a NULLARY definition reaches this
+        // (a reference carries no arguments, so a definition with parameters is
+        // a partial application and keeps its function value).
+        if self.env.constrained_defs.contains_key(name) && position_solves {
+            let nullary = self
+                .env
+                .constrained_defs
+                .get(name)
+                .map(|cd| cd.params.is_empty())
+                .unwrap_or(false);
+            if nullary {
+                if let Some(cd) = self.env.constrained_defs.get(name).cloned() {
+                    if self.value_locals.iter().all(|s| !s.contains_key(name)) {
+                        // Inference's decision for THIS reference wins: it is the
+                        // one judgement about the program (`h + 2.5` → `Double`),
+                        // and re-deriving it here from a coarser static type
+                        // would be a second judgement that can disagree.
+                        let inferred = self
+                            .dict_selections
+                            .iter()
+                            .find(|((sp, _), _)| *sp == span)
+                            .map(|(_, ty)| ty.clone());
+                        let exp = inferred.as_ref().or(expected);
+                        let (r, ty) =
+                            self.lower_constrained_apply_inner(name, &cd, &[], exp, span)?;
+                        return Ok((r, ty));
+                    }
+                }
+            }
         }
         // A DEFERRED signature-less curried def has no standalone value either:
         // its body dispatches on a parameter's shape at a call site (`a ! i`
@@ -5576,16 +5867,34 @@ impl<'a> Lowerer<'a> {
                     None => false,
                 };
                 if let Some(sig) = sig.as_ref().filter(|_| result_directed) {
-                    let exp = match expected {
+                    // Inference already decided this call's instance — that is
+                    // the ONE judgement about the program, and lowering's job is
+                    // to READ it. Asking for `expected` first (and failing when
+                    // it is absent) made lowering re-derive a decision that had
+                    // already been made: `f :: IO Int; f = return 42` infers
+                    // `IO Int` correctly and then reported "expected type
+                    // unknown" here, because the reference's own `expected` is
+                    // not threaded through every enclosing form.
+                    let recorded = self.recorded_selection(span, &class_name);
+                    let exp = match recorded.as_ref().map(|(key, subst)| match subst {
+                        crate::types::infer::ClassVarSubst::Ty(t) => t.clone(),
+                        _ => match self.env.vty_of_name(key) {
+                            Some(t) => t,
+                            None => ValueTy::Double,
+                        },
+                    }) {
                         Some(t) => t,
-                        None => {
-                            return Err(CompileError::Type {
-                                msg: format!(
-                                    "cannot resolve method `{name}` of `{class_name}`: expected type unknown"
-                                ),
-                                span,
-                            });
-                        }
+                        None => match expected {
+                            Some(t) => t.clone(),
+                            None => {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "cannot resolve method `{name}` of `{class_name}`: expected type unknown"
+                                    ),
+                                    span,
+                                });
+                            }
+                        },
                     };
                     // The full-type dispatch key: an arity-0 class with an
                     // applied-head instance (`C (Pair Int Int)`) must resolve by
@@ -5598,7 +5907,7 @@ impl<'a> Lowerer<'a> {
                         &class_name,
                         &class_var,
                         sig,
-                        exp,
+                        &exp,
                         cv_var,
                         || {
                             let v = self.next_tyvar;
@@ -5662,7 +5971,7 @@ impl<'a> Lowerer<'a> {
                     }
                     self.value_locals.push(scope);
                     self.value_local_ctors.push(ctor_scope);
-                    let res = self.lower_value_expected(&body, Some(exp));
+                    let res = self.lower_value_expected(&body, Some(&exp));
                     self.value_locals.pop();
                     self.value_local_ctors.pop();
                     self.method_lifting.remove(&key);
@@ -6232,8 +6541,68 @@ impl<'a> Lowerer<'a> {
         Ok((dst, ValueTy::Newtype(name.to_string(), vec![])))
     }
 
+    /// Rebind a primitive method's INSTANCE from the caller's expectation.
+    ///
+    /// The instance is normally selected by the selector argument's static type.
+    /// For a DEFERRED operand that type may still be a variable, and lowering's
+    /// defaulting then picks `Integer` while the position demands `Double` —
+    /// the mixed-kind kernel fault `g 0 + 2.5` produced.
+    ///
+    /// Haskell 2010 gives the position a vote too (measured: GHC passes `g ::
+    /// Num b => Int -> b` the very `$dNumDouble` that `(+)` selected), so a
+    /// CONCRETE expectation that satisfies the class wins over a defaulted
+    /// selector type. A non-satisfying expectation is not silently accepted —
+    /// it simply does not override, and the selector's own judgement stands.
+    fn instance_from_expectation(
+        &self,
+        class_name: &str,
+        expected: Option<&ValueTy>,
+        ty_name: &str,
+        cv_subst: crate::types::infer::ClassVarSubst,
+    ) -> (String, crate::types::infer::ClassVarSubst) {
+        let Some(exp) = expected else {
+            return (ty_name.to_string(), cv_subst);
+        };
+        // A function expectation carries its result in the LAST slot.
+        let exp = match exp {
+            ValueTy::Thunk(_, rets) if rets.len() == 1 => rets[0].clone(),
+            other => other.clone(),
+        };
+        if !is_concrete_ty(&exp) || !self.env.instance_exists(class_name, &exp) {
+            return (ty_name.to_string(), cv_subst);
+        }
+        let Some(key) = crate::types::ty::value_type_key(self.env, &exp)
+            .or_else(|| self.env.type_name_of_vty(&exp))
+        else {
+            return (ty_name.to_string(), cv_subst);
+        };
+        (key, crate::types::infer::ClassVarSubst::Ty(exp))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn lower_primitive_method(
+        &mut self,
+        class_name: &str,
+        name: &str,
+        ty_name: &str,
+        call_args: &[Expr],
+        span: Span,
+        prefetched: Option<(usize, usize, ValueTy)>,
+        param_tys: &[ValueTy],
+    ) -> Result<(usize, ValueTy), CompileError> {
+        let (prefetched, param_tys) = (prefetched, param_tys);
+        self.lower_primitive_method_inner(
+            class_name, name, ty_name, call_args, span, prefetched, param_tys,
+        )
+    }
+
+    /// [`Self::lower_primitive_method`]'s body.
+    ///
+    /// Split out so the caller can rebind the instance from the SOLVED
+    /// parameter types before the kernel is chosen — see
+    /// [`Self::lower_primitive_method_with_solved_instance`].
+    #[allow(clippy::too_many_arguments)]
+    fn lower_primitive_method_inner(
         &mut self,
         class_name: &str,
         name: &str,
@@ -6469,16 +6838,22 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ValueTy::Int))
             }
-            // `fromInteger n`: widen `n` to the instance's type. The instance
-            // decided the type, so `ty_name` is authoritative — an unbound `dst`
-            // could not tell `Integer` from `Double` from a buffer.
+            // `fromInteger n`: widen the literal's EXACT `Integer` to the
+            // instance's type. The instance decided the type, so `ty_name` is
+            // authoritative — an unbound `dst` cannot tell `Int` from `Integer`
+            // from `Double`.
             //
-            // `Int` is NOT served by the kernel: the argument is already an
-            // `Int` (its literals were truncated at their own `ValueConstInt`
-            // site through `literal_to_i64`, the ONE truncation boundary), so
-            // the conversion is the identity and a copy is emitted. A `Ratio`
-            // target is not served either: its `fromInteger` is a SOURCE
-            // equation, so it never reaches a kernel-backed instance.
+            // `Int` goes through the conversion too: Haskell 2010's
+            // `fromInteger :: Integer -> Int` is a TRUNCATION, so
+            // `123456789012345678901234567890 :: Int` must keep GHC's low-64-bit
+            // answer. `literal_to_i64` remains the ONE truncation boundary; the
+            // instruction is its single execution site (formerly the literal's
+            // own `ValueConstInt` emission, which truncated before the target
+            // was known).
+            //
+            // A `Ratio` target does not reach this kernel: its `fromInteger` is
+            // a SOURCE equation, so a ratio literal is built by record
+            // construction in the instance body.
             KernelId::FromInteger => {
                 if arg_regs.is_empty() {
                     return Err(CompileError::Type {
@@ -6490,28 +6865,47 @@ impl<'a> Lowerer<'a> {
                 let dst = self.fresh_value_reg();
                 let is_buffer = self.env.instance_key_is_buffer(ty_name);
                 let target = if is_buffer {
-                    Some(crate::ir::ValueTyTag::Buffer)
+                    crate::ir::ValueTyTag::Buffer
                 } else {
                     match ty_name.split(' ').next().unwrap_or(ty_name) {
-                        "Int" => None,
-                        "Integer" => Some(crate::ir::ValueTyTag::Integer),
-                        _ => Some(crate::ir::ValueTyTag::Double),
+                        "Int" => crate::ir::ValueTyTag::Int,
+                        "Integer" => crate::ir::ValueTyTag::Integer,
+                        _ => crate::ir::ValueTyTag::Double,
                     }
                 };
                 let ret = match target {
-                    None => ValueTy::Int,
-                    Some(crate::ir::ValueTyTag::Integer) => ValueTy::Integer,
-                    Some(crate::ir::ValueTyTag::Buffer) => self.env.buffer_vty(),
-                    Some(crate::ir::ValueTyTag::Double) => ValueTy::Double,
+                    crate::ir::ValueTyTag::Int => ValueTy::Int,
+                    crate::ir::ValueTyTag::Integer => ValueTy::Integer,
+                    crate::ir::ValueTyTag::Buffer => self.env.buffer_vty(),
+                    crate::ir::ValueTyTag::Double => ValueTy::Double,
                 };
-                match target {
-                    // The identity: `fromInteger :: Int -> Int`. No conversion,
-                    // no second truncation site.
-                    None => self.emit_value(ValueInstr::ValueCopy { dst, src }),
-                    Some(target) => {
-                        self.emit_value(ValueInstr::ValueFromInteger { dst, src, target })
-                    }
+                self.emit_value(ValueInstr::ValueFromInteger { dst, src, target });
+                Ok((dst, ret))
+            }
+            // `fromRational r`: the exact `Rational` operand converted to the
+            // instance's type. `Double` is the one builtin target (the buffer
+            // case is the whole-block constant), and a `Ratio` target never
+            // reaches a kernel — its `fromRational` is the identity source
+            // equation, so the instance body runs instead.
+            KernelId::FromRational => {
+                if arg_regs.is_empty() {
+                    return Err(CompileError::Type {
+                        msg: format!("`{name}` expects 1 argument, got 0"),
+                        span,
+                    });
                 }
+                let src = arg_regs[0];
+                let dst = self.fresh_value_reg();
+                let target = if self.env.instance_key_is_buffer(ty_name) {
+                    crate::ir::ValueTyTag::Buffer
+                } else {
+                    crate::ir::ValueTyTag::Double
+                };
+                let ret = match target {
+                    crate::ir::ValueTyTag::Buffer => self.env.buffer_vty(),
+                    _ => ValueTy::Double,
+                };
+                self.emit_value(ValueInstr::ValueFromRational { dst, src, target });
                 Ok((dst, ret))
             } // No catch-all arm: this match is EXHAUSTIVE over `KernelId`, so a
               // future kernel variant fails to COMPILE here (non-exhaustive
@@ -7194,7 +7588,10 @@ impl<'a> Lowerer<'a> {
                     out.push(name.clone());
                 }
             }
-            Expr::Int(_, _) | Expr::FractionalLit(_, _, _) | Expr::Void(_) | Expr::Str(_, _) => {}
+            Expr::IntegerLit(_, _)
+            | Expr::FractionalLit(_, _, _)
+            | Expr::Void(_)
+            | Expr::Str(_, _) => {}
             // A kernel is a compiler instruction, not a call to a named
             // definition: the callee contributes no capture (there is no name),
             // and only the arguments can carry free variables.
@@ -8409,7 +8806,7 @@ impl<'a> Lowerer<'a> {
                 Ok(self.cur_value_block)
             }
             Pattern::Wild => Ok(self.cur_value_block),
-            Pattern::LitInt(v) => {
+            Pattern::IntegerLit(v) => {
                 // The pattern literal takes its representation from the
                 // SCRUTINEE's type — the one expected type a pattern has. An
                 // `Integer`/`Double` scrutinee therefore compares against an
@@ -8852,7 +9249,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower(&mut self, e: &Expr, args: &[usize]) -> Result<Vec<usize>, CompileError> {
         match e {
-            Expr::Int(v, _) => {
+            Expr::IntegerLit(v, _) => {
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueBufferConst {
                     dst,
@@ -9227,7 +9624,7 @@ impl<'a> Lowerer<'a> {
                                             // `tape_loop : Int -> Tape Double` —
                                             // exactly one integer-constant arg.
                                             let cap = match ctor_args.as_slice() {
-                                                [Expr::Int(v, _)] => {
+                                                [Expr::IntegerLit(v, _)] => {
                                                     literal_to_i64(v) as usize
                                                 }
                                                 _ => {
@@ -9976,7 +10373,7 @@ fn rename_bound(e: &Expr, renames: &HashMap<String, String>) -> Expr {
                 .collect(),
             *span,
         ),
-        Expr::Int(_, _) | Expr::FractionalLit(_, _, _) | Expr::Void(_) | Expr::Str(_, _) => {
+        Expr::IntegerLit(_, _) | Expr::FractionalLit(_, _, _) | Expr::Void(_) | Expr::Str(_, _) => {
             e.clone()
         }
     }
@@ -10156,7 +10553,7 @@ fn body_carries_class_demand(env: &TypeEnv, e: &Expr, params: &HashSet<String>) 
     // Every child expression whose subtree can hold a demand.
     match e {
         Expr::Ref(..)
-        | Expr::Int(..)
+        | Expr::IntegerLit(..)
         | Expr::FractionalLit(..)
         | Expr::Void(..)
         | Expr::Str(..) => {}
@@ -10304,7 +10701,7 @@ fn expr_names_any_of(e: &Expr, names: &HashSet<String>) -> bool {
 /// deciding whether a literal is an integer constant at all.
 fn const_bigint(e: &Expr) -> Option<BigInt> {
     match e {
-        Expr::Int(v, _) => Some(v.clone()),
+        Expr::IntegerLit(v, _) => Some(v.clone()),
         Expr::Neg(inner, _) => const_bigint(inner).map(|v| -v),
         _ => None,
     }
@@ -10381,7 +10778,7 @@ fn rational_to_f64(v: &BigRational) -> f64 {
 fn const_f64(e: &Expr) -> Option<f64> {
     match e {
         Expr::FractionalLit(v, _, _) => Some(rational_to_f64(v)),
-        Expr::Int(v, _) => Some(literal_to_f64(v)),
+        Expr::IntegerLit(v, _) => Some(literal_to_f64(v)),
         Expr::Neg(inner, _) => const_f64(inner).map(|v| -v),
         // Constant arithmetic: an infix operator IS an application of the
         // method (`a + b` ≡ `(+) a b`), so folding matches the same shape.
@@ -10530,6 +10927,8 @@ pub fn lower_program_with_channels(
         next_value_reg: 0,
         next_tyvar: 0,
         dict_selections: tp.dict_selections.clone(),
+        literal_tys: tp.literal_tys.clone(),
+        literal_instances: tp.literal_instances.clone(),
         next_method_param: 0,
         value_regs_out: Vec::new(),
         value_out_tys: Vec::new(),
@@ -10774,7 +11173,18 @@ pub fn lower_program_with_channels(
     // only place the unit payload survives — the value track represents `()`
     // as `Double(0.0)` once it travels through a closure cell (see
     // `Ir::main_io_unit`).
-    let main_io_unit = main_result_is_io_unit(&entry_scheme.ty.vty);
+    // The gate: `main` must be an `IO t` ACTION. `t` is free — the payload is
+    // discarded at run time, exactly as GHC does.
+    let main_is_io = main_is_io_action(&entry_scheme.ty.vty);
+    // Whether the payload is statically `()`. This is NOT the gate; it only
+    // resolves the value track's erasure ambiguity (`()` and `0.0` share the
+    // `Double(0.0)` encoding inside a closure cell), so a `0.0` payload is
+    // treated as unit only when the type says `IO ()`.
+    let main_io_unit = main_is_io
+        && match &entry_scheme.ty.vty {
+            ValueTy::Con(_, args) => matches!(args.first(), Some(ValueTy::Void)),
+            _ => false,
+        };
     // The program's single result register: where the entry body's value
     // landed. `lw.value_regs_out[0]` — architecturally there are no signal
     // programs (no output channels), so the result is exactly one register
@@ -10782,6 +11192,7 @@ pub fn lower_program_with_channels(
     // guarantees at least one output exists.
     let result_reg = lw.value_regs_out.first().copied().unwrap_or(0);
     Ok(Ir {
+        main_is_io,
         main_io_unit,
         num_inputs,
         num_outputs,
@@ -10835,6 +11246,8 @@ mod tests {
         let cafs = typed.cafs.clone();
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
+            value_tys: HashMap::new(),
+            literal_instances: HashMap::new(),
             program: reduced,
             def_schemes: typed.def_schemes.clone(),
             cafs,
@@ -10845,6 +11258,7 @@ mod tests {
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
             dict_selections: typed.dict_selections.clone(),
+            literal_tys: typed.literal_tys.clone(),
         };
         lower_with_cafs(&tp, &tp.cafs).unwrap()
     }
@@ -10880,6 +11294,7 @@ mod tests {
     /// that `free_vars` must still handle correctly).
     fn lw<'a>(env: &'a TypeEnv, cafs: &'a HashSet<String>) -> Lowerer<'a> {
         Lowerer {
+            literal_instances: HashMap::new(),
             defs: HashMap::new(),
             cafs,
             caf_cache: HashMap::new(),
@@ -10896,6 +11311,7 @@ mod tests {
             next_value_reg: 0,
             next_tyvar: 0,
             dict_selections: HashMap::new(),
+            literal_tys: HashMap::new(),
             next_method_param: 0,
             value_regs_out: Vec::new(),
             value_out_tys: Vec::new(),
@@ -11151,6 +11567,8 @@ mod tests {
         let cafs = typed.cafs.clone();
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
+            value_tys: HashMap::new(),
+            literal_instances: HashMap::new(),
             program: reduced,
             def_schemes: typed.def_schemes.clone(),
             cafs: cafs.clone(),
@@ -11161,6 +11579,7 @@ mod tests {
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
             dict_selections: typed.dict_selections.clone(),
+            literal_tys: typed.literal_tys.clone(),
         };
         let res = lower_with_cafs(&tp, &cafs);
         assert!(res.is_err());
@@ -11179,6 +11598,8 @@ mod tests {
         let cafs = typed.cafs.clone();
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
+            value_tys: HashMap::new(),
+            literal_instances: HashMap::new(),
             program: reduced,
             def_schemes: typed.def_schemes.clone(),
             cafs: cafs.clone(),
@@ -11189,6 +11610,7 @@ mod tests {
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
             dict_selections: typed.dict_selections.clone(),
+            literal_tys: typed.literal_tys.clone(),
         };
         let res = lower_with_cafs(&tp, &cafs);
         assert!(res.is_err());
@@ -11208,6 +11630,8 @@ mod tests {
         let cafs = typed.cafs.clone();
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
+            value_tys: HashMap::new(),
+            literal_instances: HashMap::new(),
             program: reduced,
             def_schemes: typed.def_schemes.clone(),
             cafs: cafs.clone(),
@@ -11218,6 +11642,7 @@ mod tests {
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
             dict_selections: typed.dict_selections.clone(),
+            literal_tys: typed.literal_tys.clone(),
         };
         let res = lower_with_cafs(&tp, &cafs);
         assert!(res.is_err());
@@ -11242,6 +11667,8 @@ mod tests {
         let cafs = typed.cafs.clone();
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
+            value_tys: HashMap::new(),
+            literal_instances: HashMap::new(),
             program: reduced,
             def_schemes: typed.def_schemes.clone(),
             cafs: cafs.clone(),
@@ -11252,6 +11679,7 @@ mod tests {
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
             dict_selections: typed.dict_selections.clone(),
+            literal_tys: typed.literal_tys.clone(),
         };
         let res = lower_with_cafs(&tp, &cafs);
         assert!(res.is_err());
@@ -11339,9 +11767,19 @@ mod tests {
             ctor, 0,
             "Circle is the first declared ctor of Shape (index 0)"
         );
+        // The output must be the register the MATCH writes the selected arm's
+        // payload into, not a register some other arm's binding owns. Expressed
+        // against the instruction rather than a literal index: a numeric literal
+        // now occupies two registers (its exact payload and its `fromInteger`
+        // result), so absolute numbering is not the invariant — the routing is.
+        let arms = match vm {
+            ValueInstr::ValueMatch { dst, .. } => dst.clone(),
+            _ => Vec::new(),
+        };
+        assert_eq!(arms.len(), 1, "one arm is statically selected");
         assert_eq!(
-            ir.result_reg, 2,
-            "output must be the Circle arm's payload reg (r), not Rect's w"
+            ir.result_reg, arms[0],
+            "the output must be the selected (Circle) arm's payload register"
         );
     }
 

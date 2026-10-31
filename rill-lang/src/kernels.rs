@@ -58,6 +58,7 @@ pub fn kernel_for_method(class: &str, method: &str) -> Option<KernelId> {
         // `Fractional`: division and reciprocal.
         ("Fractional", "/") => KernelId::Div,
         ("Fractional", "recip") => KernelId::Recip,
+        ("Fractional", "fromRational") => KernelId::FromRational,
         _ => return None,
     })
 }
@@ -90,6 +91,7 @@ pub fn has_instruction(kernel: KernelId, _is_buffer: bool) -> bool {
         | KernelId::Abs
         | KernelId::Signum
         | KernelId::FromInteger
+        | KernelId::FromRational
         | KernelId::Recip => true,
     }
 }

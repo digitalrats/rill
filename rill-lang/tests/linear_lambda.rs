@@ -12,7 +12,7 @@ fn arrowty(src: &str) -> rill_lang::types::ty::ArrowTy {
     let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
     infer_program(&p, rill_lang::mode::Mode::default())
         .unwrap()
-        .def_schemes["main"]
+        .def_schemes["foo"]
         .ty
         .clone()
 }
@@ -20,7 +20,7 @@ fn arrowty(src: &str) -> rill_lang::types::ty::ArrowTy {
 #[test]
 fn arrowty_is_plain_value_types() {
     // The process type is a single value type — no Channel/Rate/Scalar vector.
-    let t = arrowty("main = 1.0");
+    let t = arrowty("foo = 1.0");
     assert!(matches!(t.vty, ValueTy::Double));
 }
 
@@ -28,12 +28,12 @@ fn arrowty_is_plain_value_types() {
 fn list_and_float_are_equal_data() {
     // All data is equal: a List-typed arrow and a Double-typed arrow are the
     // same ArrowTy shape, differing only in the ValueTy element.
-    let t = arrowty(r"main = case (head [1.0, 2.0]) of { Nothing -> 0.0; Just x -> x }");
+    let t = arrowty(r"foo = case (head [1.0, 2.0]) of { Nothing -> 0.0; Just x -> x }");
     assert!(matches!(t.vty, ValueTy::Double));
 }
 
 #[test]
 fn record_is_an_ordinary_value_type() {
-    let t = arrowty("data Point = { x: Double, y: Double }; main = Point { x: 1.0, y: 2.0 }");
+    let t = arrowty("data Point = { x: Double, y: Double }; foo = Point { x: 1.0, y: 2.0 }");
     assert!(matches!(&t.vty, ValueTy::Con(name, _) if name == "Point"));
 }

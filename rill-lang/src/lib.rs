@@ -104,9 +104,15 @@ pub fn compile<T: Transcendental, const BUF: usize>(
     ffi: crate::ffi::ForeignRegistry<T>,
 ) -> Result<ProgramRunner<T, BUF>, CompileError> {
     let ir = compile_to_ir(src, Mode::Complete)?;
-    if !ir.main_io_unit {
+    // The entry must be an `IO t` ACTION. `t` is free and its payload is
+    // discarded at run time, so requiring `IO ()` (as this crate used to)
+    // rejected programs Haskell accepts: GHC 9.10.3 runs `main = return 42`
+    // (`main :: IO Integer`) and `main = do { print 1; return 42 }`, discarding
+    // the result. A source whose entry is not an `IO` action at all — a bare
+    // `Double`, say — is still rejected, because there is no action to run.
+    if !ir.main_is_io {
         return Err(CompileError::Unsupported(
-            "`main` must have type `IO ()`".to_string(),
+            "`main` must have type `IO t`".to_string(),
         ));
     }
     // A name-based resource binding (`bi.resource = Some(name)`) is a `Ref` to a
@@ -285,7 +291,7 @@ fn extract_resources(
         {
             if ctor == "tape_loop" || ctor == "TapeLoop" {
                 match args.as_slice() {
-                    [Expr::Int(v, _)] => {
+                    [Expr::IntegerLit(v, _)] => {
                         let cap = crate::lower::literal_to_i64(v) as usize;
                         if cap == 0 {
                             return Err(CompileError::Unsupported(format!(

@@ -1281,6 +1281,7 @@ mod program_value_tests {
     fn new_program_has_empty_value_state() {
         let ir = Ir {
             main_io_unit: false,
+            main_is_io: true,
             num_inputs: 0,
             num_outputs: 0,
             state: StateLayout::default(),
@@ -1321,6 +1322,7 @@ mod program_value_tests {
         // its constructed default.
         let ir = Ir {
             main_io_unit: false,
+            main_is_io: true,
             num_inputs: 0,
             num_outputs: 0,
             state: StateLayout::default(),
@@ -1382,6 +1384,7 @@ mod program_value_tests {
     fn set_param_clamps_to_the_declared_range() {
         let ir = Ir {
             main_io_unit: false,
+            main_is_io: true,
             num_inputs: 0,
             num_outputs: 0,
             state: StateLayout::default(),
@@ -1439,6 +1442,7 @@ mod program_value_tests {
         // untouched; an out-of-range one is pulled into the declared range.
         let ir = Ir {
             main_io_unit: false,
+            main_is_io: true,
             num_inputs: 0,
             num_outputs: 0,
             state: StateLayout::default(),
@@ -1495,6 +1499,7 @@ mod program_value_tests {
     fn reset_drops_value_track_refs() {
         let ir = Ir {
             main_io_unit: false,
+            main_is_io: true,
             num_inputs: 0,
             num_outputs: 0,
             state: StateLayout::default(),

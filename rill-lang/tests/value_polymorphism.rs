@@ -15,7 +15,7 @@ use rill_lang::types::infer::infer_program;
 fn polymorphic_value_fn_instantiates_fresh() {
     let src = r"{-# MODE complete #-}
 id2 = \x -> x;
-main = case (head (id2 [1.0, 2.0])) of { Nothing -> 0.0; Just x -> x };";
+foo = case (head (id2 [1.0, 2.0])) of { Nothing -> 0.0; Just x -> x };";
     let toks = tokenize(src).unwrap();
     let prog = parse(&toks, src.as_bytes()).unwrap();
     assert!(
@@ -28,7 +28,7 @@ main = case (head (id2 [1.0, 2.0])) of { Nothing -> 0.0; Just x -> x };";
 fn polymorphic_value_fn_used_at_two_types() {
     let src = r"{-# MODE complete #-}
 id2 = \x -> x;
-main = case (head (id2 [1.0, 2.0])) of { Nothing -> 0.0; Just x -> id2 x };";
+foo = case (head (id2 [1.0, 2.0])) of { Nothing -> 0.0; Just x -> id2 x };";
     let toks = tokenize(src).unwrap();
     let prog = parse(&toks, src.as_bytes()).unwrap();
     assert!(infer_program(&prog, Mode::Complete).is_ok());
