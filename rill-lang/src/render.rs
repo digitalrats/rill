@@ -903,6 +903,7 @@ mod tests {
                 where_defs: vec![],
                 sig: None,
                 bang: false,
+                wrote_params: false,
             }],
         };
         let dsl = render(&prog).unwrap();
@@ -925,6 +926,7 @@ mod tests {
                 where_defs: vec![],
                 sig: None,
                 bang: false,
+                wrote_params: false,
             }],
         };
         let dsl = render(&prog).unwrap();
@@ -958,6 +960,7 @@ mod tests {
                 where_defs: vec![],
                 sig: None,
                 bang: false,
+                wrote_params: false,
             }],
         };
         let dsl = render(&prog).unwrap();
@@ -988,6 +991,7 @@ mod tests {
                 span: span(),
                 sig: None,
                 bang: false,
+                wrote_params: false,
             }],
         };
         let dsl = render(&prog).unwrap();
@@ -1099,6 +1103,7 @@ mod tests {
                 where_defs: vec![],
                 sig: Some(TypeExpr::TName("Double".into())),
                 bang: false,
+                wrote_params: false,
                 span: span(),
             }],
         };

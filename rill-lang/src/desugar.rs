@@ -67,6 +67,7 @@ fn desugar_defs(defs: Vec<Def>) -> Result<Vec<Def>, CompileError> {
                 sig,
                 bang,
                 span,
+                wrote_params,
             } => {
                 let sig = sig.or_else(|| signatures.get(&name).cloned());
                 // A CLASS-CONSTRAINED definition keeps its `where` block on the
@@ -88,6 +89,7 @@ fn desugar_defs(defs: Vec<Def>) -> Result<Vec<Def>, CompileError> {
                     where_defs,
                     sig,
                     bang,
+                    wrote_params,
                     span,
                 });
             }
@@ -357,6 +359,7 @@ fn equation_leaf(equation: &Equation, params: &[Param]) -> Result<Expr, CompileE
                 where_defs: Vec::new(),
                 sig: None,
                 bang,
+                wrote_params: false,
                 span,
             }],
             body: Box::new(body),
@@ -465,8 +468,15 @@ fn curried_eval_def(
     sig: Option<TypeExpr>,
     span: Span,
 ) -> Def {
-    let body = lambda_wrap(&params, body);
-    eval_def(name, body, sig, span)
+    let wrote_params = !params.is_empty();
+    let mut d = eval_def(name, lambda_wrap(&params, body), sig, span);
+    if let Def::Eval {
+        wrote_params: wp, ..
+    } = &mut d
+    {
+        *wp = wrote_params;
+    }
+    d
 }
 
 fn eval_def(name: &str, body: Expr, sig: Option<TypeExpr>, span: Span) -> Def {
@@ -476,6 +486,7 @@ fn eval_def(name: &str, body: Expr, sig: Option<TypeExpr>, span: Span) -> Def {
         where_defs: Vec::new(),
         sig,
         bang: false,
+        wrote_params: false,
         span,
     }
 }

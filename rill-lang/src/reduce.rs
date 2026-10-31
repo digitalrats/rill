@@ -227,6 +227,7 @@ fn substitute_def(def: &Def, subst: &HashMap<String, Expr>) -> Def {
             where_defs,
             sig,
             bang,
+            wrote_params,
             span,
         } => Def::Eval {
             name: name.clone(),
@@ -237,6 +238,7 @@ fn substitute_def(def: &Def, subst: &HashMap<String, Expr>) -> Def {
                 .collect(),
             sig: sig.clone(),
             bang: *bang,
+            wrote_params: *wrote_params,
             span: *span,
         },
         other => other.clone(),
@@ -419,6 +421,7 @@ fn reduce_def(
             sig: sig.clone(),
             bang: *bang,
             span: *span,
+            wrote_params: false,
         },
         _ => def.clone(),
     };

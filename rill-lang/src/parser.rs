@@ -1080,6 +1080,7 @@ impl<'a> Parser<'a> {
                 where_defs,
                 sig,
                 bang: true,
+                wrote_params: false,
                 span,
             });
         }
@@ -1099,12 +1100,16 @@ impl<'a> Parser<'a> {
         // (Haskell 2010 §4.4.3.1: `f x = e` IS `f = \x -> e`).
         if let Some((params, body)) = plain_definition(&equations, &pattern_spans) {
             let span = Span::new(start, body.span().end);
+            let wrote_params = !params.is_empty();
             return Ok(Def::Eval {
                 name,
                 body: Param::lambda_wrap(&params, body),
                 where_defs: equations[0].where_defs.clone(),
                 sig,
                 bang: false,
+                // §4.4.3.1: the spelling is recorded because §4.5.5 treats
+                // `f x = e` (funlhs) and `f = \x -> e` (pat) differently.
+                wrote_params,
                 span,
             });
         }
@@ -2209,6 +2214,7 @@ impl<'a> Parser<'a> {
                             where_defs: vec![],
                             sig: None,
                             bang: false,
+                            wrote_params: false,
                             span,
                         }],
                         body: Box::new(rest),

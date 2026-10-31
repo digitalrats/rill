@@ -10374,6 +10374,7 @@ fn rename_bound_def(d: &Def, renames: &HashMap<String, String>) -> Def {
             where_defs,
             sig,
             bang,
+            wrote_params,
             span,
         } => Def::Eval {
             name: name.clone(),
@@ -10384,6 +10385,7 @@ fn rename_bound_def(d: &Def, renames: &HashMap<String, String>) -> Def {
                 .collect(),
             sig: sig.clone(),
             bang: *bang,
+            wrote_params: *wrote_params,
             span: *span,
         },
         other => other.clone(),

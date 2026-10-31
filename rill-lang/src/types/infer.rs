@@ -3901,14 +3901,34 @@ fn quantified_vars(ctx: &Ctx, def: &Def, resolved: &ArrowTy) -> Vec<TypeVarId> {
     // Without this guard `h` stayed a shared monomorphic variable and stage 3
     // defaulted it to `Integer`, so `(h :: Integer, h :: Double)` — legal in
     // one GHC program — was a rejection here.
-    if def.sig().is_none() && effective_def_params(def).0.is_empty() {
+    if def.sig().is_none() && !def.wrote_params() {
+        // §4.5.5 applies to a SIMPLE PATTERN BINDING — `v = …`, and also
+        // `v = \x -> …`, because a λ on the right-hand side does not turn the
+        // binding into a function binding. That is the Report's distinction
+        // between `pat` and `funlhs`, and it is why `def.wrote_params()` — not
+        // the arity — is what this guard reads: after Task 10a every definition
+        // with parameters carries them as the body's λ-nest, so `f x = e` and
+        // `f = \x -> e` have the SAME arity and only the spelling tells them
+        // apart. Measured on GHC 9.10.3 (compiled module, two incompatible
+        // call-site types): `double = \x -> x * 2.0` is monomorphic (error)
+        // while `double x = x * 2.0` generalises (legal).
         // The definition's own constrained variables: every residual whose class
         // variable its type mentions.
+        //
+        // Both sides must be read at the SAME stage. `own` is resolved through
+        // the substitution, so a residual's `r.var` has to be resolved too —
+        // comparing a raw id against resolved ids missed every variable an
+        // earlier unification had already chained, and the guard silently did
+        // nothing (measured: `double = \x -> x * 2.0` kept a quantified `Var(7)`
+        // and generalised, which §4.5.5 forbids).
         let own = value_free_vars(&resolved.vty, &ctx.subst);
         let constrained: HashSet<TypeVarId> = ctx
             .residual
             .iter()
-            .map(|r| r.var)
+            .filter_map(|r| match ctx.subst.resolve_value(&ValueTy::Var(r.var)) {
+                ValueTy::Var(v) | ValueTy::TyConVar(v) => Some(v),
+                _ => None,
+            })
             .filter(|v| own.contains(v))
             .collect();
         vars.retain(|v| !constrained.contains(v));
@@ -3933,7 +3953,22 @@ fn refresh_group_schemes(ctx: &mut Ctx, defs: &[Def]) {
             continue;
         };
         let resolved = ctx.subst.apply(&scheme.ty);
-        let vars = free_vars_quantified(ctx, &resolved);
+        // This pass exists to re-resolve the type after defaulting, and it must
+        // not be a BACK DOOR around the monomorphism restriction. A simple
+        // pattern binding — no signature, no written parameter list — keeps the
+        // quantification §4.5.5 decided for it, so its variable is NOT
+        // re-generalised here; only a binding the restriction does not cover
+        // takes a freshly computed (possibly larger) quantified set.
+        //
+        // Without this, `double = \x -> x * 2.0` was re-generalised right after
+        // `quantified_vars` had correctly left it monomorphic, and the program
+        // used at two incompatible types compiled instead of being rejected
+        // (GHC 9.10.3 rejects it).
+        let vars = if def.sig().is_none() && !def.wrote_params() {
+            scheme.vars
+        } else {
+            free_vars_quantified(ctx, &resolved)
+        };
         ctx.defs.insert(
             def.name().to_string(),
             Scheme {
@@ -9861,6 +9896,7 @@ mod tests {
             where_defs: vec![],
             sig: Some(sig),
             bang: false,
+            wrote_params: false,
             span: Span::new(0, 0),
         };
         let mut env = TypeEnv::with_builtins();

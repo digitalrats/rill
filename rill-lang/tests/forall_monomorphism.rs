@@ -84,3 +84,87 @@ fn a_monomorphic_signature_stays_monomorphic() {
         "1.0"
     );
 }
+
+// ---------------------------------------------------------------------------
+// §4.4.3.1 versus §4.5.5: what the SPELLING decides
+// ---------------------------------------------------------------------------
+
+/// Infer `src` and return the typed program, for scheme-level assertions.
+fn scheme_of(src: &str) -> rill_lang::types::infer::TypedProgram {
+    let toks = rill_lang::lexer::tokenize(src).expect("the source must lex");
+    let mut prog = rill_lang::parser::parse(&toks, src.as_bytes()).expect("the source must parse");
+    rill_lang::desugar::desugar_program(&mut prog).expect("the source must desugar");
+    rill_lang::types::infer::infer_program(&prog, prog.mode).expect("the source must infer")
+}
+
+/// Locate a compile error without failing on a successful compile.
+fn compile_error(src: &str) -> Option<String> {
+    rill_lang::compile::<f32, 256>(src, rill_lang::ffi::ForeignRegistry::new())
+        .err()
+        .map(|e| e.to_string())
+}
+
+#[test]
+fn a_lambda_bound_binding_is_a_pattern_binding_and_stays_monomorphic() {
+    // Haskell 2010 §4.4.3.1 makes `double = \x -> x * 2.0` and
+    // `double x = x * 2.0` the same VALUE, but §4.5.5 applies to a SIMPLE
+    // PATTERN BINDING — no parameter list — and the λ on the right-hand side
+    // does not turn it into a function binding. GHC 9.10.3, compiled module
+    // (GHCi's `ExtendedDefaultRules` default the DISPLAY and hide this):
+    //
+    //   double = \x -> x * 2.0
+    //   main = print (double (1.5 :: Double), double (1 :: Integer))
+    //     → Couldn't match expected type 'Double' with actual type 'Integer'
+    //
+    // So ONE shared type variable, decided by the first use. The program is
+    // rejected at compile time, never at run time.
+    let both = "double = \\x -> x * 2.0;\n\
+                main = do { write (Just (show_double (double (1.5 :: Double)))) stdout; \
+                            write (Just (show_int (double (1 :: Integer)))) stdout; return () };";
+    assert!(
+        compile_error(both).is_some(),
+        "a pattern-bound `double = \\x -> x * 2.0` is monomorphic: two incompatible \
+         call-site types must be a COMPILE error"
+    );
+    // The same binding at ONE type is fine.
+    assert_eq!(
+        run("double = \\x -> x * 2.0;\n\
+             main = do { write (Just (show_double (double 1.5))) stdout; return () };"),
+        "3.0"
+    );
+}
+
+#[test]
+fn a_function_binding_with_the_same_body_is_generalised() {
+    // The SAME body with a written parameter list IS a function binding, so
+    // §4.5.5 does not apply and the scheme generalises. GHC accepts the same
+    // two-type program only in the `Num` case; with `2.0` it rejects for a
+    // different reason (`No instance for 'Fractional Integer'`), which is the
+    // instance failure rather than the restriction.
+    //
+    // What must NOT happen is the pattern-binding behaviour: the function form
+    // is not one shared variable, so the definition's own scheme is quantified.
+    let t = scheme_of("double x = x * 2.0;");
+    let double = t.def_schemes.get("double").expect("double has a scheme");
+    assert!(
+        !double.vars.is_empty(),
+        "`double x = x * 2.0` is a function binding, so §4.5.5 does not apply and \
+         its type variable must be QUANTIFIED, got {:?}",
+        double.ty.vty
+    );
+}
+
+#[test]
+fn the_pattern_binding_keeps_one_shared_variable() {
+    // The mirror image: the pattern form must NOT quantify, because the one
+    // shared variable is what makes every use agree on a single type.
+    let t = scheme_of("double = \\x -> x * 2.0;");
+    let double = t.def_schemes.get("double").expect("double has a scheme");
+    assert!(
+        double.vars.is_empty(),
+        "`double = \\x -> x * 2.0` is a SIMPLE PATTERN BINDING (§4.5.5), so its \
+         variable must stay UNQUANTIFIED, got vars={:?} ty={:?}",
+        double.vars,
+        double.ty.vty
+    );
+}

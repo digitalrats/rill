@@ -523,6 +523,33 @@ pub enum Def {
         /// the binding point (GHC-style extension; no deep strictness).
         #[cfg_attr(feature = "serde", serde(default))]
         bang: bool,
+        /// True when the source WROTE a parameter list (`f x = e`, or
+        /// `f x y = e` before currying).
+        ///
+        /// This is the Report's `funlhs` versus `pat` distinction, and Haskell
+        /// 2010 §4.4.3.1 says it matters even though the two spellings denote
+        /// the same value: §4.5.5's monomorphism restriction applies to a
+        /// SIMPLE PATTERN BINDING — one with no parameter list — and not to a
+        /// function binding. GHC 9.10.3, measured on a COMPILED module (GHCi's
+        /// `ExtendedDefaultRules` default the display and hide the difference):
+        ///
+        /// ```haskell
+        /// double = \x -> x * 2.0   -- pat    → Fractional a => a -> a MONOMORPHIC
+        /// double x = x * 2.0       -- funlhs → Fractional a => a -> a GENERALISED
+        /// add    = \a -> \b -> a + b   -- pat    → monomorphic
+        /// add    = \a b -> a + b       -- (same)
+        /// add a b = a + b              -- funlhs → (Num a) => a -> a -> a
+        /// ```
+        ///
+        /// Using the pattern-bound `double` at two incompatible types is a TYPE
+        /// ERROR; using the function-bound one at the same two types is legal.
+        /// Both facts are load-bearing, so the classification is recorded.
+        ///
+        /// It is NOT a second carrier of arity: arity stays [`Def::arity`], the
+        /// body's λ-nest depth. This is a fact about the SOURCE SPELLING, which
+        /// the Report makes semantically relevant.
+        #[cfg_attr(feature = "serde", serde(default))]
+        wrote_params: bool,
         /// Span of the whole definition.
         span: Span,
     },
@@ -722,6 +749,25 @@ impl Def {
         match self {
             Def::Eval { body, .. } => crate::types::infer::leading_lambda_count(body),
             _ => 0,
+        }
+    }
+
+    /// Whether the source WROTE a parameter list (`f x = e`).
+    ///
+    /// Haskell 2010 §4.4.3.1 makes `f x = e` and `f = \x -> e` the same VALUE,
+    /// but §4.5.5's monomorphism restriction distinguishes them: it applies to
+    /// a SIMPLE PATTERN BINDING — one with no parameter list. So
+    /// `double = \x -> x * 2.0` stays monomorphic (one shared type variable for
+    /// every use) while `double x = x * 2.0` generalises to
+    /// `Fractional a => a -> a`. GHC 9.10.3, compiled module: the pattern form
+    /// used at two incompatible types is an error, the function form is not.
+    ///
+    /// A declaration and a desugared internal binding are both `false`: neither
+    /// is a user-written pattern binding.
+    pub fn wrote_params(&self) -> bool {
+        match self {
+            Def::Eval { wrote_params, .. } => *wrote_params,
+            _ => false,
         }
     }
 
