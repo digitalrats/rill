@@ -55,6 +55,11 @@ pub fn kernel_for_method(class: &str, method: &str) -> Option<KernelId> {
         ("Num", "abs") => KernelId::Abs,
         ("Num", "signum") => KernelId::Signum,
         ("Num", "fromInteger") => KernelId::FromInteger,
+        // `Enum` (Report §6.3.4): the two minimal methods. The five
+        // `enumFrom*` defaults are written in the PRELUDE in terms of these,
+        // exactly as §9 gives them, so they need no kernel.
+        ("Enum", "toEnum") => KernelId::ToEnum,
+        ("Enum", "fromEnum") => KernelId::FromEnum,
         // `Fractional`: division and reciprocal.
         ("Fractional", "/") => KernelId::Div,
         ("Fractional", "recip") => KernelId::Recip,
@@ -92,7 +97,9 @@ pub fn has_instruction(kernel: KernelId, _is_buffer: bool) -> bool {
         | KernelId::Signum
         | KernelId::FromInteger
         | KernelId::FromRational
-        | KernelId::Recip => true,
+        | KernelId::Recip
+        | KernelId::ToEnum
+        | KernelId::FromEnum => true,
     }
 }
 
@@ -179,6 +186,8 @@ mod tests {
             ("Num", "abs", KernelId::Abs),
             ("Num", "signum", KernelId::Signum),
             ("Num", "fromInteger", KernelId::FromInteger),
+            ("Enum", "toEnum", KernelId::ToEnum),
+            ("Enum", "fromEnum", KernelId::FromEnum),
             ("Fractional", "/", KernelId::Div),
             ("Fractional", "recip", KernelId::Recip),
         ];

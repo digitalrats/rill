@@ -3107,7 +3107,9 @@ impl<'a> Lowerer<'a> {
                             // source body: dispatch it to the arithmetic /
                             // comparison kernel for (class, type, method) pHere
                             // instead of inlining equations.
-                            if self.is_primitive_instance(&class_name, ty_name.as_str()) {
+                            if self.is_primitive_instance(&class_name, ty_name.as_str())
+                                && self.method_kernel(&class_name, name).is_some()
+                            {
                                 // The instance key solves the signature's
                                 // class variable, so each parameter type is
                                 // CONCRETE (`Num Integer` → `Integer -> Integer
@@ -3353,7 +3355,9 @@ impl<'a> Lowerer<'a> {
                             // every parameter type concrete, so a bare literal
                             // in an `Integer` position lowers as an `Integer`
                             // (see the result-directed path above).
-                            if self.is_primitive_instance(&class_name, ty_name.as_str()) {
+                            if self.is_primitive_instance(&class_name, ty_name.as_str())
+                                && self.method_kernel(&class_name, name).is_some()
+                            {
                                 let (ty_name, cv_subst) = self.instance_from_expectation(
                                     &class_name,
                                     expected,
@@ -6135,6 +6139,8 @@ impl<'a> Lowerer<'a> {
             Some((_, params, body)) => (params, body),
             None => self.env.class_default(class_name, name)?,
         };
+        // (kernel-backed methods never reach here; see the `method_kernel`
+        // guard at the call sites)
         Some(self.fresh_method_params(&params, &body))
     }
 
@@ -6284,6 +6290,17 @@ impl<'a> Lowerer<'a> {
             .and_then(|m| m.get(ty_name))
             .map(|i| i.primitive)
             .unwrap_or(false)
+    }
+
+    /// Whether THIS method of THIS instance is a compiler kernel.
+    ///
+    /// Not the same as [`Self::is_primitive_instance`]: a class whose instance
+    /// overrides only its MINIMAL methods mixes the two sources — `Enum Int`'s
+    /// `toEnum`/`fromEnum` are kernels while `succ`/`pred` are the class's §9
+    /// defaults. The kernel table is the one authority for "is there a kernel",
+    /// so asking it per method keeps the declaration flag from having to decide.
+    fn method_kernel(&self, class_name: &str, name: &str) -> Option<crate::arena::KernelId> {
+        crate::kernels::kernel_for_method(class_name, name)
     }
 
     /// Compile one dictionary method slot to a fragment: the instance's
@@ -6885,6 +6902,28 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ret))
             }
+            // `fromEnum :: a -> Int` (Report §6.3.4). The narrowing the numeric
+            // instances perform is the SAME `ValueFromInteger` conversion with
+            // an `Int` target: `Int -> Int` is the identity and `Integer -> Int`
+            // truncates exactly as `fromInteger :: Integer -> Int` does. An
+            // out-of-range `Integer` is the Report's runtime error, which is
+            // what `literal_to_i64`'s boundary check reports.
+            KernelId::FromEnum => {
+                if arg_regs.is_empty() {
+                    return Err(CompileError::Type {
+                        msg: format!("`{name}` expects 1 argument, got 0"),
+                        span,
+                    });
+                }
+                let src = arg_regs[0];
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueFromInteger {
+                    dst,
+                    src,
+                    target: crate::ir::ValueTyTag::Int,
+                });
+                Ok((dst, ValueTy::Int))
+            }
             // `compare a b`: the three-way order as an `Int` (recorded
             // divergence A8 — Haskell 2010 returns `Ordering`, which rill does
             // not have yet).
@@ -6919,7 +6958,11 @@ impl<'a> Lowerer<'a> {
             // A `Ratio` target does not reach this kernel: its `fromInteger` is
             // a SOURCE equation, so a ratio literal is built by record
             // construction in the instance body.
-            KernelId::FromInteger => {
+            // `toEnum :: Int -> a` (Report §6.3.4). For the builtin numeric
+            // instances the target is the instance's own type, so the widening
+            // is EXACTLY `fromInteger`'s job — one instruction, not two kernels
+            // with the same body.
+            KernelId::ToEnum | KernelId::FromInteger => {
                 if arg_regs.is_empty() {
                     return Err(CompileError::Type {
                         msg: format!("`{name}` expects 1 argument, got 0"),

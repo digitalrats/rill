@@ -1178,6 +1178,8 @@ fn ks(kernel: KernelId) -> &'static str {
         KernelId::FromInteger => "FromInteger",
         KernelId::FromRational => "FromRational",
         KernelId::Recip => "Recip",
+        KernelId::ToEnum => "ToEnum",
+        KernelId::FromEnum => "FromEnum",
     }
 }
 

@@ -170,6 +170,14 @@ pub enum KernelId {
     FromRational,
     /// `recip`: `1 / x` (`ValueRecip`).
     Recip,
+    /// `toEnum`: `Int -> a` (Report §6.3.4). For the numeric instances this is
+    /// the widening `Int -> Int`/`Integer`, i.e. the SAME conversion
+    /// `fromInteger` performs, so the kernel reuses `ValueFromInteger`.
+    ToEnum,
+    /// `fromEnum`: `a -> Int`, the narrowing companion. `Int`/`Integer` both fit
+    /// `Int` for representable values; an out-of-range `Integer` is the Report's
+    /// runtime error, not a silent wrap.
+    FromEnum,
 }
 
 /// A heap value stored in an [`Arena`] slot.

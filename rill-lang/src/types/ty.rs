@@ -547,10 +547,18 @@ pub struct InstanceInfo {
     pub head_args: Vec<String>,
     /// Method bodies: method name → (parameter bindings, body).
     pub methods: HashMap<String, (Vec<String>, Expr)>,
-    /// True when this instance's method bodies are COMPILER KERNELS rather
-    /// than source equations: a primitive numeric instance (`Num Int`,
-    /// `Num Double`, `Fractional Double`), a buffer instance (element-wise
-    /// kernels), or a structurally derived `Eq`/`Ord` instance.
+    /// True when EVERY one of this instance's methods is a COMPILER KERNEL
+    /// rather than a source equation or a class default: a primitive numeric
+    /// instance (`Num Int`, `Num Double`, `Fractional Double`), a buffer
+    /// instance (element-wise kernels), or a structurally derived `Eq`/`Ord`
+    /// instance.
+    ///
+    /// NOT the same as "the declaration has no equations": a class whose
+    /// instance overrides only its MINIMAL methods and takes the rest from the
+    /// class defaults (`instance Enum Int`, where `toEnum`/`fromEnum` are
+    /// kernels and `succ`/`pred`/`enumFrom*` are §9 defaults) has an empty body
+    /// yet must NOT be kernel-only, or every defaulted method would be reported
+    /// as "has no kernel".
     ///
     /// Dispatch for such an instance does not look for a body — it selects the
     /// kernel for the (class, type, method) triple. This is the System FC
@@ -863,6 +871,33 @@ typeclass (Num a) => Fractional a where {
     fromRational : Ratio Integer -> a;
 }
 
+--  --- `Enum` (Report §6.3.4) ------------------------------------------------
+--  A ROOT class with no superclasses, exactly as §9 declares it: `Enum` is a
+--  SIBLING of `Eq`/`Ord`, not a step below them. It meets the numeric chain only
+--  in `Integral a`, whose context is `(Real a, Enum a)`.
+--
+--  The five `enumFrom*` methods are the Report's DEFAULT definitions verbatim
+--  (`succ = toEnum . (+1) . fromEnum`, `enumFrom x = map toEnum [fromEnum x ..]`),
+--  so an instance need only provide `toEnum` and `fromEnum` — §9's "minimal
+--  complete definition".
+typeclass Enum a where {
+    succ           : a -> a = \ x -> toEnum (fromEnum x + 1);
+    pred           : a -> a = \ x -> toEnum (fromEnum x - 1);
+    toEnum         : Int -> a;
+    fromEnum       : a -> Int;
+    --  The four `enumFrom*` methods have NO default here. §9's defaults are
+    --  written in terms of the CLASS METHOD applied at `Int`
+    --  (`enumFrom x = map toEnum [fromEnum x ..]`), and rill has no `[n..]`
+    --  syntax and no `iterate`, so that default would have to call
+    --  `enumFrom @Int` — which is the very method being defaulted, i.e.
+    --  unbounded recursion. They are declared so the class SHAPE matches §9, and
+    --  an instance must provide them until the `[n..]` surface exists.
+    enumFrom       : a -> List a;
+    enumFromThen   : a -> a -> List a;
+    enumFromTo     : a -> a -> List a;
+    enumFromThenTo : a -> a -> a -> List a;
+}
+
 --  Index types (`Data.Ix`): the offset/range vocabulary the array surface is
 --  written against. `range` enumerates the index set in ROW-MAJOR order (last
 --  coordinate fastest), `index` gives an element's flat offset, `inRange` tests
@@ -909,6 +944,19 @@ instance Num Int where { }
 instance Num Integer where { }
 instance Num Double where { }
 instance Fractional Double where { }
+
+--  `Enum` instances (Report §9 lists them for `Int`, `Integer`, `Float`,
+--  `Double`). Only the two numeric INTEGER types here: `Float`/`Double` need
+--  the Report's separate `numericEnumFrom*` definitions, which are a different
+--  surface (and `Float` does not exist in rill).
+--
+--  These carry an EMPTY body but are NOT kernel-only: `toEnum`/`fromEnum` are
+--  the `ToEnum`/`FromEnum` kernels, while `succ`/`pred`/`enumFrom*` are the
+--  class's §9 DEFAULT definitions. A marker that only overrides the two minimal
+--  methods is the Report's "minimal complete definition", so the default has to
+--  be reachable — which is why `primitive` must stay false here.
+instance Enum Int where { }
+instance Enum Integer where { }
 
 --  The instances have a POLYMORPHIC head (`Ratio a`), and they are EXPLICIT.
 --  `derive_eq_ord` also derives a structural `Eq`/`Ord` marker for every
@@ -2537,10 +2585,15 @@ impl TypeEnv {
                             ty: ty.clone(),
                             constraints: constraints.clone(),
                             head_args,
-                            // A body-less declaration is a MARKER: the class's
-                            // methods are compiler kernels for that type
-                            // (`instance Num Int where { }`). A declaration
-                            // with equations carries a real body.
+                            // A body-less declaration means "the class's
+                            // methods are compiler kernels for this type"
+                            // (`instance Num Int where { }`). `Enum Int` is the
+                            // Report's MINIMAL-complete case: `toEnum`/`fromEnum`
+                            // are kernels while `succ`/`pred` are class DEFAULTs,
+                            // so this flag no longer decides dispatch on its own
+                            // — the per-method `kernels::kernel_for_method` check
+                            // does. Keeping it true for a body-less declaration
+                            // preserves the `Num`/`Fractional` meaning.
                             primitive: methods.is_empty(),
                             methods,
                             // A declaration registered here comes from user
