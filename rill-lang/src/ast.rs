@@ -175,13 +175,33 @@ pub enum Expr {
     Void(Span),
     /// String literal, e.g. `"cutoff"`.
     Str(String, Span),
-    /// A reference to a definition or a bound parameter.
+    /// A HANDLE to a name — a definition or a bound parameter.
+    ///
+    /// This is what GHC Core calls a `Var`: the thing β-reduction substitutes
+    /// for, a CAF read, a captured binding. It is NOT an application, and the
+    /// distinction is GHC's own (`-ddump-ds`, measured):
+    ///
+    /// ```haskell
+    /// g = \y -> y     -- definition: a lambda
+    /// h = g (IS 1#)   -- application: App(Var g, arg)
+    /// k = g           -- reference: Var g, with NO App at all
+    /// ```
+    ///
+    /// Haskell 2010 has no zero-argument application: `f` and `f ()` differ by an
+    /// ARGUMENT, and `()` is an ordinary value (the unit constructor), not the
+    /// absence of one. A CONSTANT is not an application either — `x = 42` is a
+    /// CAF, `x = I# 42#` in Core and `IS! [42#]` in STG.
+    ///
+    /// [`Expr::Apply`] therefore always carries at least one argument; an
+    /// `Apply` with an empty `args` is not a "reference", it is the malformed
+    /// state this node exists to prevent.
     Ref(String, Span),
-    /// Application `name(arg, ...)` or juxtaposed `name arg1 arg2`.
+    /// Application `name arg1 arg2` — `App` in GHC Core. `args` is NEVER empty
+    /// (see [`Expr::Ref`]): a bare name is a reference, not an application.
     Apply {
         /// Function name.
         name: String,
-        /// Argument expressions.
+        /// Argument expressions — always at least one.
         args: Vec<Expr>,
         /// Full span of the application.
         span: Span,

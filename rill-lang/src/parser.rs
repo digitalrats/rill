@@ -2096,6 +2096,14 @@ impl<'a> Parser<'a> {
                     while is_juxtaposition_arg_start(self.toks, self.pos) {
                         args.push(self.parse_atom(true)?);
                     }
+                    // `Expr::Apply` carries at least one argument by contract (see
+                    // the variant's doc): a bare name is `Expr::Ref`, because
+                    // Haskell 2010 has no zero-argument application and a
+                    // CONSTANT is a CAF rather than an application. This branch
+                    // is only reached when the next token STARTS an argument, so
+                    // the list cannot be empty — the assert states the contract
+                    // instead of leaving it to the reader.
+                    debug_assert!(!args.is_empty(), "Apply requires at least one argument");
                     let span = t.span.merge(args.last().unwrap().span());
                     Ok(Expr::Apply { name, args, span })
                 } else {
