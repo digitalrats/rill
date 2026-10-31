@@ -869,6 +869,26 @@ typeclass Num a where {
 typeclass (Num a, Ord a) => Real a where {
     toRational : a -> Rational;
 }
+--  `Integral a` (Report §9): `class (Real a, Enum a) => Integral a`. It is the
+--  meeting point of the numeric chain and the (independent) `Enum` branch, and
+--  it is why `Ratio a` is a `RealFrac` rather than a bare `Num`: its arithmetic
+--  normalises through `gcd`, which lives here.
+--
+--  The Report's "minimal complete definition" is `quotRem`/`toInteger`; rill
+--  provides the four operators as KERNELS and does NOT declare `quotRem`/`divMod`
+--  yet (they return a PAIR, which needs the class to name the tuple type — a
+--  separate task). The four are independent methods here, and the Report's laws
+--  `(x quot y)*y + (x rem y) == x` / `(x div y)*y + (x mod y) == x` hold by the
+--  kernel implementation, measured against GHC 9.10.3:
+--  `(-7) quot 2 = -3`, `(-7) rem 2 = -1`, `(-7) div 2 = -4`, `(-7) mod 2 = 1`.
+typeclass (Real a, Enum a) => Integral a where {
+    quot      : a -> a -> a;
+    rem       : a -> a -> a;
+    div       : a -> a -> a;
+    mod       : a -> a -> a;
+    toInteger : a -> Integer;
+}
+
 typeclass (Num a) => Fractional a where {
     (/) : a -> a -> a;
     recip : a -> a;
@@ -969,6 +989,11 @@ instance Fractional Double where { }
 --  be reachable — which is why `primitive` must stay false here.
 instance Enum Int where { }
 instance Enum Integer where { }
+
+--  `Integral` instances: the two integer leaf types, exactly as Report §9 lists
+--  them (`Ratio a` is `RealFrac`, not `Integral`; `Double` is neither).
+instance Integral Int where { }
+instance Integral Integer where { }
 
 --  `Real` instances (Report §9 lists `Int`, `Integer`, `Float`, `Double`).
 --  `toRational` is the exact `n/1` for the integer tracks; the `Double` body is

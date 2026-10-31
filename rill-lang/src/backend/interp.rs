@@ -2,7 +2,7 @@
 
 use num_bigint::{BigInt, BigUint};
 use num_rational::BigRational;
-use num_traits::ToPrimitive;
+use num_traits::{ToPrimitive, Zero};
 use rill_core::buffer::FixedBuffer;
 use rill_core::math::vector::ScalarVector4;
 use rill_core::math::Transcendental;
@@ -921,6 +921,49 @@ enum ValueArith {
     Sub,
     Mul,
     Div,
+    /// `quot`: truncated toward zero (Report §6.4.2).
+    Quot,
+    /// `rem`: `a - (a quot b) * b`, the DIVIDEND's sign.
+    Rem,
+    /// `div`: truncated toward negative infinity.
+    IntDiv,
+    /// `mod`: `a - (a div b) * b`, the DIVISOR's sign.
+    Mod,
+}
+
+/// Integer division and its remainder, with the sign rule the Report names.
+///
+/// Report §6.4.2: `quot` truncates toward ZERO and `div` toward NEGATIVE
+/// INFINITY, and the two laws are
+///   `(x quot y) * y + (x rem y) == x`
+///   `(x div  y) * y + (x mod y) == x`
+/// so `rem` takes the DIVIDEND's sign and `mod` the DIVISOR's. Measured GHC
+/// 9.10.3 at `Int`: `(-7) quot 2 = -3`, `(-7) rem 2 = -1`,
+/// `(-7) div 2 = -4`, `(-7) mod 2 = 1`.
+fn integer_quot_rem(a: i64, b: i64) -> (i64, i64) {
+    // Rust's `/` and `%` on integers ARE `quot`/`rem` (truncating), so the
+    // zero case is the only extra rule.
+    (a / b, a % b)
+}
+
+fn integer_div_mod(a: i64, b: i64) -> (i64, i64) {
+    let (q, r) = integer_quot_rem(a, b);
+    // Floor division: when the remainder is non-zero and its sign differs from
+    // the divisor's, step the quotient down and the remainder up.
+    if r != 0 && ((r < 0) != (b < 0)) {
+        (q - 1, r + b)
+    } else {
+        (q, r)
+    }
+}
+
+fn bigint_div_mod(a: &BigInt, b: &BigInt) -> (BigInt, BigInt) {
+    let (q, r) = (a / b, a % b);
+    if !r.is_zero() && ((r < BigInt::from(0)) != (b < &BigInt::from(0))) {
+        (q - 1, r + b)
+    } else {
+        (q, r)
+    }
 }
 
 /// A forced value-arithmetic operand, keeping the Int/Double KIND so integer
@@ -1051,6 +1094,21 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
             ValueArith::Add => Some(x.wrapping_add(*y)),
             ValueArith::Sub => Some(x.wrapping_sub(*y)),
             ValueArith::Mul => Some(x.wrapping_mul(*y)),
+            // `Int` divides exactly like `Integer` does: same Report laws, same
+            // sign rules, only the width differs.
+            ValueArith::Quot | ValueArith::Rem | ValueArith::IntDiv | ValueArith::Mod => {
+                if *y == 0 {
+                    latch_fault(ir, world, "divide by zero");
+                    world.value_regs[dst] = None;
+                    return;
+                }
+                Some(match op {
+                    ValueArith::Quot => integer_quot_rem(*x, *y).0,
+                    ValueArith::Rem => integer_quot_rem(*x, *y).1,
+                    ValueArith::IntDiv => integer_div_mod(*x, *y).0,
+                    _ => integer_div_mod(*x, *y).1,
+                })
+            }
             ValueArith::Div => None,
         };
         if let Some(v) = int_result {
@@ -1066,6 +1124,23 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
             ValueArith::Add => Some(x + y),
             ValueArith::Sub => Some(x - y),
             ValueArith::Mul => Some(x * y),
+            // The four `Integral` methods have no float form: they are exact
+            // integer operations on the `Integer` track.
+            ValueArith::Quot | ValueArith::Rem | ValueArith::IntDiv | ValueArith::Mod => {
+                if y.is_zero() {
+                    latch_fault(ir, world, "divide by zero");
+                    world.value_regs[dst] = None;
+                    return;
+                }
+                let (q, r) = match op {
+                    ValueArith::Quot | ValueArith::Rem => (x / y, x % y),
+                    _ => bigint_div_mod(x, y),
+                };
+                Some(match op {
+                    ValueArith::Quot | ValueArith::IntDiv => q,
+                    _ => r,
+                })
+            }
             ValueArith::Div => None,
         };
         if let Some(v) = exact {
@@ -1115,6 +1190,14 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
         ValueArith::Sub => av - bv,
         ValueArith::Mul => av * bv,
         ValueArith::Div => av / bv,
+        // The `Integral` methods never reach the float track: reaching here
+        // means the typed front end let a fractional type through, which is the
+        // fault below rather than a silently truncated quotient.
+        ValueArith::Quot | ValueArith::Rem | ValueArith::IntDiv | ValueArith::Mod => {
+            latch_fault(ir, world, "an `Integral` method reached the floating track");
+            world.value_regs[dst] = None;
+            return;
+        }
     };
     world.value_regs[dst] = alloc_owned(ir, world, Value::Double(result));
 }
@@ -1764,6 +1847,42 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             ir,
             world,
             ValueArith::Div,
+            *dst + base,
+            *a + base,
+            *b + base,
+            drops,
+        ),
+        ValueInstr::ValueQuot { dst, a, b } => exec_value_arith(
+            ir,
+            world,
+            ValueArith::Quot,
+            *dst + base,
+            *a + base,
+            *b + base,
+            drops,
+        ),
+        ValueInstr::ValueRem { dst, a, b } => exec_value_arith(
+            ir,
+            world,
+            ValueArith::Rem,
+            *dst + base,
+            *a + base,
+            *b + base,
+            drops,
+        ),
+        ValueInstr::ValueIntDiv { dst, a, b } => exec_value_arith(
+            ir,
+            world,
+            ValueArith::IntDiv,
+            *dst + base,
+            *a + base,
+            *b + base,
+            drops,
+        ),
+        ValueInstr::ValueMod { dst, a, b } => exec_value_arith(
+            ir,
+            world,
+            ValueArith::Mod,
             *dst + base,
             *a + base,
             *b + base,

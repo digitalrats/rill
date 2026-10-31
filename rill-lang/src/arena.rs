@@ -178,6 +178,17 @@ pub enum KernelId {
     /// `Int` for representable values; an out-of-range `Integer` is the Report's
     /// runtime error, not a silent wrap.
     FromEnum,
+    /// `quot`: integer division truncated toward zero (Report §6.4.2).
+    Quot,
+    /// `rem`: the remainder of `quot`, carrying the dividend's sign.
+    Rem,
+    /// `div`: integer division truncated toward negative infinity.
+    IntDiv,
+    /// `mod`: the remainder of `div`, carrying the divisor's sign.
+    Mod,
+    /// `toInteger`: widen the instance's integer to `Integer`. Exact — no
+    /// rounding, no truncation — so it reuses `ValueFromInteger`'s conversion.
+    ToInteger,
 }
 
 /// A heap value stored in an [`Arena`] slot.

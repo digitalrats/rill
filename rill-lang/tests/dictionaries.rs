@@ -1217,6 +1217,11 @@ fn ks(kernel: KernelId) -> &'static str {
         KernelId::Recip => "Recip",
         KernelId::ToEnum => "ToEnum",
         KernelId::FromEnum => "FromEnum",
+        KernelId::Quot => "Quot",
+        KernelId::Rem => "Rem",
+        KernelId::IntDiv => "IntDiv",
+        KernelId::Mod => "Mod",
+        KernelId::ToInteger => "ToInteger",
     }
 }
 

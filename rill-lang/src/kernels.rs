@@ -60,6 +60,14 @@ pub fn kernel_for_method(class: &str, method: &str) -> Option<KernelId> {
         // exactly as §9 gives them, so they need no kernel.
         ("Enum", "toEnum") => KernelId::ToEnum,
         ("Enum", "fromEnum") => KernelId::FromEnum,
+        // `Integral` (Report §6.4.2): the four division methods and the
+        // widening to `Integer`. `quot`/`div`/`rem`/`mod` satisfy
+        // `(x quot y)*y + (x rem y) == x` and likewise for `div`/`mod`.
+        ("Integral", "quot") => KernelId::Quot,
+        ("Integral", "rem") => KernelId::Rem,
+        ("Integral", "div") => KernelId::IntDiv,
+        ("Integral", "mod") => KernelId::Mod,
+        ("Integral", "toInteger") => KernelId::ToInteger,
         // `Fractional`: division and reciprocal.
         ("Fractional", "/") => KernelId::Div,
         ("Fractional", "recip") => KernelId::Recip,
@@ -99,7 +107,12 @@ pub fn has_instruction(kernel: KernelId, _is_buffer: bool) -> bool {
         | KernelId::FromRational
         | KernelId::Recip
         | KernelId::ToEnum
-        | KernelId::FromEnum => true,
+        | KernelId::FromEnum
+        | KernelId::Quot
+        | KernelId::Rem
+        | KernelId::IntDiv
+        | KernelId::Mod
+        | KernelId::ToInteger => true,
     }
 }
 
@@ -188,6 +201,11 @@ mod tests {
             ("Num", "fromInteger", KernelId::FromInteger),
             ("Enum", "toEnum", KernelId::ToEnum),
             ("Enum", "fromEnum", KernelId::FromEnum),
+            ("Integral", "quot", KernelId::Quot),
+            ("Integral", "rem", KernelId::Rem),
+            ("Integral", "div", KernelId::IntDiv),
+            ("Integral", "mod", KernelId::Mod),
+            ("Integral", "toInteger", KernelId::ToInteger),
             ("Fractional", "/", KernelId::Div),
             ("Fractional", "recip", KernelId::Recip),
         ];

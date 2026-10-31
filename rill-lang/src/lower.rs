@@ -6902,6 +6902,61 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ret))
             }
+            // The four `Integral` division methods (Report §6.4.2). Each is a
+            // TWO-argument integer operation whose result keeps the instance's
+            // numeric track — `quot :: Int -> Int -> Int` stays `Int`,
+            // `quot :: Integer -> Integer -> Integer` stays `Integer`. No
+            // `Double` arm exists: an `Integral` type is never fractional.
+            div_op @ (KernelId::Quot | KernelId::Rem | KernelId::IntDiv | KernelId::Mod) => {
+                if arg_regs.len() < 2 {
+                    return Err(CompileError::Type {
+                        msg: format!("`{name}` expects 2 arguments, got {}", arg_regs.len()),
+                        span,
+                    });
+                }
+                let ret = match (arg_tys.first(), arg_tys.get(1)) {
+                    (Some(ValueTy::Int), Some(ValueTy::Int)) => ValueTy::Int,
+                    (Some(ValueTy::Integer), Some(ValueTy::Integer)) => ValueTy::Integer,
+                    _ => {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "`{name}` is an `Integral` method: its operands must be `Int` or \
+                                 `Integer`, got {:?} and {:?}",
+                                arg_tys.first(),
+                                arg_tys.get(1)
+                            ),
+                            span,
+                        });
+                    }
+                };
+                let dst = self.fresh_value_reg();
+                let (a, b) = (arg_regs[0], arg_regs[1]);
+                self.emit_value(match div_op {
+                    KernelId::Quot => ValueInstr::ValueQuot { dst, a, b },
+                    KernelId::Rem => ValueInstr::ValueRem { dst, a, b },
+                    KernelId::IntDiv => ValueInstr::ValueIntDiv { dst, a, b },
+                    KernelId::Mod => ValueInstr::ValueMod { dst, a, b },
+                    _ => unreachable!("only the four division kernels reach here"),
+                });
+                Ok((dst, ret))
+            }
+            // `toInteger :: a -> Integer` — exact, so the SAME conversion
+            // `fromInteger` performs with an `Integer` target.
+            KernelId::ToInteger => {
+                if arg_regs.is_empty() {
+                    return Err(CompileError::Type {
+                        msg: format!("`{name}` expects 1 argument, got 0"),
+                        span,
+                    });
+                }
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueFromInteger {
+                    dst,
+                    src: arg_regs[0],
+                    target: crate::ir::ValueTyTag::Integer,
+                });
+                Ok((dst, ValueTy::Integer))
+            }
             // `fromEnum :: a -> Int` (Report §6.3.4). The narrowing the numeric
             // instances perform is the SAME `ValueFromInteger` conversion with
             // an `Int` target: `Int -> Int` is the identity and `Integer -> Int`

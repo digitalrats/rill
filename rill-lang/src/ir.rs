@@ -506,6 +506,47 @@ pub enum ValueInstr {
         /// Right operand value register.
         b: usize,
     },
+    /// `quot a b`: integer division truncated TOWARD ZERO (Report §6.4.2).
+    ///
+    /// A separate instruction from `ValueDiv` because they are different
+    /// operations on different class methods: `(/)` is `Fractional` and float
+    /// division, `quot` is `Integral` and integer division. Measured GHC:
+    /// `(-7) quot 2 = -3`, `(-7) div 2 = -4`.
+    ValueQuot {
+        /// Destination value register.
+        dst: usize,
+        /// Left operand value register.
+        a: usize,
+        /// Right operand value register.
+        b: usize,
+    },
+    /// `rem a b`: the remainder of `quot`, carrying the DIVIDEND's sign.
+    ValueRem {
+        /// Destination value register.
+        dst: usize,
+        /// Left operand value register.
+        a: usize,
+        /// Right operand value register.
+        b: usize,
+    },
+    /// `div a b`: integer division truncated toward NEGATIVE INFINITY.
+    ValueIntDiv {
+        /// Destination value register.
+        dst: usize,
+        /// Left operand value register.
+        a: usize,
+        /// Right operand value register.
+        b: usize,
+    },
+    /// `mod a b`: the remainder of `div`, carrying the DIVISOR's sign.
+    ValueMod {
+        /// Destination value register.
+        dst: usize,
+        /// Left operand value register.
+        a: usize,
+        /// Right operand value register.
+        b: usize,
+    },
     /// See [`ValueInstr::ValueAdd`].
     ValueDiv {
         /// Destination value register (a `Double`: division is float division).

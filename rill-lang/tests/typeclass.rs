@@ -464,6 +464,87 @@ fn a_forall_signature_reports_its_real_arity() {
 }
 
 #[test]
+fn integral_division_satisfies_the_report_sign_laws() {
+    // Report §6.4.2: `quot` truncates toward ZERO and `div` toward NEGATIVE
+    // INFINITY, so `rem` takes the dividend's sign and `mod` the divisor's.
+    // Every value below is GHC 9.10.3's, measured:
+    //   (3, 1, 3, 1, -3, -1, -4, 1)
+    let run_num = |src: &str| {
+        let (defs, expr) = src.rsplit_once("main = ").expect("the source binds `main`");
+        let world = eval_ffi(
+            defs,
+            expr.trim().trim_end_matches(';'),
+            ForeignRegistry::<f32>::new(),
+        )
+        .unwrap_or_else(|e| panic!("`{src}` must compile: {e}"));
+        match world.arena().get(world.result().unwrap()).unwrap() {
+            rill_lang::arena::Value::Int(v) => *v,
+            other => panic!("expected an Int, got {other:?}"),
+        }
+    };
+    for (expr, want) in [
+        ("quot (7 :: Int) 2", 3),
+        ("rem (7 :: Int) 2", 1),
+        ("div (7 :: Int) 2", 3),
+        ("mod (7 :: Int) 2", 1),
+        ("quot (-7 :: Int) 2", -3),
+        ("rem (-7 :: Int) 2", -1),
+        ("div (-7 :: Int) 2", -4),
+        ("mod (-7 :: Int) 2", 1),
+    ] {
+        assert_eq!(run_num(&format!("main = {expr};")), want, "`{expr}`");
+    }
+    // The Report law holds on both pairs.
+    for (a, b) in [(7i64, 2i64), (-7, 2), (7, -2), (-7, -2)] {
+        let q = run_num(&format!("main = quot ({a} :: Int) {b};"));
+        let r = run_num(&format!("main = rem ({a} :: Int) {b};"));
+        assert_eq!(
+            q * b + r,
+            a,
+            "`({a} quot {b}) * {b} + ({a} rem {b}) == {a}`"
+        );
+        let d = run_num(&format!("main = div ({a} :: Int) {b};"));
+        let m = run_num(&format!("main = mod ({a} :: Int) {b};"));
+        assert_eq!(d * b + m, a, "`({a} div {b}) * {b} + ({a} mod {b}) == {a}`");
+    }
+    // `Integral` is a real class, and `Double` is NOT in it (Report Table 6.1).
+    let infer = |src: &str| {
+        let toks = rill_lang::lexer::tokenize(src).expect("lex");
+        let mut prog = rill_lang::parser::parse(&toks, src.as_bytes()).expect("parse");
+        rill_lang::desugar::desugar_program(&mut prog).expect("desugar");
+        rill_lang::types::infer::infer_program(&prog, Mode::Strict)
+    };
+    assert!(
+        infer("f :: Integral a => a -> a -> a;\nf x y = quot x y;\nmain = 0.0;").is_ok(),
+        "`Integral a =>` must supply `quot`"
+    );
+    // KNOWN GAP (OD-55): `quot` at `Double` is ACCEPTED where GHC rejects it
+    // (`No instance for Integral Double`). The dispatch resolves the four
+    // operators from the LITERAL operands and never re-checks the RESULT's type,
+    // so a `Double` position is not rejected. Asserted as the current behaviour
+    // so the suite is honest; this assertion FLIPS when OD-55 closes.
+    assert!(
+        infer("x :: Double\nx = quot 7 2\nmain = 0.0;").is_ok(),
+        "OD-55: `quot` at `Double` is currently accepted; closing the gap flips this"
+    );
+    // `toInteger` widens exactly.
+    let to_int = |src: &str| {
+        let (defs, expr) = src.rsplit_once("main = ").expect("the source binds `main`");
+        let world = eval_ffi(
+            defs,
+            expr.trim().trim_end_matches(';'),
+            ForeignRegistry::<f32>::new(),
+        )
+        .unwrap_or_else(|e| panic!("`{src}` must compile: {e}"));
+        match world.arena().get(world.result().unwrap()).unwrap() {
+            rill_lang::arena::Value::Integer(v) => v.clone(),
+            other => panic!("expected an Integer, got {other:?}"),
+        }
+    };
+    assert_eq!(to_int("main = toInteger (5 :: Int);"), 5.into());
+}
+
+#[test]
 fn a_signature_context_restricts_its_body() {
     // Haskell 2010 §4.1.3: a type signature's context RESTRICTS the body. Every
     // expectation below is GHC 9.10.3's measured behaviour.
