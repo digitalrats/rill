@@ -2290,6 +2290,11 @@ struct InlineCall<'a> {
     container: Option<&'a ValueTy>,
     method: &'a str,
     class_var: &'a str,
+    /// How the class variable is spelled in the instance's method types. A
+    /// constructor class substitutes the HEAD (`Kleisli`); an arity-0 class
+    /// whose variable is a whole type substitutes that TYPE (`Double`,
+    /// `List ?a`), which is what a selector-driven dispatch already computed.
+    cv_subst: ClassVarSubst,
     sig: &'a crate::ast::TypeExpr,
     /// The instance body, from `resolve_method` or the class default.
     body: &'a Expr,
@@ -2322,6 +2327,7 @@ fn inline_instance_body(ctx: &mut Ctx, call: InlineCall<'_>) -> Result<ValueTy, 
         container,
         method,
         class_var,
+        cv_subst,
         sig,
         body,
         params,
@@ -2352,7 +2358,6 @@ fn inline_instance_body(ctx: &mut Ctx, call: InlineCall<'_>) -> Result<ValueTy, 
     ctx.method_lifting.insert(key.clone());
     let saved_locals = ctx.locals.clone();
     // 3. Method parameters, with the instance's head arguments restored.
-    let cv_subst = ClassVarSubst::Ctor(ty_name.to_string(), Vec::new());
     let mut param_tys = signature_param_tys(ctx, class_var, &cv_subst, sig);
     prepend_instance_head_args(
         &ctx.env.clone(),
@@ -6059,50 +6064,32 @@ fn infer_ref_expected(
                         });
                     }
                 };
-                // A CONSTRAINT instance (`instance (Monad m) => Arrow (Kleisli m)`)
-                // keeps its head argument ABSTRACT in both the head and the
-                // bodies, so a result-directed method inside the body (`return
-                // (f x)`, whose `m b` is `TyConApp(m, [b])`) has no concrete
-                // container to resolve against. The APPLY path already handles
-                // this: `bind_constraint_instance` takes the head arguments from
-                // the expected container (`Kleisli Maybe …` → `m := Maybe`) and
-                // `prepend_instance_head_args` puts them back into the
-                // signature-converted parameter and result types. The REF path
-                // inlined the body without either step, so every method VALUE
-                // reached from a constraint instance failed with "the expected
-                // type is not concrete".
-                //
-                // Both helpers no-op when the instance has no head arguments, so
-                // an ordinary monomorphic instance is unaffected.
-                bind_constraint_instance(ctx, &class_name, &ty_name, &exp, span)?;
-                let key = (class_name.clone(), ty_name.clone(), name.to_string());
-                if ctx.method_lifting.contains(&key) {
-                    return Err(CompileError::Type {
-                        msg: format!("recursive typeclass method `{name}` for type `{ty_name}`"),
+                // The inline itself is the shared act (see
+                // `inline_instance_body`): it binds the instance head arguments
+                // from the expected container, takes the recursion guard,
+                // restores the head arguments into the parameter types, pushes
+                // the instance context as a GIVEN, and types the body against
+                // the caller expectation. A bare, result-directed name has no
+                // call-site arguments, so `arg_vtys` is empty and the parameter
+                // types come from the signature.
+                let body_vty = inline_instance_body(
+                    ctx,
+                    InlineCall {
+                        class_name: &class_name,
+                        ty_name: &ty_name,
+                        container: Some(&exp),
+                        method: name,
+                        class_var: &class_var,
+                        cv_subst: ClassVarSubst::Ty(ValueTy::Con(ty_name.clone(), Vec::new())),
+                        sig,
+                        body: &body,
+                        params: &params,
+                        arg_vtys: &[],
+                        param_bindings: ParamBindings::Signature,
+                        body_expected: Some(exp.clone()),
                         span,
-                    });
-                }
-                ctx.method_lifting.insert(key.clone());
-                let saved = ctx.locals.clone();
-                let mut method_params = signature_param_tys(ctx, &class_var, &cv_subst, sig);
-                prepend_instance_head_args(
-                    &ctx.env.clone(),
-                    &class_name,
-                    &mut method_params,
-                    &ty_name,
-                    &ctx.type_var_bindings.clone(),
-                    || ctx.fresh_vty(),
-                );
-                for (p, pt) in params.iter().zip(method_params) {
-                    ctx.locals.insert(p.clone(), ArrowTy::value_channel(pt));
-                }
-                // Nested result-directed methods in the body (`pure x = return x`)
-                // resolve by the same expected type.
-                let body_vty =
-                    infer_method_value_vty_expected(ctx, &body, "body", Some(exp.clone()));
-                ctx.locals = saved;
-                ctx.method_lifting.remove(&key);
-                let body_vty = body_vty?;
+                    },
+                )?;
                 return Ok(ArrowTy::value_channel(body_vty));
             }
             // A NON-result-directed method used as a first-class VALUE
@@ -6163,33 +6150,36 @@ fn infer_ref_expected(
                             });
                         }
                     };
-                    let key = (class_name.clone(), ty_name.clone(), name.to_string());
-                    if ctx.method_lifting.contains(&key) {
-                        return Err(CompileError::Type {
-                            msg: format!(
-                                "recursive typeclass method `{name}` for type `{ty_name}`"
-                            ),
+                    // The body is TYPED (not returned): that is what makes the
+                    // dispatch legal and records the nested selections. Its own
+                    // type is discarded because the method CONTRACT is the class
+                    // signature below — `fold mappend …` must compare against
+                    // `mappend : m -> m -> m`, not against an implementation's
+                    // incidental parameter shapes.
+                    inline_instance_body(
+                        ctx,
+                        InlineCall {
+                            class_name: &class_name,
+                            ty_name: &ty_name,
+                            container: Some(exp),
+                            method: name,
+                            class_var: &class_var,
+                            cv_subst: ClassVarSubst::Ty(cand_ty.clone()),
+                            sig,
+                            body: &body,
+                            params: &params,
+                            arg_vtys: &[],
+                            param_bindings: ParamBindings::Arguments,
+                            body_expected: None,
                             span,
-                        });
-                    }
-                    ctx.method_lifting.insert(key.clone());
-                    let cv_subst = ClassVarSubst::Ty(cand_ty);
-                    let saved = ctx.locals.clone();
-                    for (p, pt) in params
-                        .iter()
-                        .zip(signature_param_tys(ctx, &class_var, &cv_subst, sig))
-                    {
-                        ctx.locals.insert(p.clone(), ArrowTy::value_channel(pt));
-                    }
-                    let res = infer_expr(ctx, &body);
-                    ctx.locals = saved;
-                    ctx.method_lifting.remove(&key);
-                    res?;
+                        },
+                    )?;
                     // The method's CONTRACT is its class signature with the
                     // class variable substituted by the dispatched instance —
                     // not the instance body's incidental type, which would make
                     // `fold mappend …` compare against the implementation's own
                     // parameter names.
+                    let cv_subst = ClassVarSubst::Ty(cand_ty);
                     let env = ctx.env.clone();
                     let (arg_tys, ret_ty) = signature_param_and_result_tys_conv(
                         &env,
@@ -8106,6 +8096,7 @@ fn infer_apply_impl(
                         container: Some(&exp),
                         method: name,
                         class_var: &class_var,
+                        cv_subst: ClassVarSubst::Ty(ValueTy::Con(ty_name.clone(), Vec::new())),
                         sig,
                         body: &body,
                         params: &params,
@@ -8545,6 +8536,7 @@ fn infer_apply_impl(
                         container: Some(&selector_ty),
                         method: name,
                         class_var: &class_var,
+                        cv_subst,
                         sig,
                         body: &body,
                         params: &params,
@@ -8832,6 +8824,7 @@ fn infer_apply_impl(
                     container: Some(&container_vty),
                     method: name,
                     class_var: &class_var,
+                    cv_subst: ClassVarSubst::Ctor(ctor.clone(), Vec::new()),
                     sig,
                     body: &body,
                     params: &params,
