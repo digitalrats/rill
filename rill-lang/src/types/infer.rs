@@ -2215,6 +2215,189 @@ pub(crate) fn prepend_instance_head_args(
     }
 }
 
+/// Push an instance's own context onto the GIVEN stack, returning the stack to
+/// restore afterwards.
+///
+/// Haskell 2010 §4.3.2: an instance BODY is typed in the instance's context, so
+/// `instance (Monad m) => Arrow (Kleisli m)` may call `return` inside its bodies
+/// and have `m b` resolve against that dictionary rather than demanding a
+/// concrete container.
+///
+/// The witness id is the one the head binding gave the head variable — `m` may
+/// still be a live variable (`Var(14)`) when the instance is used before its
+/// container is concrete, and `m b` is then `TyConApp(14, [b])`, which mentions
+/// it. A head variable bound to nothing is skipped: there is no id to witness.
+///
+/// The caller restores `ctx.given` to the returned value afterwards.
+fn set_instance_given(ctx: &mut Ctx, class: &str, ctor: &str) -> Vec<GivenVar> {
+    let saved = ctx.given.clone();
+    for (cclass, cvar) in instance_constraints(&ctx.env.clone(), class, ctor) {
+        let Some(bound) = ctx.type_var_bindings.get(&cvar).cloned() else {
+            continue;
+        };
+        if let ValueTy::Var(v) | ValueTy::TyConVar(v) | ValueTy::TyConApp(v, _) =
+            ctx.subst.resolve_value(&bound)
+        {
+            ctx.given.push(GivenVar {
+                class: cclass,
+                name: cvar,
+                id: Some(v),
+            });
+        }
+    }
+    saved
+}
+
+/// The ONE place an instance's method body is inlined.
+///
+/// Every way of reaching a method — an applied call, a bare reference, a
+/// result-directed method under an expected type, a constructor-class method
+/// selected by its container — ends with the same act: type the INSTANCE BODY in
+/// place of the call. That act has six parts, and each used to be copy-pasted at
+/// its call site (five sites, drifting apart until one-arm-at-a-time fixes had
+/// to be applied to each):
+///
+/// 1. bind the instance's HEAD arguments to the container that selected it
+///    (`Kleisli Maybe …` → `m := Maybe`);
+/// 2. take the recursion guard for `(class, type, method)` — it fires only on
+///    BODY re-entry, never on an argument that legally inlines another method;
+/// 3. bind the method's parameters with the head arguments restored into their
+///    types (`m b` → `Maybe b` once the call site made `m` concrete);
+/// 4. push the instance's OWN context onto the GIVEN stack (Haskell 2010
+///    §4.3.2) so a result-directed method inside the body resolves against the
+///    instance's dictionary;
+/// 5. type the body against the caller's expected type;
+/// 6. restore every scratch value, the guard included.
+///
+/// A caller supplies only what is genuinely its own: WHICH instance was
+/// selected, the argument value types it already inferred, and the expected
+/// type — see [`InlineCall`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ParamBindings {
+    Signature,
+    Arguments,
+}
+
+struct InlineCall<'a> {
+    /// The class declaring the method (`Monad`, `Arrow`).
+    class_name: &'a str,
+    /// The instance KEY that was selected (`Kleisli`, `Int`, `FixedBuffer`) —
+    /// the key `resolve_method` is asked for, not the full applied type.
+    ty_name: &'a str,
+    /// The type that SELECTED the instance, used to bind head arguments
+    /// (`Kleisli Maybe Double Double`). `None` for an arity-0 instance, which is
+    /// selected by its type NAME and has no head arguments.
+    container: Option<&'a ValueTy>,
+    method: &'a str,
+    class_var: &'a str,
+    sig: &'a crate::ast::TypeExpr,
+    /// The instance body, from `resolve_method` or the class default.
+    body: &'a Expr,
+    /// The body's formal parameter names, in order.
+    params: &'a [String],
+    /// The call-site value type of each supplied argument, typed against its
+    /// parameter. Empty for a bare reference.
+    arg_vtys: &'a [ValueTy],
+    /// Where the body's parameter bindings come from.
+    ///
+    /// [`ParamBindings::Signature`] binds the signature's parameter types (with
+    /// the instance's head arguments restored) and then unifies the argument
+    /// types into them — the applied-call shape, where the parameter type is the
+    /// authority.
+    ///
+    /// [`ParamBindings::Arguments`] binds the types the caller INFERRED for the
+    /// arguments — the arity-0 shape, where a nullary argument (`mempty`)
+    /// contributes a concrete `List ?a` the signature cannot name.
+    param_bindings: ParamBindings,
+    /// The expected type of the body.
+    body_expected: Option<ValueTy>,
+    span: Span,
+}
+
+/// Inline an instance body; see [`InlineCall`].
+fn inline_instance_body(ctx: &mut Ctx, call: InlineCall<'_>) -> Result<ValueTy, CompileError> {
+    let InlineCall {
+        class_name,
+        ty_name,
+        container,
+        method,
+        class_var,
+        sig,
+        body,
+        params,
+        arg_vtys,
+        param_bindings,
+        body_expected,
+        span,
+    } = call;
+    // 1. Head arguments from the container that selected this instance. An
+    // arity-0 instance is selected by its type NAME and has no container, so
+    // there is nothing to bind (and `bind_constraint_instance` would reject the
+    // absent head).
+    if let Some(container) = container {
+        bind_constraint_instance(ctx, class_name, ty_name, container, span)?;
+    }
+    // 2. Recursion guard on BODY re-entry only.
+    let key = (
+        class_name.to_string(),
+        ty_name.to_string(),
+        method.to_string(),
+    );
+    if ctx.method_lifting.contains(&key) {
+        return Err(CompileError::Type {
+            msg: format!("recursive typeclass method `{method}` for type `{ty_name}`"),
+            span,
+        });
+    }
+    ctx.method_lifting.insert(key.clone());
+    let saved_locals = ctx.locals.clone();
+    // 3. Method parameters, with the instance's head arguments restored.
+    let cv_subst = ClassVarSubst::Ctor(ty_name.to_string(), Vec::new());
+    let mut param_tys = signature_param_tys(ctx, class_var, &cv_subst, sig);
+    prepend_instance_head_args(
+        &ctx.env.clone(),
+        class_name,
+        &mut param_tys,
+        ty_name,
+        &ctx.type_var_bindings.clone(),
+        || ctx.fresh_vty(),
+    );
+    for (i, p) in params.iter().enumerate() {
+        let ty = match param_bindings {
+            ParamBindings::Arguments => arg_vtys
+                .get(i)
+                .cloned()
+                .or_else(|| param_tys.get(i).cloned())
+                .unwrap_or_else(|| ctx.fresh_vty()),
+            ParamBindings::Signature => {
+                param_tys.get(i).cloned().unwrap_or_else(|| ctx.fresh_vty())
+            }
+        };
+        ctx.locals.insert(p.clone(), ArrowTy::value_channel(ty));
+    }
+    // The ARGUMENT's own value type refines the parameter binding: `return ()`
+    // supplies a `Void` payload to a parameter the signature left abstract, and
+    // the body's result (`m a`) must see `a := Void`, not a free variable.
+    if param_bindings == ParamBindings::Signature {
+        for (i, av) in arg_vtys.iter().enumerate() {
+            if let Some(p) = params.get(i) {
+                if let Some(bound) = ctx.locals.get(p).cloned() {
+                    unify_value(av, &bound.vty, &mut ctx.subst, span)?;
+                }
+            }
+        }
+    }
+    // 4. The instance's own context, as a GIVEN (Haskell 2010 §4.3.2).
+    let saved_given = set_instance_given(ctx, class_name, ty_name);
+    // 5. Type the body.
+    let result = infer_method_value_vty_expected(ctx, body, "body", body_expected);
+    // 6. Restore.
+    ctx.given = saved_given;
+    ctx.locals = saved_locals;
+    ctx.method_lifting.remove(&key);
+    result
+}
+
 /// The `(class, variable)` context an instance DECLARES: the `Monad m` of
 /// `instance (Monad m) => Arrow (Kleisli m)`.
 ///
@@ -7882,32 +8065,19 @@ fn infer_apply_impl(
                         }
                     },
                 };
-                let key = (class_name.clone(), ty_name.clone(), name.to_string());
-                if ctx.method_lifting.contains(&key) {
-                    return Err(CompileError::Type {
-                        msg: format!("recursive typeclass method `{name}` for type `{ty_name}`"),
-                        span,
-                    });
-                }
-                ctx.method_lifting.insert(key.clone());
-                let saved = ctx.locals.clone();
-                let param_tys = signature_param_tys(ctx, &class_var, &cv_subst, sig);
-                // Infer the arguments BEFORE binding the method's params into
-                // `ctx.locals`: a param that shares a name with a caller-local
-                // (`return x` in `\x -> return (f x)` — the `arr` instance
-                // body) must not capture the argument's free `x` (that made
-                // `f x` apply the FRESH param var, and a later unify of that
-                // var against the closure's result type tripped the occurs
-                // check: `Var44 ~ Pair[Var44, Var44]`).
                 // Each argument is typed AGAINST its parameter type. Typing it
                 // bare and unifying afterwards does NOT bind the class variable:
                 // the bare pass instantiates a definition's scheme at a FRESH
                 // variable, so the later unify compares two unrelated variables
                 // and the original one stays unresolved (`h + 2.5` left `h` at
                 // `Var` while `2.5` was `Double` — two answers for `(+)`'s one
-                // `a`). Threading the parameter in is what makes them the same
-                // variable from the start.
-                let mut arg_vtys = Vec::with_capacity(args.len());
+                // `a`). Threading the parameter in makes them the same variable
+                // from the start. The arguments are typed BEFORE the params are
+                // bound: an argument is a caller expression, so a param sharing a
+                // name with a caller-local must not capture it (`return x` inside
+                // `\x -> return (f x)`).
+                let param_tys = signature_param_tys(ctx, &class_var, &cv_subst, sig);
+                let mut arg_vtys: Vec<ValueTy> = Vec::with_capacity(args.len());
                 for (i, a) in args.iter().enumerate() {
                     match param_tys.get(i).cloned() {
                         Some(e) => arg_vtys.push(infer_method_value_vty_expected(
@@ -7919,50 +8089,32 @@ fn infer_apply_impl(
                         None => arg_vtys.push(infer_method_value_vty(ctx, a, "argument")?),
                     }
                 }
-                for (p, pt) in params.iter().zip(param_tys) {
-                    ctx.locals
-                        .insert(p.clone(), ArrowTy::value_channel(pt.clone()));
-                }
-                // The single element argument (`pure x` / `return x`) unifies
-                // against the signature's leading parameter type.
-                for ((a, p), av) in args.iter().zip(params.iter()).zip(arg_vtys.iter()) {
-                    let pt = ctx
-                        .locals
-                        .get(p)
-                        .cloned()
-                        .map(|t| t.vty.clone())
-                        .unwrap_or(ValueTy::Double);
-                    unify_value(av, &pt, &mut ctx.subst, a.span())?;
-                }
-                // A CONSTRAINT instance (`instance (Monad m) => Arrow (Kleisli m)`)
-                // types its body under ITS OWN context (Haskell 2010 §4.3.2):
-                // inside `arr f = Kleisli (\x -> return (f x))` the `Monad m`
-                // constraint is a GIVEN, so `return`'s `m b` resolves against
-                // that dictionary instead of demanding a concrete container.
-                // Without it every result-directed method inside a constraint
-                // instance died with "the expected type is not concrete", so the
-                // generic Kleisli Arrow could not be used at all.
-                let saved_given = ctx.given.clone();
-                for (cclass, cvar) in instance_constraints(&ctx.env.clone(), &class_name, &ty_name)
-                {
-                    if let Some(bound) = ctx.type_var_bindings.get(&cvar).cloned() {
-                        if let ValueTy::Var(v) | ValueTy::TyConVar(v) | ValueTy::TyConApp(v, _) =
-                            ctx.subst.resolve_value(&bound)
-                        {
-                            ctx.given.push(GivenVar {
-                                class: cclass,
-                                name: cvar,
-                                id: Some(v),
-                            });
-                        }
+                // The value type each argument ACTUALLY has may be narrower than
+                // its declared parameter (`return ()`): the body needs the
+                // argument's type, not the parameter's, so unify the two through
+                // the instance's own parameter binding before inlining.
+                for (i, (a, av)) in args.iter().zip(arg_vtys.iter()).enumerate() {
+                    if let Some(pt) = param_tys.get(i) {
+                        unify_value(av, pt, &mut ctx.subst, a.span())?;
                     }
                 }
-                let body_vty =
-                    infer_method_value_vty_expected(ctx, &body, "body", Some(exp.clone()));
-                ctx.given = saved_given;
-                ctx.locals = saved;
-                ctx.method_lifting.remove(&key);
-                let body_vty = body_vty?;
+                let body_vty = inline_instance_body(
+                    ctx,
+                    InlineCall {
+                        class_name: &class_name,
+                        ty_name: &ty_name,
+                        container: Some(&exp),
+                        method: name,
+                        class_var: &class_var,
+                        sig,
+                        body: &body,
+                        params: &params,
+                        arg_vtys: &arg_vtys,
+                        param_bindings: ParamBindings::Signature,
+                        body_expected: Some(exp.clone()),
+                        span,
+                    },
+                )?;
                 return Ok(ArrowTy::value_channel(body_vty));
             }
             if class_info.arity == 0 {
@@ -8324,19 +8476,10 @@ fn infer_apply_impl(
                         }
                     },
                 };
-                let key = (class_name.clone(), ty_name.clone(), name.to_string());
-                if ctx.method_lifting.contains(&key) {
-                    return Err(CompileError::Type {
-                        msg: format!("recursive typeclass method `{name}` for type `{ty_name}`"),
-                        span,
-                    });
-                }
-                ctx.method_lifting.insert(key.clone());
-                let saved = ctx.locals.clone();
                 let param_tys = signature_param_tys(ctx, &class_var, &cv_subst, sig);
-                // Infer every argument BEFORE binding the method's params into
-                // `ctx.locals`: an argument is a caller expression, so a param
-                // that shares a name with a caller-local must not capture it.
+                // Infer every argument BEFORE the method's params are bound: an
+                // argument is a caller expression, so a param that shares a name
+                // with a caller-local must not capture it.
                 let mut param_bind: Vec<ValueTy> = Vec::with_capacity(params.len());
                 for (i, _p) in params.iter().enumerate() {
                     let pt = if i == selector_idx
@@ -8344,9 +8487,9 @@ fn infer_apply_impl(
                     {
                         infer_method_value_vty(ctx, &args[i], "argument")?
                     } else {
-                        // Nullary arg (`mempty`): inline ITS instance body
-                        // with the signature's param type as expected so it
-                        // unifies (`list` → List ?a).
+                        // Nullary arg (`mempty`): inline ITS instance body with
+                        // the signature's param type as expected so it unifies
+                        // (`list` -> `List ?a`).
                         let arg_name = match &args[i] {
                             Expr::Ref(n, _) => n.as_str(),
                             _ => unreachable!("nullary arg must be a Ref"),
@@ -8358,31 +8501,40 @@ fn infer_apply_impl(
                     };
                     param_bind.push(pt);
                 }
-                for (p, pt) in params.iter().zip(param_bind) {
-                    ctx.locals.insert(p.clone(), ArrowTy::value_channel(pt));
-                }
-                // The method's DECLARED RESULT is the inlined body's expected
-                // type: `index : Pair a a -> a -> Int` makes `fromInteger (…)`
-                // in the body's tail a `Num Int` application instead of a
-                // result-directed call with no expected type (which cannot
-                // resolve at all). Same judgement `validate_instances` makes for
-                // a standalone body.
+                // The method's DECLARED RESULT is the body's expected type:
+                // `index : Pair a a -> a -> Int` makes `fromInteger (...)` in the
+                // body's tail a `Num Int` application instead of a result-directed
+                // call with no expected type.
                 let body_expected = {
                     let env_clone = ctx.env.clone();
-                    let (p_tys, ret) = signature_param_and_result_tys_conv(
+                    let (_p_tys, ret) = signature_param_and_result_tys_conv(
                         &env_clone,
                         &class_var,
                         &cv_subst,
                         sig,
                         || ctx.fresh_vty(),
                     );
-                    let _ = p_tys;
                     ret
                 };
-                let body_vty = infer_method_value_vty_expected(ctx, &body, "body", body_expected);
-                ctx.locals = saved;
-                ctx.method_lifting.remove(&key);
-                let body_vty = body_vty?;
+                let body_vty = inline_instance_body(
+                    ctx,
+                    InlineCall {
+                        class_name: &class_name,
+                        ty_name: &ty_name,
+                        // An arity-0 instance is selected by its type NAME, so
+                        // there is no container to take head arguments from.
+                        container: None,
+                        method: name,
+                        class_var: &class_var,
+                        sig,
+                        body: &body,
+                        params: &params,
+                        arg_vtys: &param_bind,
+                        param_bindings: ParamBindings::Arguments,
+                        body_expected,
+                        span,
+                    },
+                )?;
                 return Ok(ArrowTy::value_channel(body_vty));
             }
             // Constructor class (arity ≥ 1): the class-var-applied argument's
