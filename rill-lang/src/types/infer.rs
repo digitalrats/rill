@@ -6668,12 +6668,41 @@ fn pin_result_to_expected(
 ) -> Result<(), CompileError> {
     if let Some(exp) = expected {
         let exp = ctx.subst.resolve_value(exp);
-        if matches!(exp, ValueTy::Con(..) | ValueTy::Newtype(..)) {
+        // Any CONCRETE expectation pins the result — not only a `Con`/`Newtype`.
+        // Enumerating two variants left the scalar leaf types out, and they are
+        // not `Con`s: `Int`, `Double`, `Integer`, `String` and `()` are their own
+        // `ValueTy` variants. So `x :: Int; x = mk3 0.0` with
+        // `mk3 :: ProbeIx i => Double -> i` unified the class variable with
+        // NOTHING, its `ProbeIx` residual stayed open, and the program was
+        // rejected as ambiguous — while GHC solves `i := Int` from the position.
+        //
+        // The predicate is the same one lowering uses to decide whether a type
+        // can name an instance (`is_concrete_ty`): an unresolved variable or a
+        // function type pins nothing.
+        if is_concrete_vty(&exp) {
             let ret = ctx.subst.resolve_value(ret);
             unify_value(&ret, &exp, &mut ctx.subst, span)?;
         }
     }
     Ok(())
+}
+
+/// Whether a value type carries no unresolved variable — the SAME judgement as
+/// lowering's `is_concrete_ty`, stated once for inference.
+///
+/// A function type is not concrete HERE even when its parts are: an expectation
+/// of `a -> b` must not force a call's result to be a function, because the call
+/// may still be a partial application whose remainder the signature describes.
+fn is_concrete_vty(t: &ValueTy) -> bool {
+    match t {
+        ValueTy::Var(_) | ValueTy::TyConVar(_) | ValueTy::TyConApp(..) | ValueTy::Thunk(..) => {
+            false
+        }
+        ValueTy::Dict(_) => false,
+        ValueTy::Con(_, args) | ValueTy::Newtype(_, args) => args.iter().all(is_concrete_vty),
+        ValueTy::Buffer(elem) => is_concrete_vty(elem),
+        _ => true,
+    }
 }
 
 /// Type a call to a class-constrained definition WITHOUT inlining its body.
@@ -6708,6 +6737,7 @@ fn infer_constrained_apply(
     let what = format!("`{name}`");
     check_application_arity(param_tys.len(), args.len(), span, &what)?;
     pin_result_to_expected(ctx, &ret_ty, expected.as_ref(), span)?;
+
     // PARK M9: a bare named function reference (`f` in `ixmap b f a`) infers as
     // the EMPTY `Thunk([], [])` — a bare ref's arity resolves only when it is
     // applied — so a function-shaped constrained parameter (`i -> j`) reports an

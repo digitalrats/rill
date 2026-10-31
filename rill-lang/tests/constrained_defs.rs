@@ -233,6 +233,45 @@ fn constrained_def_can_call_another_constrained_def() {
 }
 
 #[test]
+fn the_position_solves_a_class_variable_the_arguments_leave_open() {
+    // A class variable that appears ONLY in the result cannot be solved by any
+    // argument, so the call's POSITION must solve it: `x :: Int; x = lab3 0.0`
+    // is the `i := Int` judgement. GHC 9.10.3 accepts this program; it is the
+    // legal counterpart of the ambiguous `mk (0, 9)` case above.
+    //
+    // `pin_result_to_expected` used to pin only a `Con`/`Newtype` expectation.
+    // `Int`, `Double`, `Integer`, `String` and `()` are their own `ValueTy`
+    // VARIANT (no `Con`), so the class variable was unified with nothing, its
+    // `ProbeIx` residual stayed open, and the program was rejected as ambiguous
+    // although the annotation determines the instance.
+    let ix = r#"
+        typeclass LabIx i where { labSize: Double -> i; }
+        instance LabIx Int where { labSize x = 7; }
+    "#;
+    // Positive: the annotation determines the instance, so this must compile.
+    let pinned = format!(
+        "{ix}\nlab3 :: LabIx i => Double -> i\nlab3 v = labSize v\nx :: Int\nx = lab3 0.0\nmain = 0.0;"
+    );
+    assert!(
+        compile_eval::<f32, 256>(&pinned, "main", Mode::Strict).is_ok(),
+        "an annotated position must solve the class variable: {pinned}"
+    );
+    // Negative: an UNAPPLIED definition is legal (the constraint is a parameter
+    // nothing has supplied yet), but a USE with no position is genuinely
+    // ambiguous — the same judgement Haskell 2010 §4.3.4 makes, since `LabIx` is
+    // not a standard class. GHC rejects `y = lab3 0.0` with
+    // `Ambiguous type variable 'i0'`.
+    let open = format!(
+        "{ix}\nlab3 :: LabIx i => Double -> i\nlab3 v = labSize v\ny = lab3 0.0\nmain = 0.0;"
+    );
+    let msg = compile_err(&open);
+    assert!(
+        msg.contains("Ambiguous type variable"),
+        "an unsolved user-class variable must be reported, got: {msg}"
+    );
+}
+
+#[test]
 fn specialized_body_result_must_match_the_signature() {
     // The body is typed ONCE against the signature's declared result (design
     // §3.0), so a body of another type is rejected at LOAD — before any call
