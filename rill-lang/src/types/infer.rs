@@ -394,15 +394,17 @@ impl GivenVar {
     /// variable's name.
     fn witness_of(&self, t: &ValueTy) -> bool {
         match self.id {
-            // An arity-0 class variable (`Ix i`) is witnessed by the variable
-            // occurring anywhere in the type.
+            // Every class variable is witnessed by its ID occurring in the type,
+            // whatever the class's arity. `m a` is `TyConApp(m, [a])` and `a` is
+            // `Var(a)`, so one rule covers `Monad m`, `Functor f` and `Ix i` alike
+            // (Haskell 2010 §4.1.2 does not distinguish a kind-`*` variable from a
+            // kind-`* -> *` one).
             Some(id) => vty_mentions_tyvar(t, id),
-            // A constructor-class variable (`Functor f`) is witnessed by a type
-            // whose head is that class variable.
+            // A variable the signature never recorded has no id to match, so
+            // fall back to the NAME the signature spells.
             None => matches!(
                 t,
-                ValueTy::Con(n, _) | ValueTy::Newtype(n, _)
-                    if *n == self.name
+                ValueTy::Con(n, _) | ValueTy::Newtype(n, _) if *n == self.name
             ),
         }
     }
@@ -412,6 +414,9 @@ impl GivenVar {
     /// class, the named application head for a constructor class.
     fn abstract_ty(&self) -> ValueTy {
         match self.id {
+            // The class variable as a TYPE VARIABLE. `ClassVarSubst::Ty` then
+            // splices its own arguments, so `m a` becomes `TyConApp(m, [a])` and
+            // unifies with `Maybe Double` by binding `m := Maybe`.
             Some(id) => ValueTy::Var(id),
             None => ValueTy::Con(self.name.clone(), Vec::new()),
         }
@@ -2090,12 +2095,57 @@ fn conv(
                     ValueTy::Newtype(n, pre) => {
                         ValueTy::Newtype(n.clone(), pre.iter().cloned().chain(vargs).collect())
                     }
+                    // The class variable is a VARIABLE of higher kind (`m` in
+                    // `Monad m`): the applied form is `TyConApp(m, args)`, NOT
+                    // the bare variable. Returning `other.clone()` here dropped
+                    // the arguments, so in a GIVEN context `m a` collapsed to `m`
+                    // and unifying it with `m a` became the self-referential
+                    // `Var(m) ~ TyConApp(m, [a])`.
+                    ValueTy::Var(id) | ValueTy::TyConVar(id) => ValueTy::TyConApp(*id, vargs),
                     other => other.clone(),
                 },
                 ClassVarSubst::Var(id) => ValueTy::TyConApp(*id, vargs),
             }
         }
         crate::ast::TypeExpr::TApp(head, args) => {
+            // A HIGHER-KINDED TYPE VARIABLE applied to arguments — `m a` in
+            // `Monad m => m a`, `f b` in `Functor f` — is an APPLICATION OF A
+            // VARIABLE, not a constructor application.
+            //
+            // `m` is a type variable of kind `* -> *` exactly as `a` is one of
+            // kind `*` (Haskell 2010 §4.1.2 draws no distinction), so `m a` must
+            // be `TyConApp(m, [a])`. Spelling it as `Con("m", [a])` made the name
+            // `m` into a CONCRETE constructor, so `m Double` could never unify
+            // with `Maybe Double`:
+            //
+            //   cannot unify value type Con("m", [Double]) with Con("Maybe", [Double])
+            //
+            // That is the whole reason a constrained definition could not be
+            // instantiated at a concrete type. The same failure appears for a
+            // user class (`Con("w", [Double])` vs `Con("Boxed", [Double])`), so
+            // this is the general variable-application rule, not a `Monad`
+            // special case.
+            if matches!(env.type_entry(head), Some(TypeEntry::Variable) | None) && head != class_var
+            {
+                let id = match vars.get(head.as_str()) {
+                    Some(ValueTy::Var(v)) | Some(ValueTy::TyConVar(v)) => *v,
+                    Some(ValueTy::TyConApp(v, _)) => *v,
+                    _ => {
+                        let fresh_head = fresh();
+                        let id = match fresh_head {
+                            ValueTy::Var(v) => v,
+                            _ => unreachable!("fresh() yields a variable"),
+                        };
+                        vars.insert(head.clone(), ValueTy::TyConVar(id));
+                        id
+                    }
+                };
+                let vargs: Vec<ValueTy> = args
+                    .iter()
+                    .map(|a| conv(env, class_var, class_var_subst, vars, fresh, a))
+                    .collect();
+                return ValueTy::TyConApp(id, vargs);
+            }
             // One representation for every application: the converter never
             // chooses between "declared" and "builtin" shapes — whether a name
             // is an algebraic data type is a question about the constructor
@@ -3630,20 +3680,23 @@ fn infer_constrained_def_body(
         // context (`C i => Double`, `i` in no argument or result) has no
         // variable to pair a dictionary with — the missing ambiguity check is an
         // open defect, and such a constraint is not a witness here either.
-        let id = if arity == 0 {
-            match vars.get(var).map(|t| ctx.subst.resolve_value(t)) {
-                Some(ValueTy::Var(v)) | Some(ValueTy::TyConVar(v)) => Some(v),
-                // Solved to a concrete type: already discharged by that
-                // instance, so no dictionary parameter is needed.
-                Some(_) => continue,
-                // The signature never mentions the variable.
-                None => continue,
-            }
-        } else {
-            // A constructor-class variable is spelled as an application HEAD by
-            // name, so it never appears as an entry in `vars` — its witness is
-            // the head name itself.
-            None
+        // A class variable is a TYPE VARIABLE whatever the class's arity:
+        // `m` in `Monad m => m a` has kind `* -> *`, `a` in `Eq a` has kind `*`,
+        // and Haskell 2010 §4.1.2 draws no distinction between them (`Maybe`,
+        // `W m`, `Kleisli m` are all things `m` can BE). `conv` records the
+        // higher-kinded one as `TyConApp(m, args)` / `TyConVar(m)`, so its id is
+        // available for both arities. Using `None` here made `abstract_ty()`
+        // return `Con("m", [])` — the NAME used as a concrete constructor — and
+        // `m Double` could never unify with `Maybe Double`.
+        let _ = arity;
+        let id = match vars.get(var).map(|t| ctx.subst.resolve_value(t)) {
+            Some(ValueTy::Var(v)) | Some(ValueTy::TyConVar(v)) => Some(v),
+            Some(ValueTy::TyConApp(v, _)) => Some(v),
+            // Solved to a concrete type: already discharged by that instance, so
+            // no dictionary parameter is needed.
+            Some(_) => continue,
+            // The signature never mentions the variable.
+            None => continue,
         };
         given.push(GivenVar {
             class: class.clone(),
