@@ -8854,6 +8854,32 @@ fn check_def_call_args(
             continue;
         }
         if let Err(e) = unify_value(&actual, &formal, &mut ctx.subst, a.span()) {
+            // PARK M10 — now a contract of Task 10a, not a stopgap.
+            //
+            // A signature-less definition's parameter types are the shapes its
+            // BODY recovered (`at = \a -> \i -> a ! i` gives `a : Array i e`
+            // from the constrained `(!)`), so they are invisible at the call
+            // site: the caller sees `Array a b` where it wrote nothing. GHC
+            // 9.10.3 reports the same program as a plain unification mismatch
+            // (`Couldn't match expected type: Array i0 a0 with actual type:
+            // (a1, b0)`) and offers no fix, but rill knows WHY the parameter
+            // has that shape — it is inferred, not declared — so the actionable
+            // advice is to annotate. Naming the definition and pointing at the
+            // annotation is what makes the recovered shape legible instead of
+            // dumping it as if the user had written it.
+            if ctx.retry_inferred_defs.contains(name) {
+                return Err(CompileError::Type {
+                    msg: format!(
+                        "argument {} of `{name}` does not match: {e}. \
+                         `{name}` has no signature, so its parameter types are \
+                         inferred from its body and are invisible here — \
+                         annotate the parameter's type to check the call against \
+                         an explicit signature",
+                        i + 1
+                    ),
+                    span: a.span(),
+                });
+            }
             return Err(CompileError::Type {
                 msg: format!(
                     "argument {} of `{name}` has type {}, but the parameter has type {}: {e}",
