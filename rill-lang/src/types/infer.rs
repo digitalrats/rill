@@ -785,7 +785,7 @@ fn apply_args_curried(
 /// names a type no instance exists for, and the class variable is the unsolved
 /// thing the caller must still default.
 fn cv_subst_is_head_only(cv: &ClassVarSubst, head: &str) -> bool {
-    matches!(cv, ClassVarSubst::Ctor(c) if c == head)
+    matches!(cv, ClassVarSubst::Ctor(c, _) if c == head)
 }
 
 /// The concrete type a dispatch selected, for [`record_selection`]. A
@@ -795,7 +795,10 @@ fn cv_subst_is_head_only(cv: &ClassVarSubst, head: &str) -> bool {
 fn selection_evidence(cv: &ClassVarSubst) -> ValueTy {
     match cv {
         ClassVarSubst::Ty(t) => t.clone(),
-        ClassVarSubst::Ctor(c) => ValueTy::Con(c.clone(), Vec::new()),
+        // The applied form, so the evidence describes the whole type:
+        // `Ctor("Kleisli", [Maybe])` is `Kleisli Maybe`, which is what a
+        // constraint-parameterised instance is keyed against.
+        ClassVarSubst::Ctor(c, lead) => ValueTy::Con(c.clone(), lead.clone()),
         ClassVarSubst::Var(id) => ValueTy::Var(*id),
     }
 }
@@ -1661,8 +1664,17 @@ fn bind_constraint_instance(
 #[derive(Debug, Clone)]
 pub(crate) enum ClassVarSubst {
     /// A type-constructor NAME the caller resolved by the selector's head
-    /// constructor (`List`, `Kleisli`, `Int`).
-    Ctor(String),
+    /// constructor (`List`, `Kleisli`, `Int`), together with the LEADING
+    /// arguments a partial instance head binds.
+    ///
+    /// The arguments are what make the evidence describe the whole type:
+    /// `instance (Monad m) => Arrow (Kleisli m)` is selected for
+    /// `Kleisli Maybe b c`, and recording the bare name lost the `Maybe`, so the
+    /// dictionary planner saw `Arrow Kleisli` — a pair no instance declares — and
+    /// reported no gap for a constraint-parameterised instance it should have
+    /// named. `Vec::new()` is the bare head, which is what a fully concrete
+    /// instance keys by.
+    Ctor(String, Vec<ValueTy>),
     /// The class variable's fully resolved TYPE (`Int`, `Pair Int Int`) — an
     /// arity-0 dispatch recovered it by unification, or an instance head binds
     /// it directly.
@@ -1838,7 +1850,22 @@ pub(crate) fn method_dispatch_key(
         }
     }
     let head = env.type_name_of_vty(selector_ty)?;
-    Some((head.clone(), ClassVarSubst::Ctor(head)))
+    // The LEADING arguments the instance head binds: `instance Arrow (Kleisli
+    // m)` applied to `Kleisli Maybe b c` binds `m := Maybe`. They travel with the
+    // evidence so the dictionary planner can name the pair it cannot build.
+    let lead: Vec<ValueTy> = match selector_ty {
+        ValueTy::Con(_, args) | ValueTy::Newtype(_, args) => {
+            let n = env
+                .instances
+                .get(class_name)
+                .and_then(|m| m.get(head.as_str()))
+                .map(|i| i.head_args.len())
+                .unwrap_or(0);
+            args.iter().take(n).cloned().collect()
+        }
+        _ => Vec::new(),
+    };
+    Some((head.clone(), ClassVarSubst::Ctor(head, lead)))
 }
 
 /// Whether a call to the class METHOD `name` can be dispatched by
@@ -2019,7 +2046,12 @@ fn conv(
 ) -> ValueTy {
     match te {
         crate::ast::TypeExpr::TName(n) if n == class_var => match class_var_subst {
-            ClassVarSubst::Ctor(c) => resolve_type_name(env, c),
+            ClassVarSubst::Ctor(c, lead) => match resolve_type_name(env, c) {
+                ValueTy::Con(n, _) | ValueTy::Newtype(n, _) if !lead.is_empty() => {
+                    ValueTy::Con(n, lead.clone())
+                }
+                other => other,
+            },
             ClassVarSubst::Ty(t) => t.clone(),
             ClassVarSubst::Var(id) => ValueTy::Var(*id),
         },
@@ -2033,12 +2065,17 @@ fn conv(
                 .map(|a| conv(env, class_var, class_var_subst, vars, fresh, a))
                 .collect();
             match class_var_subst {
-                ClassVarSubst::Ctor(ctor) => {
+                ClassVarSubst::Ctor(ctor, lead) => {
                     // One representation: a constructor the registry knows gets
                     // the one `Con` shape. A name it does not know is not a
-                    // constructor at all and resolves nominally.
+                    // constructor at all and resolves nominally. A partial head's
+                    // leading arguments go FIRST, because the class variable
+                    // stands for the partial application (`a := Kleisli m`).
                     if env.type_ctor_arity(ctor).is_some() {
-                        ValueTy::Con(ctor.to_string(), vargs)
+                        ValueTy::Con(
+                            ctor.to_string(),
+                            lead.iter().cloned().chain(vargs).collect(),
+                        )
                     } else {
                         resolve_type_name(env, ctor)
                     }
@@ -2293,7 +2330,7 @@ fn def_sig_tys_conv(
     // No class variable is special here: a context's class variables are
     // ordinary type variables until a call site solves them, so the empty
     // class-var name never matches a signature name.
-    let subst = ClassVarSubst::Ctor(String::new());
+    let subst = ClassVarSubst::Ctor(String::new(), Vec::new());
     let params: Vec<ValueTy> = arg_tes
         .iter()
         .map(|a| conv(env, "", &subst, &mut vars, &mut fresh, a))
@@ -2589,7 +2626,13 @@ fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
         let cv_subst = if class_arity == 0 {
             ClassVarSubst::Ty(info.class_var_ty(&ctx.env))
         } else {
-            ClassVarSubst::Ctor(ty_name.clone())
+            ClassVarSubst::Ctor(
+                ty_name.clone(),
+                match info.class_var_ty(&ctx.env) {
+                    ValueTy::Con(_, a) | ValueTy::Newtype(_, a) => a,
+                    _ => Vec::new(),
+                },
+            )
         };
         for (mname, (params, body)) in &info.methods {
             let key = (class.clone(), ty_name.clone(), mname.clone());
@@ -4907,7 +4950,7 @@ fn annot_type_vty(ctx: &mut Ctx, te: &crate::ast::TypeExpr) -> ValueTy {
     let mut vars: HashMap<String, ValueTy> = HashMap::new();
     // No class variable is special in an expression annotation: a context's
     // variables are ordinary type variables until a call site solves them.
-    let subst = ClassVarSubst::Ctor(String::new());
+    let subst = ClassVarSubst::Ctor(String::new(), Vec::new());
     let mut fresh = || ctx.fresh_vty();
     conv(&env, "", &subst, &mut vars, &mut fresh, te)
 }
@@ -8237,7 +8280,7 @@ fn infer_apply_impl(
             let (mut param_tys, result_ty) = signature_param_and_result_tys_conv(
                 &ctx.env.clone(),
                 &class_var,
-                &ClassVarSubst::Ctor(ctor.clone()),
+                &ClassVarSubst::Ctor(ctor.clone(), Vec::new()),
                 sig,
                 || ctx.fresh_vty(),
             );

@@ -3576,7 +3576,7 @@ impl<'a> Lowerer<'a> {
                         let mut param_tys = crate::types::infer::signature_param_tys_conv(
                             self.env,
                             &class_var,
-                            &crate::types::infer::ClassVarSubst::Ctor(ctor.clone()),
+                            &crate::types::infer::ClassVarSubst::Ctor(ctor.clone(), Vec::new()),
                             sig,
                             || {
                                 let v = self.next_tyvar;
@@ -6298,7 +6298,7 @@ impl<'a> Lowerer<'a> {
         let subst = if plan.class_arity == 0 {
             crate::types::infer::ClassVarSubst::Ty(plan.ty.clone())
         } else {
-            crate::types::infer::ClassVarSubst::Ctor(plan.ty_key.clone())
+            crate::types::infer::ClassVarSubst::Ctor(plan.ty_key.clone(), Vec::new())
         };
         let (param_tys, result_ty) = match &sig {
             Some(sig) => crate::types::infer::signature_param_and_result_tys_conv(
