@@ -9092,17 +9092,25 @@ fn infer_argument_ty(ctx: &mut Ctx, e: &Expr, formal: &ValueTy) -> Result<ValueT
     if matches!(formal, ValueTy::Thunk(..)) {
         return infer_method_value_vty_expected(ctx, e, "argument", Some(formal.clone()));
     }
-    let plain = infer_method_value_vty(ctx, e, "argument");
-    match plain {
+    // A RESULT-DIRECTED method in argument position (`arr f`, `pure x`,
+    // `return x`) can only be typed WITH an expected type: its container comes
+    // from there and from nowhere else. Probing it bare first is guaranteed to
+    // fail, and reporting that probe's error was the reason a working call was
+    // rejected — `ap (arr f) 3.0` measured
+    //
+    //     name=arr nargs=1 expected=None                    ← probe, always fails
+    //     name=arr nargs=1 expected=Some(Kleisli m a b)     ← the real typing
+    //
+    // and the probe's failure won. The expected-type attempt comes FIRST here;
+    // the bare one is the fallback, for an argument that types fine on its own.
+    match infer_method_value_vty_expected(ctx, e, "argument", Some(formal.clone())) {
         Ok(t) => Ok(t),
-        Err(plain_err) => {
-            match infer_method_value_vty_expected(ctx, e, "argument", Some(formal.clone())) {
-                Ok(t) => Ok(t),
-                // Report the ORIGINAL failure: it is the one that names the real
-                // problem in the argument, not a follow-on expected-type mismatch.
-                Err(_) => Err(plain_err),
-            }
-        }
+        Err(expected_err) => match infer_method_value_vty(ctx, e, "argument") {
+            Ok(t) => Ok(t),
+            // Report the ORIGINAL failure: it is the one that names the real
+            // problem in the argument, not a follow-on expected-type mismatch.
+            Err(_) => Err(expected_err),
+        },
     }
 }
 
