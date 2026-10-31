@@ -92,9 +92,16 @@ fn monad_bind_list_concat() {
 
 #[test]
 fn monoid_mappend_float_defaults_today_OD33() {
-    // Same OD-33 divergence. FLIP AT TASK 10b: must become `compile_err`.
+    // OD-33, now CLOSED. `mappend 1.5 2.5` leaves one variable constrained by
+    // `Monoid` and `Fractional`; `Monoid` is not a standard class, so the
+    // Report's default list `(Integer, Double)` is never consulted and GHC
+    // 9.10.3 rejects the program. The annotated form is the one that works.
     // (The list sibling IS legal in both — `[1.0, 2.0]` fixes the element type.)
-    let prog = run("main = mappend 1.5 2.5;");
+    assert!(
+        compile_err("main = mappend 1.5 2.5;").contains("Ambiguous type variable"),
+        "an open `Monoid` variable must not be defaulted"
+    );
+    let prog = run("main = mappend (1.5 :: Double) 2.5;");
     assert_eq!(out_float(&prog), 4.0);
 }
 
@@ -154,10 +161,13 @@ fn monoid_mempty_float_defaults_today_OD33() {
     //
     // (The sibling `mappend mempty [1.0, 2.0]` IS legal: the list literal fixes
     // the element type, so nothing is ambiguous.) This test used to assert a
-    // silent `3.5`, which is the default the Report does not allow.
-    // FLIP AT TASK 10b: must become `compile_err` containing
-    // "Ambiguous type variable" once a constraint is a dictionary parameter.
-    let prog = run("main = mappend mempty 3.5;");
+    // silent `3.5`, which is the default the Report does not allow. OD-33 is now
+    // CLOSED: the call is rejected, and the annotated form computes the value.
+    assert!(
+        compile_err("main = mappend mempty 3.5;").contains("Ambiguous type variable"),
+        "an open `Monoid` variable must not be defaulted"
+    );
+    let prog = run("main = mappend mempty (3.5 :: Double);");
     assert_eq!(out_float(&prog), 3.5);
 }
 

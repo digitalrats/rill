@@ -1390,7 +1390,7 @@ fn the_table_does_not_change_what_a_program_computes() {
             "instance body",
             "typeclass Twice a where { twice: a -> a; }\n\
              instance Twice Double where { twice x = x + x; }",
-            "twice 21.0",
+            "twice (21.0 :: Double)",
             Value::Double(42.0),
         ),
     ];

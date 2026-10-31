@@ -251,7 +251,10 @@ mod method_values {
         // empty input — hence the non-empty elements.
         assert_eq!(string_of("", "fold mappend \"\" [\"a\",\"b\"]"), "ab");
         // Double dispatch through the same method value.
-        assert_eq!(float_of("", "fold mappend 0.0 [1.0,2.0,3.0]"), 6.0);
+        assert_eq!(
+            float_of("", "fold mappend (0.0 :: Double) [1.0,2.0,3.0]"),
+            6.0
+        );
         // List dispatch: `mappend` on lists delegates to `++` (Prelude).
         assert_eq!(
             list_of("", "fold mappend list [[1.0],[2.0],[3.0]]"),
@@ -266,7 +269,7 @@ mod method_values {
         // declared `instance Monoid Double`. Asserted here only because it is
         // the value the FOLD tests dispatch through — not as evidence for a
         // fix (it passed before this task).
-        assert_eq!(float_of("", "mappend 1.0 2.0"), 3.0);
+        assert_eq!(float_of("", "mappend (1.0 :: Double) 2.0"), 3.0);
         assert_eq!(string_of("", "mappend \"a\" \"b\""), "ab");
     }
 }

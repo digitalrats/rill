@@ -106,7 +106,7 @@ fn runst_forces_a_thunk_argument() {
     // unbound.) A top-level `let` would be inlined by `reduce` and never reach
     // this path, which is why the body lives in an instance method.
     let v = run_value_output(
-        "{-# MODE complete #-}\ntypeclass Hold a where { hold: a -> Double; }\ninstance Hold Double where { hold x = runST (\\s -> let act = ST { unST: \\t -> Pair { first: t, second: x } } in act); }\nmain = hold 5.0;",
+        "{-# MODE complete #-}\ntypeclass Hold a where { hold: a -> Double; }\ninstance Hold Double where { hold x = runST (\\s -> let act = ST { unST: \\t -> Pair { first: t, second: x } } in act); }\nmain = hold (5.0 :: Double);",
     );
     assert_eq!(v, Value::Double(5.0));
 }

@@ -71,7 +71,7 @@ fn constrained_def_registers_without_eager_body_inference() {
     // class variable: eagerly typing it would bind `p` to `Double` and fail
     // (`no instance of ProbeIx for Double`). A successful load therefore proves the
     // body was DEFERRED, not inferred.
-    let src = format!("{PROBE_IX}\n{PROBE_DEF}\nmain = mk (0,9) 0.0;");
+    let src = format!("{PROBE_IX}\n{PROBE_DEF}\nmain = mk ((0,9) :: Pair Int Int) 0.0;");
     let env = env_of(&src);
     let sig = env
         .constrained_defs

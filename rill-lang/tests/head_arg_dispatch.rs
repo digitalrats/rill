@@ -168,7 +168,7 @@ fn dispatch_still_uses_the_head_name_for_bare_constructor_instances() {
         typeclass C2 a where { describe: a -> Double; }
         instance C2 Double where { describe x = 1.0; }
         instance C2 List where { describe xs = 2.0; }
-        main = describe [1.0, 2.0] + describe 3.0;
+        main = describe [1.0, 2.0] + describe (3.0 :: Double);
     "#;
     assert_eq!(run(src), 3.0);
 }

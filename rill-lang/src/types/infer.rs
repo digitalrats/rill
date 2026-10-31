@@ -4282,73 +4282,14 @@ fn default_residuals(ctx: &mut Ctx, group: &HashSet<String>) -> Result<bool, Com
         if fixed.contains(&id) {
             continue;
         }
-        // Rule 2': a variable every one of whose constraints has an INSTANCE at
-        // a default candidate needs no standard-class filter. The Report's
-        // `default` list is about which TYPES to try; the class set restriction
-        // exists so a user class with no plausible instance is reported rather
-        // than silently satisfied. But when the candidates DO satisfy the whole
-        // set — `Monoid` and `Fractional` both hold at `Double` — picking the
-        // first candidate is exactly "collect the constraints, then choose a
-        // type that has them all". Refusing here reported `Ambiguous type
-        // variable` for `mappend mempty 3.5`, a program the base answers.
-        // Rule 2 gates rule 2': defaulting is the Report's rule for an
-        // AMBIGUOUS numeric variable constrained by the STANDARD classes
-        // (§4.3.4's `P`). A USER class is not in that set, so a candidate that
-        // happens to satisfy it is not a default — GHC measures exactly this:
-        //
-        //   mk :: ProbeIx i => (i, i) -> Double -> Double
-        //   main = mk (0, 9) 0.0
-        //     → Ambiguous type variable 'i0'
-        //
-        // (with `mk (0 :: Int, 9)` it compiles). Selecting `Integer` because
-        // `ProbeIx Integer` has no instance only replaced "ambiguous" with a
-        // WRONG DIAGNOSIS about a type the program never wrote; and when a user
-        // class DID have an `Integer` instance the same rule would have
-        // silently picked it, which the Report does not allow either.
-        let satisfiable_by_candidate =
-            ["Integer", "Double"]
-                .iter()
-                .any(|cand| match ctx.env.vty_of_name(cand) {
-                    Some(ty) => classes
-                        .iter()
-                        .all(|(c, _, _)| ctx.env.instance_exists(c, &ty)),
-                    None => false,
-                });
-        if satisfiable_by_candidate {
-            // Fall through to rule 3, which picks the same first candidate.
-            let chosen =
-                ["Integer", "Double"]
-                    .into_iter()
-                    .find(|cand| match ctx.env.vty_of_name(cand) {
-                        Some(ty) => classes
-                            .iter()
-                            .all(|(c, _, _)| ctx.env.instance_exists(c, &ty)),
-                        None => false,
-                    });
-            if let Some(cand) = chosen {
-                let ty = ctx
-                    .env
-                    .vty_of_name(cand)
-                    .expect("the chosen candidate is a registered type");
-                unify_value(&ValueTy::Var(id), &ty, &mut ctx.subst, first_span)?;
-                defaulted_any = true;
-                for (class, span, literal) in &classes {
-                    if *literal {
-                        continue;
-                    }
-                    ctx.dict_selections
-                        .insert((*span, class.clone()), ty.clone());
-                }
-                continue;
-            }
-        }
-        // Rule 2: every constraint must be a STANDARD class (Report §4.3.4's
-        // `P` is the Prelude's class set — a user class disqualifies the
-        // variable, which is why a non-numeric ambiguity is an error). The
-        // constraint need not be `Num`/`Fractional`: `f x y = x <= y` applied at
-        // two literals is `Ord a`, and GHC 9.10.3 ANSWERS `True` for it by
-        // defaulting `a` to `Integer` — the default candidates are numeric
-        // TYPES, and the constraint set only has to be a standard one.
+        // Rule 2: defaulting is the Report's rule for an AMBIGUOUS variable
+        // constrained by the STANDARD classes (§4.3.4's `P` is the Prelude's
+        // class set). A USER class is not in that set, so a default candidate —
+        // however well it happens to fit — is not a default. The constraint
+        // need not be `Num`/`Fractional`: `f x y = x <= y` applied at two
+        // literals is `Ord a`, and GHC 9.10.3 ANSWERS `True` for it by
+        // defaulting `a` to `Integer`, because the candidates are numeric TYPES
+        // and only the constraint SET has to be standard.
         let all_standard = classes.iter().all(|(c, _, _)| {
             matches!(
                 c.as_str(),
@@ -4367,6 +4308,20 @@ fn default_residuals(ctx: &mut Ctx, group: &HashSet<String>) -> Result<bool, Com
                     | "Ix"
             )
         });
+        // Rule 2' applies WITHIN rule 2: the standard-class check above gates
+        // it, so a candidate satisfying a user class is still not a default.
+        // This gate must come first — running the candidate search before the
+        // filter let a user class with an `Integer` instance be "defaulted"
+        // silently, which the Report does not allow and GHC does not do:
+        //
+        //   mk :: ProbeIx i => (i, i) -> Double -> Double
+        //   main = mk (0, 9) 0.0     -- + instance ProbeIx Integer
+        //     → GHC: Ambiguous type variable 'i0'   (OD-50)
+        //
+        // When the classes ARE standard, a candidate that satisfies them all is
+        // exactly "collect the constraints, then choose a type that has them
+        // all": `Monoid`+`Fractional` both hold at `Double`, so
+        // `mappend mempty 3.5` defaults instead of being refused.
         if !all_standard {
             return Err(CompileError::Type {
                 msg: format!(
@@ -6810,6 +6765,35 @@ fn infer_constrained_apply(
         .map(|(k, v)| (k.clone(), ctx.subst.resolve_value(v)))
         .collect();
     discharge_def_constraints(&ctx.env, name, sig, &bindings, span)?;
+    // A class variable the call site did NOT solve is a constraint of THIS use
+    // site, carried as a residual for the same stages that answer a method
+    // call's class variable (Haskell 2010 §4.3.4). Without this the demand was
+    // dropped, `i` kept only the literals' `Num`, and defaulting silently chose
+    // `Integer` — accepting `mk (0, 9) 0.0`, which GHC rejects as ambiguous
+    // even when a `ProbeIx Integer` instance exists (OD-50).
+    //
+    // A LITERAL's variable is exempt for the same reason stage 2 exempts one:
+    // its conversion target is a kernel payload, not a dictionary.
+    let arity = |class: &str| ctx.env.typeclasses.get(class).map(|c| c.arity).unwrap_or(0);
+    for (class, var) in sig_constraints(sig) {
+        let Some(bound) = vars.get(var) else {
+            continue;
+        };
+        let ValueTy::Var(id) = ctx.subst.resolve_value(bound) else {
+            continue;
+        };
+        if ctx.env.class_of_method(name).is_some() && arity(class) > 0 {
+            // A constructor class's variable is an application HEAD
+            // (`TyConVar`), not a `Var`; those never reach a residual.
+            continue;
+        }
+        ctx.residual.push(Residual {
+            class: class.clone(),
+            var: id,
+            span,
+            literal: false,
+        });
+    }
     Ok(at)
 }
 

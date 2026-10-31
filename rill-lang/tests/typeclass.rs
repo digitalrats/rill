@@ -50,18 +50,49 @@ fn typeclass_method_resolves_at_compile_time() {
 #[test]
 fn typeclass_selects_instance_by_argument_type() {
     // Two instances of the same class with different bodies: the argument's
-    // static type must pick the right one. `show 1` (an Int literal) must
-    // resolve to the Int instance's body (2.5), not the Double instance's (1.5).
+    // static type must pick the right one.
+    //
+    // The argument is PINNED (`1 :: Int`). A bare `1` would not select anything:
+    // a numeric literal is `fromInteger (n :: Integer)` (Haskell 2010 §6.4.1),
+    // so the class variable is constrained only by `Num` and no instance is
+    // determined. GHC 9.10.3 rejects the unpinned call with `Ambiguous type
+    // variable 'a0'` — it does not default here, because `Probe` is not one of
+    // the Report's standard classes (§4.3.4) — and rill must reject it too
+    // (OD-47/OD-33). The pinned form is the legal Haskell module, and it is what
+    // measures the claim this test is about.
     let src = r#"
-        typeclass Show a where { show: a; }
-        instance Show Double where { show f = 1.5; }
-        instance Show Int where { show f = 2.5; }
-        main = show 1;
+        typeclass Probe a where { probe: a -> Double; }
+        instance Probe Double where { probe _f = 1.5; }
+        instance Probe Int where { probe _f = 2.5; }
+        main = probe (1 :: Int);
     "#;
     let prog = run(src);
     let v = prog.result().unwrap();
     let val = prog.arena().get(v).unwrap();
     assert_eq!(val, &rill_lang::arena::Value::Double(2.5));
+
+    // The unpinned call is genuinely ambiguous and must NOT compile — the
+    // divergence OD-47 recorded was this acceptance, not a wrong value.
+    let ambiguous = r#"
+        typeclass Probe a where { probe: a -> Double; }
+        instance Probe Double where { probe _f = 1.5; }
+        instance Probe Int where { probe _f = 2.5; }
+        main = probe 1;
+    "#;
+    let (defs, expr) = ambiguous
+        .rsplit_once("main = ")
+        .expect("the source must bind `main`");
+    match eval_ffi(
+        defs,
+        expr.trim().trim_end_matches(';'),
+        ForeignRegistry::<f32>::new(),
+    ) {
+        Ok(_) => panic!("an open class variable must not be defaulted to an instance"),
+        Err(e) => assert!(
+            e.to_string().contains("Ambiguous type variable"),
+            "expected an ambiguity diagnostic, got: {e}"
+        ),
+    }
 }
 
 #[test]
@@ -93,7 +124,7 @@ fn transitive_recursive_typeclass_methods_are_compile_error() {
     let src = r#"
         typeclass C a where { a: a; b: a; }
         instance C Double where { a f = b f; b f = a f; }
-        main = a 1.0;
+        main = a (1.0 :: Double);
     "#;
     let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(res.is_err(), "expected a compile error, got success");
