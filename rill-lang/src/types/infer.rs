@@ -182,6 +182,18 @@ struct Ctx {
     /// Empty outside a constrained body. Saved and restored around every body
     /// inference, exactly like `locals`.
     given: Vec<GivenVar>,
+    /// True while inferring a body whose context is NOT a definition signature:
+    /// an INSTANCE method body (its context is the instance head) or the
+    /// compiler-owned PRELUDE. The §4.1.3 signature-context check does not apply
+    /// to either — the prelude's own signatures are validated when it is loaded
+    /// (`TypeEnv::register_prelude`), and an instance's bodies are typed under
+    /// the instance's context.
+    in_instance_body: bool,
+    /// True while inferring the body of a definition that DECLARES a `::`
+    /// signature. Only such a body has a context the §4.1.3 check can violate;
+    /// an unsigned binding's context is INFERRED (GHC: `f (Just x) | x > 2.0 =
+    /// …` compiles with `Ord a` inferred).
+    in_signed_body: bool,
     /// The dictionary the type checker selected at each method call position,
     /// keyed by the call's span and the class whose method is called (see
     /// [`TypedProgram::dict_selections`]).
@@ -470,6 +482,7 @@ fn given_for_method_call(
     sig: &crate::ast::TypeExpr,
     args: &[Expr],
     expected: Option<&ValueTy>,
+    span: Span,
 ) -> Result<Option<GivenVar>, CompileError> {
     if ctx.given.is_empty() {
         return Ok(None);
@@ -504,7 +517,14 @@ fn given_for_method_call(
     };
     let at = infer_method_value_vty(ctx, &args[idx], "argument")?;
     let at = ctx.subst.resolve_value(&at);
-    Ok(given_witness(&ctx.given, &ctx.env, class_name, &at).cloned())
+    let witness = given_witness(&ctx.given, &ctx.env, class_name, &at).cloned();
+    if witness.is_none() {
+        // No witness for this class. If the operand is ABSTRACT the body is
+        // using a method its signature's context never granted — the §4.1.3
+        // restriction, reported rather than silently dispatched (OD-54).
+        require_context_witness(ctx, class_name, &at, span)?;
+    }
+    Ok(witness)
 }
 
 /// Whether a call of a name that is BOTH a class method and a class-constrained
@@ -841,6 +861,82 @@ fn record_literal_instance(ctx: &mut Ctx, span: Span) {
     ) {
         ctx.literal_instances.insert((span.start, span.end), solved);
     }
+}
+
+/// Reject a class method used inside a signature whose CONTEXT does not supply
+/// that class.
+///
+/// Haskell 2010 §4.1.3: a type signature's context restricts the body. Inside
+/// `f :: a -> a -> Bool; f x y = x < y` there is no `Ord a` witness, so GHC
+/// reports `No instance for Ord a` and tells the author to add the context.
+/// rill resolved `(<)` against whatever instance the operand type named and
+/// never compared the result with the declared context, so the context was
+/// documentation rather than a restriction — which also hid every consequence
+/// of the `Num`/`Ord` split (OD-52/OD-54).
+///
+/// A call is legal when either:
+/// - the declared context (or a superclass of it) witnesses the class, or
+/// - the operand's static type names a CONCRETE instance, so the call is a
+///   call-site dispatch the body is entitled to make (`length` on a real list,
+///   `(+)` on `Double` inside a `Num a =>` body, `Eq Int` under `Ord a`).
+///
+/// Only an ABSTRACT operand with no matching witness is rejected — exactly the
+/// case GHC reports.
+fn require_context_witness(
+    ctx: &Ctx,
+    class_name: &str,
+    evidence: &ValueTy,
+    span: Span,
+) -> Result<(), CompileError> {
+    // A concrete evidence type needs no witness: an instance exists for it.
+    if !matches!(
+        evidence,
+        ValueTy::Var(_) | ValueTy::TyConVar(_) | ValueTy::TyConApp(..)
+    ) {
+        return Ok(());
+    }
+    // An OPEN variable is not evidence of anything: it is an operand whose type
+    // a sibling or the signature has yet to fix (`0 == x` with `x :: Integer`
+    // types the literal from `x`). Reporting here would reject programs GHC
+    // accepts, so this check only judges what the signature has already made
+    // abstract-but-known — the case where the variable IS one of the body's own
+    // type variables.
+    if !ctx
+        .given
+        .iter()
+        .any(|g| matches!(evidence, ValueTy::Var(v) | ValueTy::TyConVar(v) | ValueTy::TyConApp(v, _) if g.id == Some(*v)))
+        && !matches!(evidence, ValueTy::Var(v) | ValueTy::TyConVar(v) | ValueTy::TyConApp(v, _) if ctx.subst.rigid_name.contains_key(v))
+    {
+        return Ok(());
+    }
+    // The operand is abstract: the class must come from the declared context.
+    // `given_witness` already looks through superclasses (`Ord a` witnesses
+    // `Eq a`), so it is the one judgement to ask.
+    if given_witness(&ctx.given, &ctx.env, class_name, evidence).is_some() {
+        return Ok(());
+    }
+    // Inside an inlined INSTANCE body the class witness comes from the instance
+    // head, not from a definition signature, so there is no declared context to
+    // violate here.
+    if ctx.in_instance_body {
+        return Ok(());
+    }
+    // Only a definition that DECLARES a signature has a context to violate.
+    // `f (Just x) | x > 2.0 = …` has no `::`, and GHC INFERS `Ord a` for it
+    // (measured: that program compiles and runs), so an unsigned binding is
+    // never this error.
+    if !ctx.in_signed_body {
+        return Ok(());
+    }
+    Err(CompileError::Type {
+        msg: format!(
+            "no witness for `{class_name}` in this signature's context: the body uses \
+             `{class_name}` at the abstract type `{}`, which no declared constraint \
+             supplies (add `{class_name}` to the context)",
+            ctx.env.type_spelling(evidence)
+        ),
+        span,
+    })
 }
 
 fn record_selection(ctx: &mut Ctx, span: Span, class: &str, evidence: &ValueTy) {
@@ -2400,8 +2496,13 @@ fn inline_instance_body(ctx: &mut Ctx, call: InlineCall<'_>) -> Result<ValueTy, 
     }
     // 4. The instance's own context, as a GIVEN (Haskell 2010 §4.3.2).
     let saved_given = set_instance_given(ctx, class_name, ty_name);
-    // 5. Type the body.
+    // 5. Type the body. This IS an instance body (its context comes from the
+    // instance head, not a definition signature), so the §4.1.3 signature
+    // check does not apply here.
+    let saved_in_instance = ctx.in_instance_body;
+    ctx.in_instance_body = true;
     let result = infer_method_value_vty_expected(ctx, body, "body", body_expected);
+    ctx.in_instance_body = saved_in_instance;
     // 6. Restore.
     ctx.given = saved_given;
     ctx.locals = saved_locals;
@@ -2938,7 +3039,13 @@ fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
                 ctx.locals
                     .insert(p.clone(), ArrowTy::value_channel(pt.clone()));
             }
+            // An INSTANCE body: its context comes from the instance head, not
+            // from a definition signature, so the §4.1.3 check is not this
+            // walk's to make.
+            let saved_in_instance = ctx.in_instance_body;
+            ctx.in_instance_body = true;
             let res = infer_method_value_vty_expected(ctx, body, "body", body_expected.clone());
+            ctx.in_instance_body = saved_in_instance;
             ctx.locals = saved;
             ctx.method_lifting.remove(&key);
             res?;
@@ -3168,6 +3275,8 @@ pub fn infer_program_with_entry(
             runst_payload_tys: HashMap::new(),
             nested_group_depth: 0,
             given: Vec::new(),
+            in_instance_body: false,
+            in_signed_body: false,
             dict_selections: HashMap::new(),
             residual: Vec::new(),
             literal_vars: HashMap::new(),
@@ -3176,6 +3285,10 @@ pub fn infer_program_with_entry(
             entry_name: String::new(),
             final_pass: false,
         };
+        // The PRELUDE is compiler-owned: its signatures were validated at
+        // load (`register_prelude`), so the user-facing §4.1.3 context check
+        // must not run over its bodies.
+        pc.in_instance_body = true;
         infer_def_group(&mut pc, &env.prelude_defs)?;
         prelude_ctx = Some(pc);
         if !prelude_defs.is_empty() {
@@ -3322,6 +3435,8 @@ pub fn infer_program_with_entry(
         runst_payload_tys: HashMap::new(),
         nested_group_depth: 0,
         given: Vec::new(),
+        in_instance_body: false,
+        in_signed_body: false,
         dict_selections: HashMap::new(),
         residual: Vec::new(),
         literal_vars: HashMap::new(),
@@ -3726,6 +3841,10 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
     // Taken AFTER the signature conversion so the value-track retry restores a
     // substitution that still carries this definition's rigid provenance.
     let saved_subst = ctx.subst.clone();
+    // A SIGNED definition's body is checked against its declared context (§4.1.3);
+    // an unsigned binding's context is inferred, so it is exempt.
+    let saved_signed = ctx.in_signed_body;
+    ctx.in_signed_body = def.sig().is_some();
     let (result, lambda_param_tys) = match infer_expr_expected(ctx, &body, sig_ret.clone()) {
         Ok(t) => {
             // The body's result must BE the declared result (Haskell 2010
@@ -3831,6 +3950,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
     };
     ctx.locals = saved_locals;
     ctx.subst.rigid_name = saved_rigid;
+    ctx.in_signed_body = saved_signed;
     result.map(|ty| DefBodyTy {
         ty,
         sig_params: sig_param_tys.cloned().unwrap_or_default(),
@@ -3943,7 +4063,15 @@ fn infer_constrained_def_body(
         ctx.locals
             .insert(p.name.clone(), ArrowTy::uniform(0, 1, ty.clone()));
     }
+    // A class-CONSTRAINED definition body: `given` above carries its declared
+    // context, and the §4.1.3 check uses it — `f :: Num a => a -> Bool;
+    // f x = x < x` must be REJECTED because `Num` does not witness `Ord`.
+    // A constrained definition is SIGNED by construction (`is_constrained_sig`
+    // requires a `=>`), so the check applies.
+    let saved_signed = ctx.in_signed_body;
+    ctx.in_signed_body = true;
     let inferred = infer_expr_expected(ctx, &body, Some(sig_ret.clone()));
+    ctx.in_signed_body = saved_signed;
     let result = match inferred {
         Ok(t) => {
             // The body must produce the signature's declared result. A concrete
@@ -7847,12 +7975,72 @@ fn infer_apply_impl(
             // constrained body the class variable is ABSTRACT, so there is no
             // instance to select — the call is typed against the incoming
             // dictionary and its evidence recorded as `Dict(g)`.
-            if let Some(given) =
-                given_for_method_call(ctx, &class_name, &class_var, sig, args, expected.as_ref())?
-            {
+            if let Some(given) = given_for_method_call(
+                ctx,
+                &class_name,
+                &class_var,
+                sig,
+                args,
+                expected.as_ref(),
+                span,
+            )? {
                 let at = infer_method_under_given(ctx, &class_var, &given, sig, args, span)?;
                 record_selection(ctx, span, &class_name, &ValueTy::Dict(given.class.clone()));
                 return Ok(at);
+            }
+            // No GIVEN witness. If the body is under a declared context at all,
+            // the call must still be one the context permits: an ABSTRACT
+            // operand with no witness for its class is exactly what Haskell 2010
+            // §4.1.3 forbids (`f :: a -> a -> Bool; f x y = x < y` → "add (Ord
+            // a) to the context"). A concrete operand needs no witness — that is
+            // an ordinary call-site dispatch (`length` on a real list, `(+)` on
+            // `Double` inside a `Num a =>` body).
+            //
+            // The check is here rather than in `given_for_method_call` because
+            // that function returns early when `ctx.given` is EMPTY, which is
+            // precisely the `f :: a -> a -> Bool` case.
+            {
+                let arity = ctx
+                    .env
+                    .typeclasses
+                    .get(class_name.as_str())
+                    .map(|c| c.arity)
+                    .unwrap_or(0);
+                let selector = if arity == 0 {
+                    class_var_selector_index(sig, &class_var, args.len(), |i| {
+                        is_bare_nullary_method_ref(ctx, &args[i], &class_name)
+                    })
+                } else {
+                    ctx.env.class_var_arg_index(sig, &class_var)
+                };
+                if let Some(i) = selector.filter(|i| *i < args.len()) {
+                    // Only when the class variable actually OCCURS in that
+                    // parameter pattern: `fromInteger : Integer -> a` names `a`
+                    // in its RESULT, so its `Integer` operand says nothing about
+                    // the class and must not be read as evidence.
+                    let mentions =
+                        crate::types::ty::class_var_param_indices(sig, &class_var).contains(&i);
+                    if mentions {
+                        // A PROBE, rolled back exactly as `try_dispatch` does:
+                        // typing the operand again must not leave a second
+                        // residual behind (that is what reported `Ambiguous type
+                        // variable: a is constrained by Arrow`).
+                        let subst_mark = ctx.subst.clone();
+                        let next_mark = ctx.next;
+                        let residual_mark = ctx.residual.len();
+                        let at = infer_method_value_vty(ctx, &args[i], "argument")?;
+                        let at = ctx.subst.resolve_value(&at);
+                        ctx.subst = subst_mark;
+                        ctx.next = next_mark;
+                        ctx.residual.truncate(residual_mark);
+                        require_context_witness(ctx, &class_name, &at, span)?;
+                    }
+                } else if args.is_empty() && expected.is_none() {
+                    // A NULLARY method (`mempty`, `fromInteger` with no operand
+                    // to inspect) has no selector argument: its evidence is the
+                    // RESULT, which only the caller's expectation can fix.
+                    // With neither, there is nothing to check here.
+                }
             }
             // Argument count: a `TFunc` signature carries its argument list; a
             // bare class-var signature (`show: a`) takes exactly one selector
@@ -10144,6 +10332,8 @@ mod tests {
             runst_payload_tys: HashMap::new(),
             nested_group_depth: 0,
             given: Vec::new(),
+            in_instance_body: false,
+            in_signed_body: false,
             dict_selections: HashMap::new(),
             residual: Vec::new(),
             literal_vars: HashMap::new(),
@@ -10403,6 +10593,8 @@ mod tests {
                 runst_payload_tys: HashMap::new(),
                 nested_group_depth: 0,
                 given: Vec::new(),
+                in_instance_body: false,
+                in_signed_body: false,
                 dict_selections: HashMap::new(),
                 residual: Vec::new(),
                 literal_vars: HashMap::new(),

@@ -464,6 +464,71 @@ fn a_forall_signature_reports_its_real_arity() {
 }
 
 #[test]
+fn a_signature_context_restricts_its_body() {
+    // Haskell 2010 §4.1.3: a type signature's context RESTRICTS the body. Every
+    // expectation below is GHC 9.10.3's measured behaviour.
+    let infer = |src: &str| {
+        let toks = rill_lang::lexer::tokenize(src).expect("lex");
+        let mut prog = rill_lang::parser::parse(&toks, src.as_bytes()).expect("parse");
+        rill_lang::desugar::desugar_program(&mut prog).expect("desugar");
+        rill_lang::types::infer::infer_program(&prog, Mode::Strict)
+    };
+    // REJECTED: `(<)` needs `Ord`, which no context supplies.
+    for (why, src) in [
+        (
+            "no context at all",
+            "f :: a -> a -> Bool;\nf x y = x < y;\nmain = 0.0;",
+        ),
+        (
+            "`Num` does not entail `Ord`",
+            "f :: Num a => a -> Bool;\nf x = x < x;\nmain = 0.0;",
+        ),
+        (
+            "`Eq` does not entail `Ord`",
+            "f :: Eq a => a -> Bool;\nf x = x < x;\nmain = 0.0;",
+        ),
+    ] {
+        let err = match infer(src) {
+            Ok(_) => panic!("`{src}` must be rejected ({why})"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("no witness for `Ord`"),
+            "expected a context-witness error ({why}), got: {err}"
+        );
+    }
+    // ACCEPTED: the context supplies it, directly or through a superclass.
+    for (why, src) in [
+        (
+            "`Ord a` is exactly what `(<)` needs",
+            "f :: Ord a => a -> a -> Bool;\nf x y = x < y;\nmain = 0.0;",
+        ),
+        (
+            "`Ord` entails `Eq`",
+            "f :: Ord a => a -> Bool;\nf x = x == x;\nmain = 0.0;",
+        ),
+        (
+            "`Num a` is what `(+)` needs",
+            "f :: Num a => a -> a -> a;\nf x y = x + y;\nmain = 0.0;",
+        ),
+        (
+            "a CONCRETE type needs no witness",
+            "f :: Double -> Double -> Bool;\nf x y = x < y;\nmain = 0.0;",
+        ),
+        (
+            "an UNSIGNED binding's context is inferred, not violated",
+            "f (Just x) | x > 2.0 = 10.0 | otherwise = 0.0;\nf Nothing = 99.0;\nmain = 0.0;",
+        ),
+    ] {
+        assert!(
+            infer(src).is_ok(),
+            "`{src}` must be accepted ({why}): {:?}",
+            infer(src).err().map(|e| e.to_string())
+        );
+    }
+}
+
+#[test]
 fn an_open_expectation_defers_instead_of_failing() {
     // A result-directed method whose expected RESULT is still a type VARIABLE is
     // the ordinary mid-inference state, not an error (Haskell 2010 §4.3.4). GHC
