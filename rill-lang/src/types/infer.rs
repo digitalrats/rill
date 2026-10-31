@@ -3365,11 +3365,27 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
         // literal's representation comes from the signature (Report §6.4.1: it
         // is `fromInteger` at `Double`); inferring the body with NO expected
         // type made the literal an `Int` and the signature check a type error.
-        // A FUNCTION signature has no bare result to publish here — its
-        // parameters are typed by the param path below — so only a nullary
-        // declared type participates.
+        // A binding's OWN declared type is the expected type of its right-hand
+        // side. `x :: Double; x = 2` is well typed in Haskell 2010 because the
+        // literal's representation comes from the signature (Report §6.4.1: it
+        // is `fromInteger` at `Double`).
+        //
+        // A NULLARY signature publishes its bare result; a FUNCTION signature
+        // publishes the WHOLE function type. `h :: Int -> Int; h = f 1`
+        // declares that the right-hand side IS `Int -> Int`, and that
+        // obligation is what solves a class variable inside the partial
+        // application: with `f :: C a => a -> b -> a`, `h = f 1` gives
+        // `a := Int, b := Int`, so the literal is `Int` and `C Int` is
+        // discharged. GHC accepts exactly that source (measured) and reports
+        // `Ambiguous type variable 'a0'` only when the annotation is absent.
+        // This arm is reached only by a λ-LESS body: a body that BUILDS a λ
+        // takes its parameter types from the signature by the param path below.
         let binding_ty: Option<ValueTy> = match def.sig() {
-            Some(sig) if sig_func_parts(sig).0.is_empty() => Some(def_sig_tys(ctx, sig)?.1),
+            Some(sig) if !sig_func_parts(sig).0.is_empty() => {
+                let (params, ret, _) = def_sig_tys(ctx, sig)?;
+                Some(ValueTy::Thunk(params, vec![ret]))
+            }
+            Some(sig) => Some(def_sig_tys(ctx, sig)?.1),
             _ => None,
         };
         // `main :: IO t` (Haskell 2010 §5.1) is a CHECK, not an expectation.
@@ -6168,6 +6184,17 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
                     .get(&class_name)
                     .map(|c| c.var.clone())
                     .unwrap_or_default();
+                // A LIVE class variable with a recorded demand, not the old
+                // `u32::MAX` SENTINEL: the sentinel produced
+                // `Thunk([Var(4294967295)], [ret])`, a type nothing could unify
+                // with. The variable must survive to the stage-2/3 solver.
+                let cv_var = ctx.fresh_id();
+                ctx.residual.push(Residual {
+                    class: class_name.clone(),
+                    var: cv_var,
+                    span,
+                    literal: false,
+                });
                 let mut fresh_ids: Vec<ValueTy> = Vec::new();
                 for _ in 0..8 {
                     fresh_ids.push(ctx.fresh_vty());
@@ -6176,7 +6203,7 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
                 let (param_tys, ret) = signature_param_and_result_tys_conv(
                     &ctx.env,
                     &class_var,
-                    &ClassVarSubst::Var(u32::MAX),
+                    &ClassVarSubst::Var(cv_var),
                     &sig,
                     || it.next().unwrap_or(ValueTy::Double),
                 );
@@ -6705,22 +6732,17 @@ fn pin_result_to_expected(
 fn infer_constrained_apply(
     ctx: &mut Ctx,
     name: &str,
-    cd: &crate::types::ty::ConstrainedDef,
+    sig: &crate::ast::TypeExpr,
     args: &[Expr],
     span: Span,
     expected: Option<ValueTy>,
 ) -> Result<ArrowTy, CompileError> {
-    let (param_tys, ret_ty, vars) = def_sig_tys(ctx, &cd.sig)?;
-    if param_tys.len() != cd.params.len() {
-        return Err(CompileError::Type {
-            msg: format!(
-                "signature of `{name}` declares {} argument(s), but the definition binds {}",
-                param_tys.len(),
-                cd.params.len()
-            ),
-            span,
-        });
-    }
+    let (param_tys, ret_ty, vars) = def_sig_tys(ctx, sig)?;
+    // No arity comparison with the definition here: that judgement is made ONCE
+    // at the declaration (`infer_constrained_def_body`, which HAS the body to
+    // count λ-parameters from), and a declaration whose body cannot be typed is
+    // rejected before any call site exists. Repeating it here would need the
+    // definition back, which is precisely what this path no longer takes.
     // Pin the result to the caller's expected type before the arguments infer,
     // so a result-directed method inside an argument resolves by the container
     // this call must produce (mirrors the plain function path).
@@ -6757,11 +6779,20 @@ fn infer_constrained_apply(
         if !unresolved_thunk {
             continue;
         }
-        let pname = cd
-            .params
-            .get(i)
-            .map(|p| p.name.as_str())
-            .unwrap_or("<unnamed>");
+        // The parameter NAME is diagnostic only, so it is recovered from the
+        // body rather than kept in a registry: a definition's parameters ARE its
+        // body's leading λ-nest (Haskell 2010 §4.4.3.1), and the signature's
+        // arity says how many λs belong to the head.
+        let pname = ctx
+            .def_bodies
+            .get(name)
+            .and_then(|body| {
+                crate::types::ty::split_curried_params(sig.arg_count(), &[], body)
+                    .0
+                    .get(i)
+                    .map(|p| p.name.clone())
+            })
+            .unwrap_or_else(|| "<unnamed>".to_string());
         return Err(CompileError::Type {
             msg: format!(
                 "`{name}` expects a function value for parameter `{pname}`; a bare \
@@ -6778,7 +6809,7 @@ fn infer_constrained_apply(
         .iter()
         .map(|(k, v)| (k.clone(), ctx.subst.resolve_value(v)))
         .collect();
-    discharge_def_constraints(&ctx.env, name, &cd.sig, &bindings, span)?;
+    discharge_def_constraints(&ctx.env, name, sig, &bindings, span)?;
     Ok(at)
 }
 
@@ -7614,14 +7645,49 @@ fn infer_apply_impl(
             if result_directed {
                 // `pure a`, `return x`: the container `f a` / `m a` comes only
                 // from the expected result type.
+                //
+                // With NO expectation the call is DEFERRED, not rejected: the
+                // class variable stays LIVE and the demand is recorded, so a
+                // stage-2/3 solve (or a later sibling) can settle it. This is
+                // the same rule the bare-reference path applies — one mechanism,
+                // not two — and it is what lets `arr` inside a larger expression
+                // wait for the container its context supplies.
                 let Some(exp) = expected else {
-                    return Err(CompileError::Type {
-                        msg: format!(
-                            "cannot resolve method `{name}` of `{class_name}`: expected type unknown \
-                             (use it where its result type is fixed, e.g. `bind (Just 1.0) (fn x -> return x)`)"
-                        ),
+                    let cv_var = ctx.fresh_id();
+                    ctx.residual.push(Residual {
+                        class: class_name.clone(),
+                        var: cv_var,
                         span,
+                        literal: false,
                     });
+                    let subst = ClassVarSubst::Var(cv_var);
+                    let env = ctx.env.clone();
+                    let mut it = (0..8).map(|_| ctx.fresh_vty());
+                    let (param_tys, ret) =
+                        signature_param_and_result_tys_conv(&env, &class_var, &subst, sig, || {
+                            it.next().unwrap_or(ValueTy::Double)
+                        });
+                    // A NULLARY method's value IS the container, with no arrow to
+                    // apply — `signature_param_and_result_tys_conv` reports `None`
+                    // for its result exactly then.
+                    if ret.is_none() {
+                        let value_ty = param_tys
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| ctx.fresh_vty());
+                        return Ok(ArrowTy::value_channel(value_ty));
+                    }
+                    let ret_ty = ret.unwrap_or_else(|| ctx.fresh_vty());
+                    let what = format!("method `{name}` of `{class_name}`");
+                    return apply_args_curried(
+                        ctx,
+                        &param_tys,
+                        &ret_ty,
+                        args,
+                        span,
+                        &what,
+                        ArgUnify::Exact,
+                    );
                 };
                 let env = ctx.env.clone();
                 let cv_var = ctx.fresh_id();
@@ -7785,6 +7851,16 @@ fn infer_apply_impl(
                     // Partial application: type the supplied arguments against
                     // the leading parameters and return the curried remainder.
                     let class_var = class_info.var.clone();
+                    // A live variable with a recorded demand (see the note in
+                    // `infer_ref_inner`): the sentinel was a type no context
+                    // could take.
+                    let cv_var = ctx.fresh_id();
+                    ctx.residual.push(Residual {
+                        class: class_name.clone(),
+                        var: cv_var,
+                        span,
+                        literal: false,
+                    });
                     let mut fresh_ids: Vec<ValueTy> = Vec::new();
                     for _ in 0..8 {
                         fresh_ids.push(ctx.fresh_vty());
@@ -7793,11 +7869,25 @@ fn infer_apply_impl(
                     let (param_tys, ret) = signature_param_and_result_tys_conv(
                         &ctx.env,
                         &class_var,
-                        &ClassVarSubst::Var(u32::MAX),
+                        &ClassVarSubst::Var(cv_var),
                         sig,
                         || it.next().unwrap_or(ValueTy::Double),
                     );
                     let ret_ty = ret.unwrap_or_else(|| ctx.fresh_vty());
+                    // The remainder's RESULT carries the class variable: when
+                    // the caller supplies an expectation (`h :: Int -> Int`),
+                    // unifying with it solves `a` right here — GHC accepts such
+                    // a partial application for exactly that reason, and leaving
+                    // the variable free made the residual ambiguous
+                    // (`C a`, `Num a`) and REJECTED a program GHC takes.
+                    let ret_expected = expected.clone().map(|e| match e {
+                        ValueTy::Thunk(_, rets) if rets.len() == 1 => rets[0].clone(),
+                        other => other,
+                    });
+                    if let Some(exp) = ret_expected {
+                        let expected_ret = ret_ty.clone();
+                        let _ = unify_value(&expected_ret, &exp, &mut ctx.subst, span);
+                    }
                     let what = format!("method `{name}` of `{class_name}`");
                     return apply_args_curried(
                         ctx,
@@ -8194,6 +8284,13 @@ fn infer_apply_impl(
                 // (`infer_ref_expected`), and the same shared rule decides the
                 // arity, so a partial application and a bare reference can
                 // never disagree about the remainder.
+                let cv_var = ctx.fresh_id();
+                ctx.residual.push(Residual {
+                    class: class_name.clone(),
+                    var: cv_var,
+                    span,
+                    literal: false,
+                });
                 let mut fresh_ids: Vec<ValueTy> = Vec::new();
                 for _ in 0..8 {
                     fresh_ids.push(ctx.fresh_vty());
@@ -8202,7 +8299,7 @@ fn infer_apply_impl(
                 let (param_tys, ret) = signature_param_and_result_tys_conv(
                     &ctx.env,
                     &class_var,
-                    &ClassVarSubst::Var(u32::MAX),
+                    &ClassVarSubst::Var(cv_var),
                     sig,
                     || it.next().unwrap_or(ValueTy::Double),
                 );
@@ -8729,13 +8826,13 @@ fn infer_apply_impl(
     // body's GIVEN constraint witnesses the METHOD's class-var pattern, the call
     // is the method, not the definition.
     if !ctx.locals.contains_key(name) {
-        if let Some(cd) = ctx.env.constrained_defs.get(name).cloned() {
+        if let Some(sig) = ctx.env.constrained_defs.get(name).cloned() {
             let routes_to_method = args.first().is_some_and(|first| {
                 ctx.env.class_of_method(name).is_some()
                     && probe_first_arg_solves_class_var(ctx, name, first)
             });
             if !routes_to_method {
-                return infer_constrained_apply(ctx, name, &cd, args, span, expected);
+                return infer_constrained_apply(ctx, name, &sig, args, span, expected);
             }
         }
     }
@@ -10061,11 +10158,18 @@ mod tests {
         };
         let mut env = TypeEnv::with_builtins();
         env.register_decls(std::slice::from_ref(&def));
-        let cd = env
+        let sig = env
             .constrained_defs
             .get("mk")
             .expect("a forall-wrapped class context must register as constrained");
-        assert_eq!(cd.params.len(), 1, "the λ-parameter is recovered");
+        // The registry holds the SIGNATURE; the λ-parameter comes from the
+        // definition's own body on demand. Both must agree on the arity.
+        assert!(matches!(
+            sig,
+            TypeExpr::TForall(_, _) | TypeExpr::TConstrained(_, _)
+        ));
+        let (params, _) = effective_def_params(&def);
+        assert_eq!(params.len(), 1, "the λ-parameter is recovered");
     }
 
     #[test]

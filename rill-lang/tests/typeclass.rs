@@ -256,7 +256,8 @@ fn infer_x(src: &str) -> ValueTy {
 /// Infer `src` at `Mode::Complete`, panicking with the diagnostic if rejected.
 fn infer_typed(src: &str) -> rill_lang::types::infer::TypedProgram {
     let toks = rill_lang::lexer::tokenize(src).expect("lex");
-    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).expect("parse");
+    let mut prog = rill_lang::parser::parse(&toks, src.as_bytes()).expect("parse");
+    rill_lang::desugar::desugar_program(&mut prog).expect("desugar");
     rill_lang::types::infer::infer_program(&prog, Mode::Complete)
         .unwrap_or_else(|e| panic!("`{src}` must typecheck: {e}"))
 }
@@ -264,7 +265,8 @@ fn infer_typed(src: &str) -> rill_lang::types::infer::TypedProgram {
 /// The diagnostic for a program inference REJECTS, or `None` when it accepts it.
 fn infer_err(src: &str) -> Option<rill_lang::CompileError> {
     let toks = rill_lang::lexer::tokenize(src).expect("lex");
-    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).expect("parse");
+    let mut prog = rill_lang::parser::parse(&toks, src.as_bytes()).expect("parse");
+    rill_lang::desugar::desugar_program(&mut prog).expect("desugar");
     rill_lang::types::infer::infer_program(&prog, Mode::Complete).err()
 }
 

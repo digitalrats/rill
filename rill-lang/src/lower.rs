@@ -5134,7 +5134,12 @@ impl<'a> Lowerer<'a> {
         span: Span,
     ) -> Option<Result<(usize, ValueTy), CompileError>> {
         let env = self.env;
-        let cd = env.constrained_defs.get(name)?.clone();
+        // The definition IS the record: no separate `ConstrainedDef` copy exists
+        // any more, so body and parameters come from the AST on demand.
+        if !env.constrained_defs.contains_key(name) {
+            return None;
+        }
+        let def = self.defs.get(name)?.clone();
         // A value binding named like the definition shadows it: a λ-parameter
         // or a fragment capture (`\ listArray -> listArray 1.0`).
         if self.value_locals.iter().any(|s| s.contains_key(name))
@@ -5160,7 +5165,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
-        Some(self.lower_constrained_apply(name, &cd, call_args, expected, span))
+        Some(self.lower_constrained_apply(name, &def, call_args, expected, span))
     }
 
     /// Whether `name` is shadowed by a DEFINITION at this call site, i.e. the
@@ -5244,27 +5249,33 @@ impl<'a> Lowerer<'a> {
     fn lower_constrained_apply(
         &mut self,
         name: &str,
-        cd: &crate::types::ty::ConstrainedDef,
+        def: &crate::ast::Def,
         call_args: &[Expr],
         expected: Option<&ValueTy>,
         span: Span,
     ) -> Result<(usize, ValueTy), CompileError> {
-        let (arg_tes, _) = crate::types::infer::sig_func_parts(&cd.sig);
-        if arg_tes.len() != cd.params.len() {
+        let (arg_tes, _) = crate::types::infer::sig_func_parts(
+            def.sig()
+                .expect("a constrained definition carries a signature"),
+        );
+        // The parameters and the list they are peeled from come from the AST:
+        // `Def::Eval` already carries them as its body's leading λ-nest.
+        let (def_params, _) = crate::types::infer::effective_def_params(def);
+        if arg_tes.len() != def_params.len() {
             return Err(CompileError::Type {
                 msg: format!(
                     "signature of `{name}` declares {} argument(s), but the definition binds {}",
                     arg_tes.len(),
-                    cd.params.len()
+                    def_params.len()
                 ),
                 span,
             });
         }
-        if call_args.len() > cd.params.len() {
+        if call_args.len() > def_params.len() {
             return Err(CompileError::Type {
                 msg: format!(
                     "`{name}` expects {} argument(s), got {}",
-                    cd.params.len(),
+                    def_params.len(),
                     call_args.len()
                 ),
                 span,
@@ -5276,7 +5287,7 @@ impl<'a> Lowerer<'a> {
         // the BODY is lowered (see [`Self::lower_constrained_body`]), not here:
         // the call's arguments are ordinary expressions and may legitimately
         // contain another use of the same definition.
-        self.lower_constrained_apply_inner(name, cd, call_args, expected, span)
+        self.lower_constrained_apply_inner(name, def, call_args, expected, span)
     }
 
     /// Lower a constrained definition's body under the recursion guard.
@@ -5312,13 +5323,19 @@ impl<'a> Lowerer<'a> {
     fn lower_constrained_apply_inner(
         &mut self,
         name: &str,
-        cd: &crate::types::ty::ConstrainedDef,
+        def: &crate::ast::Def,
         call_args: &[Expr],
         expected: Option<&ValueTy>,
         span: Span,
     ) -> Result<(usize, ValueTy), CompileError> {
         let env = self.env;
-        let (arg_tes, ret_te) = crate::types::infer::sig_func_parts(&cd.sig);
+        let (arg_tes, ret_te) = crate::types::infer::sig_func_parts(
+            def.sig()
+                .expect("a constrained definition carries a signature"),
+        );
+        // The definition's parameters, peeled from its body's leading λ-nest on
+        // demand (there is no stored copy — see `TypeEnv::constrained_defs`).
+        let (def_params, unpeeled_body) = crate::types::infer::effective_def_params(def);
         // Pass 1: lower the arguments and solve the signature's type variables
         // from their static types.
         //
@@ -5404,7 +5421,14 @@ impl<'a> Lowerer<'a> {
             }
             lowered.push((r, t));
         }
-        crate::types::infer::discharge_def_constraints(env, name, &cd.sig, &bindings, span)?;
+        crate::types::infer::discharge_def_constraints(
+            env,
+            name,
+            def.sig()
+                .expect("a constrained definition carries a signature"),
+            &bindings,
+            span,
+        )?;
         // The signature's RESULT type with the solved class variables
         // substituted. Variables the call site left unsolved (a genuinely
         // polymorphic result) become fresh lowerer type variables.
@@ -5416,13 +5440,13 @@ impl<'a> Lowerer<'a> {
         let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
         let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
         for (i, (r, t)) in lowered.iter().enumerate() {
-            scope.insert(cd.params[i].name.clone(), (*r, t.clone()));
+            scope.insert(def_params[i].name.clone(), (*r, t.clone()));
             ctor_scope.insert(
-                cd.params[i].name.clone(),
+                def_params[i].name.clone(),
                 self.static_scrutinee_ctor(&call_args[i]),
             );
         }
-        if call_args.len() < cd.params.len() {
+        if call_args.len() < def_params.len() {
             // Partial application: the remaining λ-parameters stay a function
             // value. The applied arguments are captured by value (they are in
             // scope as locals), and the remaining parameters are typed from the
@@ -5439,13 +5463,14 @@ impl<'a> Lowerer<'a> {
             self.value_locals.push(scope);
             self.value_local_ctors.push(ctor_scope);
             let remaining = Expr::Lambda {
-                params: cd.params[call_args.len()..].to_vec(),
-                body: Box::new(cd.body.clone()),
+                params: def_params[call_args.len()..].to_vec(),
+                body: Box::new(unpeeled_body.clone()),
                 span,
             };
             let saved_pending = self.pending_param_tys.take();
             self.pending_param_tys = Some(remaining_tys);
-            let res = self.lower_constrained_body(name, &cd.where_defs, &remaining, expected, span);
+            let res =
+                self.lower_constrained_body(name, def.where_defs(), &remaining, expected, span);
             self.pending_param_tys = saved_pending;
             self.value_locals.pop();
             self.value_local_ctors.pop();
@@ -5458,8 +5483,13 @@ impl<'a> Lowerer<'a> {
         let body_expected = expected.cloned().unwrap_or_else(|| sig_ret.clone());
         self.value_locals.push(scope);
         self.value_local_ctors.push(ctor_scope);
-        let res =
-            self.lower_constrained_body(name, &cd.where_defs, &cd.body, Some(&body_expected), span);
+        let res = self.lower_constrained_body(
+            name,
+            def.where_defs(),
+            &unpeeled_body,
+            Some(&body_expected),
+            span,
+        );
         self.value_locals.pop();
         self.value_local_ctors.pop();
         let (r, t) = res?;
@@ -5827,14 +5857,16 @@ impl<'a> Lowerer<'a> {
         // (a reference carries no arguments, so a definition with parameters is
         // a partial application and keeps its function value).
         if self.env.constrained_defs.contains_key(name) && position_solves {
+            // A NULLARY constrained definition has no parameter λ at all.
             let nullary = self
-                .env
-                .constrained_defs
+                .defs
                 .get(name)
-                .map(|cd| cd.params.is_empty())
+                .map(|d: &crate::ast::Def| {
+                    crate::types::infer::effective_def_params(d).0.is_empty()
+                })
                 .unwrap_or(false);
             if nullary {
-                if let Some(cd) = self.env.constrained_defs.get(name).cloned() {
+                if let Some(def) = self.defs.get(name).cloned() {
                     if self.value_locals.iter().all(|s| !s.contains_key(name)) {
                         // Inference's decision for THIS reference wins: it is the
                         // one judgement about the program (`h + 2.5` → `Double`),
@@ -5847,7 +5879,7 @@ impl<'a> Lowerer<'a> {
                             .map(|(_, ty)| ty.clone());
                         let exp = inferred.as_ref().or(expected);
                         let (r, ty) =
-                            self.lower_constrained_apply_inner(name, &cd, &[], exp, span)?;
+                            self.lower_constrained_apply_inner(name, &def, &[], exp, span)?;
                         return Ok((r, ty));
                     }
                 }
@@ -10642,11 +10674,11 @@ fn mention_needs_a_site(
     args: &[&Expr],
     params: &HashSet<String>,
 ) -> bool {
-    let Some(cd) = env.constrained_defs.get(name) else {
+    let Some(sig) = env.constrained_defs.get(name) else {
         return false;
     };
-    for var in signature_constraint_vars(&cd.sig) {
-        let Some(idx) = crate::types::ty::class_var_param_pattern(&cd.sig, &var) else {
+    for var in signature_constraint_vars(sig) {
+        let Some(idx) = crate::types::ty::class_var_param_pattern(sig, &var) else {
             // The variable occurs in no parameter: nothing at a call site can
             // solve it, so the mention adds no call-site dependency.
             continue;

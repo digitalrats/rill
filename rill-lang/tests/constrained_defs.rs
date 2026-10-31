@@ -3,6 +3,14 @@
 //! with the concrete class-variable type and the bound instance — β-substitution
 //! at compile time, never a runtime dictionary.
 //!
+//! **Where the class variable comes from.** A numeric literal is polymorphic
+//! (`fromInteger`, Haskell 2010 §6.4.1), so a bare `(0, 9)` does NOT fix the
+//! class variable: `mk (0, 9)` leaves `i` open and GHC rejects the program with
+//! `Ambiguous type variable 'i0'` — measured, and it stays ambiguous even when a
+//! `ProbeIx Integer` instance exists, because defaulting never applies to a
+//! non-numeric constraint. These tests therefore pin the index type the way the
+//! Haskell source must, with an annotation or a signature-carrying helper.
+//!
 //! The probe class `ProbeIx` is a purpose-built stand-in that stays OUT of the
 //! prelude's way: the real `Ix` class (with `range`/`index`/`inRange`/
 //! `rangeSize`) now ships in `CATEGORY_PRELUDE` with its `Int` and
@@ -65,16 +73,23 @@ fn constrained_def_registers_without_eager_body_inference() {
     // body was DEFERRED, not inferred.
     let src = format!("{PROBE_IX}\n{PROBE_DEF}\nmain = mk (0,9) 0.0;");
     let env = env_of(&src);
-    let cd = env
+    let sig = env
         .constrained_defs
         .get("mk")
         .expect("a `=>` definition must register in `constrained_defs`");
+    // The registry holds the signature and nothing else: the definition stays the
+    // single record of its body and parameters, which are the body's own leading
+    // λ-nest. What is asserted here is that the registration KEPT the class
+    // context, which is the fact that makes the definition deferred.
     assert!(
-        matches!(cd.sig, TypeExpr::TConstrained(_, _)),
-        "the registered signature keeps its class context: {:?}",
-        cd.sig
+        matches!(sig, TypeExpr::TConstrained(_, _)),
+        "the registered signature keeps its class context: {sig:?}"
     );
-    assert_eq!(cd.params.len(), 2, "both λ-parameters are registered");
+    assert_eq!(
+        sig.arg_count(),
+        2,
+        "the signature declares both parameters of `mk`"
+    );
 }
 
 #[test]
@@ -98,14 +113,19 @@ fn unconstrained_defs_do_not_register_as_constrained() {
 
 #[test]
 fn call_site_specializes_the_body_to_the_index_instance() {
-    let one_d = format!("{PROBE_IX}\n{PROBE_DEF}\nmain = mk (0,9) 0.0;");
+    // The index type is written out because the literals alone are
+    // `Num`-polymorphic: `i` would stay unsolved (GHC reports the same
+    // ambiguity), so the annotation is what makes the choice a compile-time one.
+    let one_d = format!("{PROBE_IX}\n{PROBE_DEF}\nmain = mk ((0,9) :: Pair Int Int) 0.0;");
     assert_eq!(
         run(&one_d),
         1.0,
         "`Pair Int Int` must solve `i := Int` and take the `ProbeIx Int` body"
     );
 
-    let two_d = format!("{PROBE_IX}\n{PROBE_DEF}\nmain = mk ((0,0),(2,2)) 0.0;");
+    let two_d = format!(
+        "{PROBE_IX}\n{PROBE_DEF}\nmain = mk (((0,0),(2,2)) :: Pair (Pair Int Int) (Pair Int Int)) 0.0;"
+    );
     assert_eq!(
         run(&two_d),
         2.0,
@@ -117,7 +137,12 @@ fn call_site_specializes_the_body_to_the_index_instance() {
 fn every_call_site_specializes_independently() {
     // The SAME definition applied at the two index types in one program: a
     // compile-time dispatch is per call site, never a shared (first-call) body.
-    let src = format!("{PROBE_IX}\n{PROBE_DEF}\nmain = mk (0,9) 0.0 + mk ((0,0),(2,2)) 0.0;");
+    // Two call sites, two index types, one definition. Both index types are
+    // annotated: the literal pair alone leaves `i` open at each site.
+    let src = format!(
+        "{PROBE_IX}\n{PROBE_DEF}\nmain = mk ((0,9) :: Pair Int Int) 0.0 \
+         + mk (((0,0),(2,2)) :: Pair (Pair Int Int) (Pair Int Int)) 0.0;"
+    );
     assert_eq!(run(&src), 3.0);
 }
 
@@ -126,7 +151,9 @@ fn non_instanced_index_type_is_a_compile_error() {
     // `Bool` is a legal index TYPE, but no `ProbeIx Bool` instance is registered:
     // the constraint cannot be discharged and must fail at COMPILE time
     // (never fall back to a runtime dictionary).
-    let src = format!("{PROBE_IX}\n{PROBE_DEF}\nmain = mk (true,false) 0.0;");
+    // Annotated, so the failure is the MISSING INSTANCE and not an unsolved
+    // class variable — exactly the error GHC reports for this source.
+    let src = format!("{PROBE_IX}\n{PROBE_DEF}\nmain = mk ((true,false) :: Pair Bool Bool) 0.0;");
     let err = match compile_eval::<f32, 256>(&src, "main", Mode::Strict) {
         Ok(_) => panic!("`ProbeIx Bool` has no instance, so the program must not compile"),
         Err(e) => e,
@@ -163,10 +190,12 @@ fn partial_application_specializes_and_applies_later() {
     //
     // Partial application is bound at top level: a `let`-bound function value
     // is not yet supported by the v1 lowering (same for plain definitions).
-    let src = format!("{PROBE_IX}\n{PROBE_DEF}\np1 = mk (0,9);\nmain = p1 0.0;");
+    let src = format!("{PROBE_IX}\n{PROBE_DEF}\np1 = mk ((0,9) :: Pair Int Int);\nmain = p1 0.0;");
     assert_eq!(run(&src), 1.0);
 
-    let src_2d = format!("{PROBE_IX}\n{PROBE_DEF}\np1 = mk ((0,0),(2,2));\nmain = p1 0.0;");
+    let src_2d = format!(
+        "{PROBE_IX}\n{PROBE_DEF}\np1 = mk (((0,0),(2,2)) :: Pair (Pair Int Int) (Pair Int Int));\nmain = p1 0.0;"
+    );
     assert_eq!(run(&src_2d), 2.0);
 }
 
@@ -175,7 +204,7 @@ fn where_block_of_a_constrained_def_is_in_scope() {
     // A `where`-binding of the definition is visible in the (deferred) body and
     // is inlined at its use site — the same scoping plain definitions have.
     let src = format!(
-        "{PROBE_IX}\nmk p v :: ProbeIx i => Pair i i -> Double -> Double = probeSize p + off where {{ off = 0.5; }};\nmain = mk (0,9) 0.0;"
+        "{PROBE_IX}\nmk p v :: ProbeIx i => Pair i i -> Double -> Double = probeSize p + off where {{ off = 0.5; }};\nmain = mk ((0,9) :: Pair Int Int) 0.0;"
     );
     assert_eq!(run(&src), 1.5);
 }
@@ -198,7 +227,7 @@ fn constrained_def_can_call_another_constrained_def() {
         "{PROBE_IX}\n\
          inner p :: ProbeIx i => Pair i i -> Double = probeSize p;\n\
          outer q :: ProbeIx i => Pair i i -> Double = inner q;\n\
-         main = outer (0,9) + outer ((0,0),(2,2));"
+         main = outer ((0,9) :: Pair Int Int) + outer (((0,0),(2,2)) :: Pair (Pair Int Int) (Pair Int Int));"
     );
     assert_eq!(run(&src), 3.0);
 }
@@ -245,7 +274,7 @@ fn self_recursion_through_a_where_binding_is_a_compile_error() {
     // reports it directly instead of leaving it to lowering's specialization
     // guard. Either way the program must not compile.
     let src = format!(
-        "{PROBE_IX}\nmk p :: ProbeIx i => Pair i i -> Double = g p where {{ g x = mk x; }};\nmain = mk (0,9);"
+        "{PROBE_IX}\nmk p :: ProbeIx i => Pair i i -> Double = g p where {{ g x = mk x; }};\nmain = mk ((0,9) :: Pair Int Int);"
     );
     let msg = compile_err(&src);
     assert!(

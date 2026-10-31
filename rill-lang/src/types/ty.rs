@@ -617,24 +617,18 @@ impl InstanceInfo {
 ///   variable; lowering reports `cannot use class-constrained definition …
 ///   without applying it`. The reducer likewise never inlines such a reference
 ///   (β-reducing the deferred body would lower it against an unsolved variable).
-#[derive(Debug, Clone)]
-pub struct ConstrainedDef {
-    /// The declared signature, a [`crate::ast::TypeExpr::TConstrained`] node
-    /// carrying the class context.
-    pub sig: crate::ast::TypeExpr,
-    /// The definition's formal parameters, recovered from the parser's curried
-    /// body (see `split_curried_params`): multi-parameter definitions are
-    /// stored as nested lambdas with an empty `Def::Eval::params` list.
-    pub params: Vec<crate::ast::Param>,
-    /// The definition body with the formal parameters peeled off (it is the
-    /// body captured at registration, i.e. before `reduce`; references inside
-    /// it still resolve through the program's reduced definition map at
-    /// lowering time).
-    pub body: Expr,
-    /// The definition's `where`-block definitions.
-    pub where_defs: Vec<Def>,
-}
-
+///
+/// A class-constrained definition is an ORDINARY [`crate::ast::Def::Eval`]:
+/// there is no second record for it. The definition already carries its
+/// signature (`Def::Eval::sig`), its body — whose leading λ-nest IS its
+/// parameter list (Haskell 2010 §4.4.3.1) — and its `where` block. The former
+/// `ConstrainedDef` struct stored those four fields again, with `params`/`body`
+/// pre-computed by [`split_curried_params`]: the same call
+/// [`crate::types::infer::effective_def_params`] makes on demand.
+///
+/// [`TypeEnv::constrained_defs`] is therefore the SIGNATURE of each such
+/// definition, not a copy of the definition.
+///
 /// Recover a definition's formal parameters from its curried body.
 ///
 /// The parser turns `f a b = e` into a bare binding whose body is
@@ -766,7 +760,7 @@ pub struct TypeEnv {
     ///
     /// [`TypedProgram::dict_selections`]:
     ///     crate::types::infer::TypedProgram::dict_selections
-    pub constrained_defs: HashMap<String, ConstrainedDef>,
+    pub constrained_defs: HashMap<String, crate::ast::TypeExpr>,
 }
 
 /// The single language prelude, declared in rill-lang itself and registered by
@@ -2571,21 +2565,15 @@ impl TypeEnv {
                     where_defs,
                     ..
                 } if crate::types::infer::is_constrained_sig(sig) => {
-                    // A definition's parameters ARE its body's leading λs
-                    // (Haskell 2010 §4.4.3.1, performed by `curry_defs_in`), so
-                    // the formals of `f a b :: …` are already there. The
-                    // signature's arity says exactly how many λs belong to the
-                    // def's head rather than to a function-valued body.
-                    let (params, body) = split_curried_params(sig.arg_count(), &[], body);
-                    self.constrained_defs.insert(
-                        name.clone(),
-                        ConstrainedDef {
-                            sig: sig.clone(),
-                            params,
-                            body,
-                            where_defs: where_defs.clone(),
-                        },
-                    );
+                    // The registry stores the SIGNATURE and nothing else. The
+                    // former `ConstrainedDef` repeated the definition's body,
+                    // parameters and `where` block — all of which the `Def::Eval`
+                    // itself carries (parameters as its body's leading λ-nest,
+                    // Haskell 2010 §4.4.3.1), and which
+                    // `effective_def_params` peels on demand. The signature is
+                    // the ONE piece `TypeEnv` has no other way to reach (it does
+                    // not hold the program's `Def`s), so it is kept here.
+                    self.constrained_defs.insert(name.clone(), sig.clone());
                 }
                 _ => {}
             }
