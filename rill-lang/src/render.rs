@@ -75,7 +75,6 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
     match def {
         Def::Eval {
             name,
-            params,
             body,
             where_defs,
             sig,
@@ -84,10 +83,11 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
             // A bang binding renders its marker before the bound name: `!x = e`.
             write!(buf, "{pad}{}", if def.is_bang() { "!" } else { "" }).ok();
             render_def_name(name, buf);
-            for p in params {
-                write!(buf, " {}{}", if p.bang { "!" } else { "" }, p.name).ok();
-            }
-            // Haskell 2010 signature annotation: `name args :: sig = body`.
+            // Haskell 2010 signature annotation: `name :: sig = body`.
+            //
+            // The parameters are NOT re-spelled into the head: they are the
+            // body's leading λ-nest (§4.4.3.1), so the body renders as the
+            // λ it is — `f = \x -> e` — which re-parses to the same node.
             if let Some(sig) = sig {
                 write!(buf, " :: ").ok();
                 render_type_expr(sig, buf);
@@ -894,7 +894,6 @@ mod tests {
             mode_explicit: false,
             defs: vec![Def::Eval {
                 name: "main".into(),
-                params: vec![],
                 body: Expr::Apply {
                     name: "sine".into(),
                     args: vec![fl("440.0"), fl("0.5")],
@@ -917,7 +916,6 @@ mod tests {
             mode_explicit: false,
             defs: vec![Def::Eval {
                 name: "main".into(),
-                params: vec![],
                 body: Expr::Apply {
                     name: "lowpass".into(),
                     args: vec![fl("1000.0"), fl("0.7")],
@@ -935,19 +933,25 @@ mod tests {
 
     #[test]
     fn render_with_param() {
+        // `main gain = 2.0 * gain` IS `main = \gain -> 2.0 * gain` (Haskell
+        // 2010 §4.4.3.1): the parameter lives in the body's leading λ, so that
+        // is where the renderer prints it.
         let prog = Program {
             mode: Mode::Strict,
             mode_explicit: false,
             defs: vec![Def::Eval {
                 name: "main".into(),
-                params: vec![crate::ast::Param {
-                    name: "gain".into(),
-                    span: span(),
-                    bang: false,
-                }],
-                body: Expr::Apply {
-                    name: "*".into(),
-                    args: vec![fl("2.0"), Expr::Ref("gain".into(), span())],
+                body: Expr::Lambda {
+                    params: vec![crate::ast::Param {
+                        name: "gain".into(),
+                        span: span(),
+                        bang: false,
+                    }],
+                    body: Box::new(Expr::Apply {
+                        name: "*".into(),
+                        args: vec![fl("2.0"), Expr::Ref("gain".into(), span())],
+                        span: span(),
+                    }),
                     span: span(),
                 },
                 span: span(),
@@ -957,7 +961,7 @@ mod tests {
             }],
         };
         let dsl = render(&prog).unwrap();
-        assert_eq!(dsl, "main gain = 2.0 * gain");
+        assert_eq!(dsl, "main = \\gain -> 2.0 * gain");
     }
 
     #[test]
@@ -967,7 +971,6 @@ mod tests {
             mode_explicit: false,
             defs: vec![Def::Eval {
                 name: "double".into(),
-                params: vec![],
                 body: Expr::Lambda {
                     params: vec![crate::ast::Param {
                         name: "x".into(),
@@ -1092,7 +1095,6 @@ mod tests {
             mode_explicit: false,
             defs: vec![Def::Eval {
                 name: "main".into(),
-                params: vec![],
                 body: fl("1.0"),
                 where_defs: vec![],
                 sig: Some(TypeExpr::TName("Double".into())),
@@ -1271,8 +1273,10 @@ main = 1.0;";
         // Bang markers survive render → parse → render: on parameters, on
         // lambdas, on `let` bindings, and on `case` patterns (including a bang
         // in front of a nested constructor with a sibling argument).
+        // `main !x = …` IS `main = \\!x -> …` (Haskell 2010 §4.4.3.1), and the
+        // binder is rendered where it lives — in the body's leading λ.
         let dsl = roundtrip_main("main !x = x + 1.0;");
-        assert_eq!(dsl, "main !x = x + 1.0");
+        assert_eq!(dsl, "main = \\!x -> x + 1.0");
         let dsl = roundtrip_main(r"main = \ !x -> x + 1.0;");
         assert_eq!(dsl, r"main = \!x -> x + 1.0");
         let dsl = roundtrip_main("main = let !x = 1.0 in x;");

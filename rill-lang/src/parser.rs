@@ -1076,7 +1076,6 @@ impl<'a> Parser<'a> {
             let span = Span::new(start, body.span().end);
             return Ok(Def::Eval {
                 name,
-                params: Vec::new(),
                 body,
                 where_defs,
                 sig,
@@ -1095,14 +1094,14 @@ impl<'a> Parser<'a> {
             equations.push(self.parse_one_equation(pats, eq_start)?);
         }
         // The plain shape — one equation, every argument a (possibly bang)
-        // variable, one unconditional alternative — keeps the classic
-        // `Def::Eval` form with its parameter list.
+        // variable, one unconditional alternative — becomes the classic
+        // `Def::Eval`, with its parameters as the body's leading λ-nest
+        // (Haskell 2010 §4.4.3.1: `f x = e` IS `f = \x -> e`).
         if let Some((params, body)) = plain_definition(&equations, &pattern_spans) {
             let span = Span::new(start, body.span().end);
             return Ok(Def::Eval {
                 name,
-                params,
-                body,
+                body: Param::lambda_wrap(&params, body),
                 where_defs: equations[0].where_defs.clone(),
                 sig,
                 bang: false,
@@ -2206,7 +2205,6 @@ impl<'a> Parser<'a> {
                     rest = Expr::Let {
                         defs: vec![Def::Eval {
                             name: x.clone(),
-                            params: vec![],
                             body: e.clone(),
                             where_defs: vec![],
                             sig: None,
@@ -2536,40 +2534,26 @@ pub fn parse(tokens: &[Token], src: &[u8]) -> Result<Program, CompileError> {
     Ok(program)
 }
 
-/// Currying desugar (Task 6): multi-parameter definitions and multi-argument
-/// applications become nested unary lambdas / applications. This is the single
-/// point where the surface syntax `step a b = body` / `f a b c` is reduced to
-/// the unary core `step = \a -> (\b -> body)` / `((f a) b) c`. Runs once, at
-/// the end of [`parse`], before inference or lowering see the AST.
+/// Currying desugar (Task 6): multi-argument applications become nested unary
+/// applications. This is the single point where the surface syntax `f a b c` is
+/// reduced to the unary core `((f a) b) c`. Runs once, at the end of [`parse`],
+/// before inference or lowering see the AST.
+///
+/// A definition's PARAMETERS need no rewrite here: Haskell 2010 §4.4.3.1 makes
+/// `f x = e` SHORTENING for `f = \x -> e`, and [`Parser::parse_equations`]
+/// already wraps them as the body's leading λ-nest ([`Param::lambda_wrap`]).
 pub(crate) fn desugar_program(p: &mut Program) {
     curry_defs_in(&mut p.defs);
 }
 
-/// Curry every `Def::Eval` with more than one parameter into nested unary
-/// lambdas (`params: vec![]`), and walk every expression contained in the defs
-/// (`where`/`let` blocks, instance/default method bodies) for application
-/// currying.
+/// Walk every expression contained in the defs (`where`/`let` blocks,
+/// instance/default method bodies) for application currying.
 fn curry_defs_in(defs: &mut Vec<Def>) {
     for d in defs {
         match d {
             Def::Eval {
-                params,
-                body,
-                where_defs,
-                ..
+                body, where_defs, ..
             } => {
-                if params.len() > 1 {
-                    let mut lam = body.clone();
-                    for p in params.iter().rev() {
-                        lam = Expr::Lambda {
-                            params: vec![p.clone()],
-                            body: Box::new(lam),
-                            span: p.span,
-                        };
-                    }
-                    *body = lam;
-                    params.clear();
-                }
                 curry_defs_in(where_defs);
                 curry_expr(body);
             }
@@ -2809,16 +2793,16 @@ mod tests {
     fn parses_main_without_params() {
         let p = prog("main = 1.0 * 0.5");
         let main = p.main_def().unwrap();
-        assert_eq!(main.params().len(), 0);
+        assert_eq!(main.arity(), 0);
+        assert!(!matches!(main.body(), Expr::Lambda { .. }));
     }
 
     #[test]
     fn parses_main_with_params() {
         let p = prog("main f x = 1.0 * 0.5");
         let main = p.main_def().unwrap();
-        // Multi-parameter definitions are curried (Task 6): `main f x = body`
-        // becomes `main = \f -> \x -> body`.
-        assert_eq!(main.params().len(), 0);
+        // Haskell 2010 §4.4.3.1: `main f x = body` IS `main = \f -> \x -> body`.
+        assert_eq!(main.arity(), 2);
         match main.body() {
             Expr::Lambda { params, body, .. } => {
                 assert_eq!(params.len(), 1);
@@ -2845,17 +2829,29 @@ mod tests {
             prog("main = osc where { osc freq = sin freq * 0.5; lpf cut = lowpass 1.0 cut 0.7; }");
         let main = p.main_def().unwrap();
         assert_eq!(main.where_defs().len(), 2);
+        // `osc freq = …` binds `freq` in the BODY's leading λ (Haskell 2010
+        // §4.4.3.1) — there is no separate parameter list on the def.
         match &main.where_defs()[0] {
-            Def::Eval { name, params, .. } => {
+            Def::Eval { name, body, .. } => {
                 assert_eq!(name, "osc");
-                assert_eq!(params.len(), 1);
+                assert!(
+                    matches!(body, Expr::Lambda { params, .. }
+                        if params.len() == 1 && params[0].name == "freq"),
+                    "`osc freq = …` must be `osc = \\freq -> …`, got {body:?}"
+                );
+                assert_eq!(main.where_defs()[0].arity(), 1);
             }
             _ => panic!("expected Eval"),
         }
         match &main.where_defs()[1] {
-            Def::Eval { name, params, .. } => {
+            Def::Eval { name, body, .. } => {
                 assert_eq!(name, "lpf");
-                assert_eq!(params.len(), 1);
+                assert!(
+                    matches!(body, Expr::Lambda { params, .. }
+                        if params.len() == 1 && params[0].name == "cut"),
+                    "`lpf cut = …` must be `lpf = \\cut -> …`, got {body:?}"
+                );
+                assert_eq!(main.where_defs()[1].arity(), 1);
             }
             _ => panic!("expected Eval"),
         }
@@ -3178,7 +3174,14 @@ mod tests {
     #[test]
     fn juxtaposition_parse() {
         let p = prog("main regs = ay38910 1750000.0 regs : list");
-        match curry_head(p.main_def().unwrap().body()) {
+        // `main regs = …` IS `main = \regs -> …` (Haskell 2010 §4.4.3.1).
+        let Expr::Lambda { body, .. } = p.main_def().unwrap().body() else {
+            panic!(
+                "expected `main = \\regs -> …`, got {:?}",
+                p.main_def().unwrap().body()
+            );
+        };
+        match curry_head(body) {
             Some(("cons", args)) => {
                 assert_eq!(args.len(), 2);
                 match curry_head(args[0]) {
@@ -3898,7 +3901,16 @@ mod tests {
     fn parses_match_expression() {
         let p = prog(r"area x = case x of { Circle r -> r; Rect w h -> w; }; main = area");
         let area = p.defs.iter().find(|d| d.name() == "area").unwrap();
-        assert!(matches!(area.body(), Expr::Match { .. }));
+        // `area x = …` IS `area = \x -> …` (Haskell 2010 §4.4.3.1), so the
+        // match sits under the definition's own λ.
+        assert!(
+            matches!(
+                area.body(),
+                Expr::Lambda { body, .. } if matches!(body.as_ref(), Expr::Match { .. })
+            ),
+            "expected `area = \\x -> case …`, got {:?}",
+            area.body()
+        );
     }
 
     #[test]
@@ -4146,12 +4158,19 @@ mod tests {
 
     #[test]
     fn bang_param_marks_definition_param() {
-        // `f !x = …` — the bang marker rides on the parameter.
+        // `f !x = …` — the bang marker rides on the parameter, and the
+        // parameter IS the body's leading λ (Haskell 2010 §4.4.3.1).
         let p = prog("main !x = 1.0");
         let main = p.main_def().unwrap();
-        assert_eq!(main.params().len(), 1);
-        assert_eq!(main.params()[0].name, "x");
-        assert!(main.params()[0].bang, "`!x` must set Param.bang");
+        assert_eq!(main.arity(), 1);
+        match main.body() {
+            Expr::Lambda { params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "x");
+                assert!(params[0].bang, "`!x` must set Param.bang");
+            }
+            other => panic!("expected `main = \\!x -> 1.0`, got {other:?}"),
+        }
     }
 
     #[test]

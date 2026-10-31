@@ -265,9 +265,13 @@ fn renderer_prints_the_source_spelling() {
     let toks = tokenize(src).unwrap();
     let prog = parse(&toks, src.as_bytes()).unwrap();
     let out = render(&prog).unwrap();
+    // The head is `f :: … = \a -> a`, not `f a :: … = a`: a definition binds a
+    // NAME to an EXPRESSION and its parameters are the body's leading λ
+    // (Haskell 2010 §4.4.3.1), so that is the shape the renderer emits. What
+    // this test is about is the TYPE spelling inside the annotation.
     assert!(
         out.contains(
-            "f a :: ([Int] -> [Maybe [Double]] -> (Int, [Bool]) -> [FixedBuffer Double]) = a"
+            "f :: ([Int] -> [Maybe [Double]] -> (Int, [Bool]) -> [FixedBuffer Double]) = \\a -> a"
         ),
         "a list/tuple type must render in its source spelling: {out}"
     );

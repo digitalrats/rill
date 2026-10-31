@@ -2435,17 +2435,16 @@ impl TypeEnv {
                 Def::Eval {
                     name,
                     sig: Some(sig),
-                    params,
                     body,
                     where_defs,
                     ..
                 } if crate::types::infer::is_constrained_sig(sig) => {
-                    // The parser curries a multi-parameter definition into
-                    // nested lambdas and clears `params` (`curry_defs_in`), so
-                    // the formal parameters of `f a b :: …` live in the body's
-                    // leading lambdas. The signature's arity says exactly how
-                    // many to recover.
-                    let (params, body) = split_curried_params(sig.arg_count(), params, body);
+                    // A definition's parameters ARE its body's leading λs
+                    // (Haskell 2010 §4.4.3.1, performed by `curry_defs_in`), so
+                    // the formals of `f a b :: …` are already there. The
+                    // signature's arity says exactly how many λs belong to the
+                    // def's head rather than to a function-valued body.
+                    let (params, body) = split_curried_params(sig.arg_count(), &[], body);
                     self.constrained_defs.insert(
                         name.clone(),
                         ConstrainedDef {

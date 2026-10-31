@@ -173,10 +173,20 @@ fn index_does_not_read_array_elements() {
     // `index` is the `Ix` METHOD only. Applied to an `Array`, which has no `Ix`
     // instance, it is a type error — it must not quietly become the accessor
     // (the double duty the split removed).
+    //
+    // GHC 9.10.3 reports this as a UNIFICATION mismatch, not an instance error:
+    //
+    //   Couldn't match expected type: (a0, a0)
+    //                 with actual type: Array Int Int
+    //     In the first argument of 'index'
+    //
+    // because `index :: Ix a => (a, a) -> a -> Int` demands a PAIR-shaped index
+    // whatever `a` turns out to be. Asserting an `Ix` message here pinned rill's
+    // older, divergent wording.
     let err =
         compile_err("main = index (listArray (Pair { first: 0, second: 2 }) [1.0, 2.0, 3.0]) 1;");
     assert!(
-        err.contains("Ix") && !err.contains("must have type"),
-        "an `Array` is not an `Ix` index type, so `index` must be an `Ix` type error, got: {err}"
+        err.contains("Array") && err.contains("Pair"),
+        "`index` on an `Array` must fail as a Pair-vs-Array mismatch (GHC's wording), got: {err}"
     );
 }

@@ -223,7 +223,6 @@ fn substitute_def(def: &Def, subst: &HashMap<String, Expr>) -> Def {
     match def {
         Def::Eval {
             name,
-            params,
             body,
             where_defs,
             sig,
@@ -231,7 +230,6 @@ fn substitute_def(def: &Def, subst: &HashMap<String, Expr>) -> Def {
             span,
         } => Def::Eval {
             name: name.clone(),
-            params: params.clone(),
             body: substitute(body, subst),
             where_defs: where_defs
                 .iter()
@@ -303,19 +301,22 @@ fn is_integer_literal(e: &Expr) -> bool {
     e.is_int_literal()
 }
 
-/// Whether `name` resolves to a closure-valued definition: a bare `Def::Eval`
-/// whose body is a lambda literal or a reference/application chain that
-/// produces one (e.g. `add2 = adder 2.0`). Applying a closure value is a
-/// RUNTIME dispatch (`ValueCallFunc`), so such `Apply` nodes must survive
-/// reduction — inlining a closure body would drop the applied arguments.
-/// Named λ-parameter definitions (`double x = ...`) remain β-reduced.
+/// Whether `name` resolves to a closure-VALUED definition: a bare `Def::Eval`
+/// whose body is a reference/application chain that produces a closure
+/// (`add2 = adder 2.0`). Applying a closure value is a RUNTIME dispatch
+/// (`ValueCallFunc`), so such `Apply` nodes must survive reduction — inlining
+/// the chain would drop the applied arguments.
+///
+/// A definition whose body IS a λ-nest (`double = \x -> …`, which is also what
+/// `double x = …` parses to — Haskell 2010 §4.4.3.1) is NOT one of these: its
+/// application is an ordinary β-reduct and [`reduce_expr`] reduces it through
+/// the λ, exactly like a λ literal application.
 fn is_closure_def(ctx: &HashMap<String, Def>, name: &str, seen: &mut HashSet<String>) -> bool {
     if !seen.insert(name.to_string()) {
         return false;
     }
     match ctx.get(name) {
-        Some(Def::Eval { params, body, .. }) if params.is_empty() => match body {
-            Expr::Lambda { .. } => true,
+        Some(Def::Eval { body, .. }) => match body {
             Expr::Ref(next, _) => is_closure_def(ctx, next, seen),
             Expr::Apply { .. } => true,
             _ => false,
@@ -336,13 +337,9 @@ fn is_constrained_def(def: &Def) -> bool {
 
 /// Whether any of `def`'s parameters is a BANG parameter (`f !x = …`).
 ///
-/// The parser curries a multi-parameter definition into a λ-nest and CLEARS its
-/// parameter list, so for `f !x y = …` the flags live on the body's leading λs;
-/// only a single-parameter definition keeps them in `params`.
-fn has_bang_param(def: &Def) -> bool {
-    if def.params().iter().any(|p| p.bang) {
-        return true;
-    }
+/// Every parameter lives in the body's leading λ-nest — Haskell 2010 §4.4.3.1:
+/// `f !x = e` is `f = \ !x -> e` — so the flags are read from there.
+pub(crate) fn has_bang_param(def: &Def) -> bool {
     let mut body = def.body();
     while let Expr::Lambda {
         params,
@@ -361,11 +358,11 @@ fn has_bang_param(def: &Def) -> bool {
 /// Resolve a unary β-reduct: the (definition name, parameter name, body) of a
 /// function-valued callee that can be reduced by substituting one argument.
 ///
-/// A syntactic lambda is reducible; so is a reference to a niladic definition
-/// whose body is a lambda — a curried definition (`twice = \f -> \x -> f (f x)`)
-/// after the parser's currying pass emptied its parameter list. CAFs (shared
-/// closed definitions), class-constrained definitions, and non-lambda
-/// definitions are not reducible here.
+/// A syntactic lambda is reducible; so is a reference to a definition whose
+/// body's leading λ is a plain (non-bang) parameter — `f x = e` and
+/// `f = \x -> e` are the SAME definition (Haskell 2010 §4.4.3.1), so both are
+/// β-reducts. CAFs (shared closed definitions), class-constrained
+/// definitions, and non-lambda definitions are not reducible here.
 fn unary_reduct<'a>(
     callee: &'a Expr,
     ctx: &'a HashMap<String, Def>,
@@ -377,7 +374,7 @@ fn unary_reduct<'a>(
         }
         Expr::Ref(name, _) if !cafs.contains(name) => {
             let def = ctx.get(name.as_str())?;
-            if def.params().is_empty() && !def.is_decl() && !is_constrained_def(def) {
+            if !def.is_decl() && !is_constrained_def(def) {
                 if let Expr::Lambda { params, body, .. } = def.body() {
                     if params.len() == 1 && !params[0].bang {
                         return Some((Some(name.as_str()), params[0].name.as_str(), body.as_ref()));
@@ -411,14 +408,12 @@ fn reduce_def(
     let result = match def {
         Def::Eval {
             name,
-            params,
             sig,
             bang,
             span,
             ..
         } => Def::Eval {
             name: name.clone(),
-            params: params.clone(),
             body: reduced_body,
             where_defs: reduced_where,
             sig: sig.clone(),
@@ -447,26 +442,27 @@ fn reduce_expr(
                 // lowering can lift it once instead of duplicating state here.
                 e.clone()
             } else if let Some(def) = ctx.get(name) {
-                if def.params().is_empty()
-                    && !def.is_decl()
+                if !def.is_decl()
                     && !def.is_bang()
                     && !is_constrained_def(def)
                     && !has_bang_param(def)
+                    && crate::types::infer::leading_lambda_count(def.body()) == 0
                 {
-                    // Local binding with no params — inline the body. A bang
-                    // binding (`let !x = e`) is NOT inlined: its force happens
-                    // at the binding point, which only lowering can emit. A
-                    // class-constrained definition is not inlined either: it is
-                    // specialized at its call sites, where the class variable is
-                    // solved (see `lower::lower_constrained_apply`). A
-                    // definition with a bang parameter is not inlined for the
-                    // same reason `Expr::Apply` below leaves it alone — the
-                    // parser curries its parameters into λs and clears `params`,
-                    // so this guard is the only thing standing between
-                    // `f !x y = …` and a body lowered with defaulted types.
+                    // Local binding with arity 0 (its body builds no λ) — inline
+                    // the body. A bang binding (`let !x = e`) is NOT inlined: its
+                    // force happens at the binding point, which only lowering can
+                    // emit. A class-constrained definition is not inlined either:
+                    // it is specialized at its call sites, where the class
+                    // variable is solved (see `lower::lower_constrained_apply`).
+                    // A definition with a bang parameter is not inlined for the
+                    // same reason `Expr::Apply` below leaves it alone: the bang
+                    // force lives in the body's leading λ, and inlining would
+                    // drop the fixity-dispatched call that carries its parameter
+                    // types.
                     reduce_expr(def.body(), ctx, cafs, reducing, mode)
                 } else {
-                    // Has unapplied λ-params, or is a bang binding — leave as ref
+                    // A function (a body that builds a λ-nest), or a bang
+                    // binding — leave as ref
                     e.clone()
                 }
             } else {
@@ -500,17 +496,14 @@ fn reduce_expr(
                 };
             }
             // Complete mode is lazy by default (no bang patterns): EVERY call
-            // to a named λ-parameter definition suspends as a thunk — whether
-            // the call site is `main` or inside another function. β-reducing
-            // here would force the call eagerly, diverging from the lazy
-            // semantics and breaking recursion (a call from `main` must behave
-            // exactly like a call from any other function). Leave the Apply for
-            // lowering to build the closure + `ValueCallLazy`.
+            // to a definition that binds parameters suspends as a thunk —
+            // whether the call site is `main` or inside another function.
+            // β-reducing here would force the call eagerly, diverging from the
+            // lazy semantics and breaking recursion (a call from `main` must
+            // behave exactly like a call from any other function). Leave the
+            // Apply for lowering to build the closure + `ValueCallLazy`.
             if mode == Mode::Complete
-                && matches!(
-                    ctx.get(name),
-                    Some(Def::Eval { params, .. }) if !params.is_empty()
-                )
+                && ctx.get(name).is_some_and(|d| !d.is_decl() && d.arity() > 0)
             {
                 return Expr::Apply {
                     name: name.clone(),
@@ -522,17 +515,6 @@ fn reduce_expr(
                 if def.is_decl() {
                     // Type declarations aren't signal definitions — keep the
                     // application as-is rather than inlining a sentinel body.
-                    Expr::Apply {
-                        name: name.clone(),
-                        args: reduced_args,
-                        span: *span,
-                    }
-                } else if reduced_args.len() < def.params().len() {
-                    // Partial application (`add5 = add2 5.0` where `add2` takes
-                    // two λ-params) is a RUNTIME dispatch over a closure value:
-                    // keep the Apply so lowering emits a curry closure.
-                    // β-reducing it would substitute the applied args and leave
-                    // the remaining parameters dangling in the body.
                     Expr::Apply {
                         name: name.clone(),
                         args: reduced_args,
@@ -561,7 +543,8 @@ fn reduce_expr(
                         span: *span,
                     }
                 } else {
-                    // β-reduce: substitute args for params in the definition's body
+                    // β-reduce: substitute args for the definition's leading
+                    // λ-parameters
                     //
                     // β-reduction DISCARDS the formal parameter's type: after
                     // substituting, `f 9223372036854775808` is a bare literal
@@ -580,14 +563,24 @@ fn reduce_expr(
                     // can emit the same constant the un-reduced call site
                     // would.
                     let reduced_args = annotate_formal_arg_types(def, reduced_args);
-                    let np = def.params().len();
+                    // Arity is a property of the BODY (Haskell 2010 §4.4.3.1):
+                    // `f x y = e` IS `f = \x -> \y -> e`, so the parameters are
+                    // the leading λs and β-reduction is substitution through
+                    // them. A call with FEWER arguments than the body's λ-nest
+                    // is the same reduction performed partially: `(\x -> \y ->
+                    // e) a` reduces to `\y -> e[x := a]`, and the remaining λs
+                    // stay in the body — exactly Haskell 2010 §4.4.3.1's
+                    // currying.
+                    let np = reduced_args.len().min(def.arity());
+                    let (def_params, uncurried) =
+                        crate::types::ty::split_curried_params(np, &[], def.body());
                     let mut subst = HashMap::new();
-                    for (idx, p) in def.params().iter().enumerate() {
+                    for (idx, p) in def_params.iter().enumerate() {
                         if p.name != "_" {
                             subst.insert(p.name.clone(), reduced_args[idx].clone());
                         }
                     }
-                    let inlined = substitute(def.body(), &subst);
+                    let inlined = substitute(&uncurried, &subst);
                     // A func-value call (`f = double; main = f 21.0`) applies
                     // a definition with FEWER λ-params than arguments: the
                     // def's body is a `Ref` to the referenced definition, and
@@ -699,11 +692,9 @@ fn reduce_expr(
             // keeps it — its force happens at the binding point.
             let mut applied = HashSet::new();
             crate::lower::collect_def_ref_names(&reduced_body, &mut applied);
-            let keep = defs.iter().any(|d| {
-                d.is_bang()
-                    || ((!d.params().is_empty() || matches!(d.body(), Expr::Lambda { .. }))
-                        && applied.contains(d.name()))
-            });
+            let keep = defs
+                .iter()
+                .any(|d| d.is_bang() || (d.arity() > 0 && applied.contains(d.name())));
             if keep {
                 Expr::Let {
                     defs: reduced_defs,

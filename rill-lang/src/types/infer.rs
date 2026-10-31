@@ -1238,13 +1238,12 @@ fn fragment_target(
         return None;
     }
     match defs.get(name) {
-        Some(Def::Eval { params, body, .. }) if params.is_empty() => match body {
-            Expr::Lambda { .. } => Some(name.to_string()),
+        Some(Def::Eval { body, .. }) if leading_lambda_count(body) == 0 => match body {
             Expr::Apply { .. } => Some(name.to_string()),
             Expr::Ref(next, _) => fragment_target(defs, next, seen),
             _ => None,
         },
-        Some(Def::Eval { params, .. }) if !params.is_empty() => Some(name.to_string()),
+        Some(def @ Def::Eval { .. }) if def.arity() > 0 => Some(name.to_string()),
         _ => None,
     }
 }
@@ -3077,12 +3076,11 @@ pub fn infer_program_with_entry(
         .defs
         .iter()
         .filter_map(|def| match def {
-            Def::Eval { name, params, .. } if params.is_empty() => ctx
+            Def::Eval { name, .. } => ctx
                 .defs
                 .get(name)
                 .filter(|s| s.lam_count == 0)
                 .map(|_| name.clone()),
-            Def::Eval { .. } => None,
             _ => None,
         })
         .collect();
@@ -3096,42 +3094,26 @@ pub fn infer_program_with_entry(
     // which lowering treats as an untyped scalar).
     let mut fn_param_tys: HashMap<String, Vec<ValueTy>> = HashMap::new();
     for def in &program.defs {
-        if let Def::Eval { name, body, .. } = def {
-            if def.params().is_empty() && matches!(body, Expr::Lambda { .. }) {
-                let scheme = ctx.defs.get(name).cloned();
-                if let Some(s) = scheme {
-                    if let ValueTy::Thunk(..) = &s.ty.vty {
-                        // A curried definition's signature is a NEST of unary
-                        // thunks (`take = \n -> \xs -> …`); flatten to the flat
-                        // λ-parameter list so the nested lambdas in lowering can
-                        // consume their own leading slice.
-                        let (arg_tys, _) = flatten_thunk(&s.ty.vty);
-                        let resolved = arg_tys.iter().map(|t| ctx.subst.resolve_value(t)).collect();
-                        fn_param_tys.insert(name.to_string(), resolved);
-                    }
-                }
-            } else if def.params().len() == 1 {
-                // A single-parameter def (`first p = p.x`, `swap p :: Pair …
-                // = …`) keeps its parser parameter: the parser only curries
-                // MULTI-parameter definitions into λ-nests. Its scheme is a
-                // flat `Thunk([p],[r])` carrying the recovered/signature
-                // parameter type for lowering's fragment-local parameter
-                // registers.
-                let scheme = ctx.defs.get(name).cloned();
-                if let Some(s) = scheme {
-                    if let ValueTy::Thunk(..) = &s.ty.vty {
-                        let (arg_tys, _) = flatten_thunk(&s.ty.vty);
-                        let mut resolved: Vec<ValueTy> =
-                            arg_tys.iter().map(|t| ctx.subst.resolve_value(t)).collect();
-                        // A body that itself returns a function (`f x = \y ->
-                        // …`) flattens PAST the def's own parameter into the
-                        // inner λ's; truncate to the def's formal parameter
-                        // count so lowering sees one type per parameter (the
-                        // signature's arity when it exceeds the written ones).
-                        let arity = effective_def_params(def).0.len();
-                        resolved.truncate(arity);
-                        fn_param_tys.insert(name.to_string(), resolved);
-                    }
+        if let Def::Eval { name, .. } = def {
+            // A definition with parameters (`f x = …`, which IS `f = \x -> …`
+            // — Haskell 2010 §4.4.3.1) carries them in its scheme. Its scheme is
+            // a NEST of unary thunks (`take = \n -> \xs -> …`); flatten to the
+            // flat λ-parameter list so the nested lambdas in lowering can
+            // consume their own leading slice, then truncate to the def's own
+            // arity — a body that itself returns a function (`f x = \y -> …`)
+            // flattens PAST the definition's parameters into the inner λ's.
+            let arity = def_head_arity(def);
+            if arity == 0 {
+                continue;
+            }
+            let scheme = ctx.defs.get(name).cloned();
+            if let Some(s) = scheme {
+                if let ValueTy::Thunk(..) = &s.ty.vty {
+                    let (arg_tys, _) = flatten_thunk(&s.ty.vty);
+                    let mut resolved: Vec<ValueTy> =
+                        arg_tys.iter().map(|t| ctx.subst.resolve_value(t)).collect();
+                    resolved.truncate(arity);
+                    fn_param_tys.insert(name.to_string(), resolved);
                 }
             }
         }
@@ -3148,16 +3130,10 @@ pub fn infer_program_with_entry(
         // like `fibs = cons … fibs …`). Collecting every such def is harmless —
         // lowering only consults the map for shared-cell references.
         let is_shared = match def {
-            Def::Eval { params, .. } if !params.is_empty() => true,
-            Def::Eval { body, .. } => {
-                // A self-recursive CAF (`fibs = cons … fibs …`) keeps its result
-                // type; a CURRIED named function (`take = \n -> \xs -> …`) is a
-                // function value, so its shared-cell type is its λ signature —
-                // lowering needs it while the def's own anchor closure is still
-                // compiling, so a recursive self-call dispatches through the nest
-                // instead of falling back to `Double`.
-                !matches!(body, Expr::Lambda { .. }) || leading_lambda_count(body) > 1
-            }
+            // Every value definition is a shared-cell def: one with parameters
+            // is a name bound to a function value (`f x = e` IS `f = \x -> e`),
+            // and one without is a CAF whose body is evaluated through its cell.
+            Def::Eval { .. } => true,
             _ => false,
         };
         if is_shared {
@@ -3211,26 +3187,38 @@ fn literal_types(ctx: &Ctx) -> HashMap<(usize, usize), ValueTy> {
     out
 }
 
-/// The definition's effective formal parameters and its uncurried body.
+/// The definition's formal parameters and its uncurried body.
 ///
-/// `parser::curry_defs_in` turns every definition with more than one parameter
-/// into a nest of unary lambdas and clears `Def::Eval::params`, so
-/// `def.params()` is empty for `f a b = …`. A `::` signature names the
-/// definition's arity, and [`split_curried_params`] recovers the formal
-/// parameters from the λ-chain — the same recovery constrained-definition
-/// registration performs. An unannotated definition keeps its parser
-/// parameters: its λ-chain is a function VALUE typed by the `Expr::Lambda` arm.
+/// Haskell 2010 §4.4.3.1: `f x y = e` IS `f = \x -> \y -> e`, and
+/// `Parser::parse_equations` performs exactly that rewrite, so a definition's
+/// parameters and its body's leading λs are ONE thing and `Def::arity()` counts
+/// them; this function returns them with the body's leading λs peeled off.
+pub(crate) fn effective_def_params(def: &Def) -> (Vec<crate::ast::Param>, Expr) {
+    crate::types::ty::split_curried_params(def_head_arity(def), &[], def.body())
+}
+
+/// The number of λ-parameters a definition's SCHEME advertises: the same ONE
+/// arity as [`def_head_arity`].
 ///
-/// [`split_curried_params`]: crate::types::ty::split_curried_params
-fn effective_def_params(def: &Def) -> (Vec<crate::ast::Param>, Expr) {
-    let parser_params = def.params();
-    if let Some(sig) = def.sig() {
-        let arity = sig.arg_count();
-        if arity > parser_params.len() {
-            return crate::types::ty::split_curried_params(arity, parser_params, def.body());
-        }
+/// There is no second notion. A scheme's `lam_count` and the definition's head
+/// parameters describe one fact (Haskell 2010 §4.4.3.1), so a caller can read
+/// either without the two disagreeing.
+pub(crate) fn def_scheme_arity(def: &Def) -> usize {
+    def_head_arity(def)
+}
+
+/// The number of λs in a definition's HEAD — the parameters it binds, as opposed
+/// to a λ-nest the body RETURNS.
+///
+/// Arity is a property of the body (Haskell 2010 §4.4.3.1), so an unannotated
+/// definition's head arity is its body's λ-nest depth. A `::` signature caps it:
+/// `f :: Double -> (Double -> Double); f = \x -> \y -> …` binds ONE parameter
+/// and returns a function.
+pub(crate) fn def_head_arity(def: &Def) -> usize {
+    match def.sig() {
+        Some(sig) => sig.arg_count().min(def.arity()),
+        None => def.arity(),
     }
-    (parser_params.to_vec(), def.body().clone())
 }
 
 /// A definition body's inferred type, plus the signature argument types its
@@ -3270,9 +3258,9 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
     if let Some(sig) = constrained_def_sig(def) {
         return infer_constrained_def_body(ctx, def, sig);
     }
-    // Effective parameters: the parser curries every multi-parameter definition
-    // into a λ-nest and clears `Def::Eval::params`, so an annotated
-    // `f a b :: …` keeps its formal parameters in the body's leading λs.
+    // Effective parameters: the parser writes every definition's parameters into
+    // the body's leading λ-nest (`f x = e` IS `f = \x -> e`, Haskell 2010
+    // §4.4.3.1), so no definition carries a second parameter list.
     let (params, body) = effective_def_params(def);
     let saved_locals = ctx.locals.clone();
     if params.is_empty() {
@@ -3364,7 +3352,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
     // List a -> …` binds its λ-parameters to the signature's argument types
     // (shared type variables become fresh unification vars), instead of the
     // scalar `Double` default. The effective parameter list is the signature's
-    // arity — `def.params()` is empty for a curried multi-parameter definition.
+    // arity capped by the body's λ-nest depth (Haskell 2010 §4.4.3.1).
     //
     // The signature's RESULT is the body's expected type for the same reason a
     // nullary binding's is: `f :: Double -> Double; f p = 5` is well typed
@@ -3755,33 +3743,21 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
         if def.sig().is_some() {
             ctx.sig_defs.insert(def.name().to_string());
         }
-        let lam_count = def.params().len();
+        // The placeholder's shape comes from the BODY: a definition binds a name
+        // to an expression (Haskell 2010 §4.4.3.1), so its λ-count is how many
+        // λs the body's head builds. A nest must already be a function value,
+        // otherwise a recursive self-call in the body cannot dispatch — `take`
+        // would see a bare placeholder var and report "expects 0 argument(s)".
         let body_lams = leading_lambda_count(def.body());
-        let mut ins = Vec::with_capacity(lam_count);
-        for _ in 0..lam_count {
-            ins.push(ctx.fresh_vty());
-        }
         let out = ctx.fresh_vty();
-        let vty = if lam_count == 0 && body_lams == 0 {
-            out
-        } else if lam_count == 0 {
-            // Curried definition (`take n xs = …` → `take = \n -> \xs -> …`):
-            // the parameter list is empty but the body is a nest of λs. The
-            // placeholder must already be a function value, otherwise a
-            // recursive self-call in the body cannot dispatch — `take` sees a
-            // bare placeholder var and reports "expects 0 argument(s)".
-            let mut ty = out;
-            for _ in 0..body_lams {
-                ty = ValueTy::Thunk(vec![ctx.fresh_vty()], vec![ty]);
-            }
-            ty
-        } else {
-            ValueTy::Thunk(ins, vec![out])
-        };
+        let mut vty = out;
+        for _ in 0..body_lams {
+            vty = ValueTy::Thunk(vec![ctx.fresh_vty()], vec![vty]);
+        }
         ctx.defs.insert(
             def.name().to_string(),
             Scheme {
-                lam_count,
+                lam_count: body_lams,
                 vars: vec![],
                 // Placeholder scheme: the class context (if any) is recorded
                 // when the real scheme replaces this one in phase 2.
@@ -3811,7 +3787,7 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
         if def.sig().is_none() && leading_lambda_count(def.body()) > 0 {
             ctx.retry_inferred_defs.insert(def.name().to_string());
         }
-        let lam_count = effective_def_params(def).0.len();
+        let lam_count = def_scheme_arity(def);
         let (vty, constraints) = def_scheme(ctx, def, &body_ty, lam_count)?;
         let resolved = ctx.subst.apply(&ArrowTy { vty });
         let vars = free_vars_quantified(ctx, &resolved);
@@ -3846,7 +3822,7 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
             continue;
         }
         let body_ty = infer_def_body(ctx, def)?;
-        let lam_count = effective_def_params(def).0.len();
+        let lam_count = def_scheme_arity(def);
         let (vty, constraints) = def_scheme(ctx, def, &body_ty, lam_count)?;
         let resolved = ctx.subst.apply(&ArrowTy { vty });
         let vars = quantified_vars(ctx, def, &resolved);
@@ -6095,24 +6071,15 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
         return Ok(t.clone());
     }
     if let Some(scheme) = ctx.defs.get(name).cloned() {
-        if scheme.lam_count > 0 {
-            // A bare reference to a user definition with λ-parameters is a
-            // first-class function value: `f = double` binds `f` to
-            // `ValueTy::Thunk([], [])` (an unknown signature — a bare named
-            // ref's arity is resolved when it is applied, see `infer_apply`).
-            // Using it where a signal is required is rejected by the signal
-            // combinators.
-            return Ok(ArrowTy::value_channel(ValueTy::Thunk(vec![], vec![])));
-        }
-        // A nullary definition is a VALUE, so instantiating its scheme makes a
-        // FRESH copy of its class variable at every use. That fresh variable
-        // still carries the scheme's constraints — `h :: Num b => b` used in
-        // `h + 2.5` is one `Num`-constrained variable, and `(+)` unifies it with
-        // the `a` that `2.5` makes `Double`. Dropping the instantiated context
-        // (as `instantiate` alone does) severed exactly that link: the fresh
-        // variable reached no stage, so nothing decided it, and the operand's
-        // own span recorded an independent `Integer` while `(+)` recorded
-        // `Double` — two answers for operands that must share one type.
+        // A bare reference instantiates the definition's scheme, giving the
+        // reference that definition's FUNCTION type — `at1` is
+        // `Array i e -> e`, so a bare `at1` is a function value of that type,
+        // not an unknown signature. Substituting an empty `Thunk([], [])` here
+        // severed the ONE link between a definition and its use: the scheme's
+        // constraints were never pushed, so a reference carried no class demand
+        // and every call site through it had to GUESS the dictionary. Spec
+        // §3.3 states the rule this restores — a constraint is a PARAMETER, and
+        // a reference is where the parameter is passed.
         let (t, constraints) = ctx.instantiate_with_constraints(&scheme);
         for (class, var) in constraints {
             ctx.residual.push(Residual {
@@ -9810,7 +9777,7 @@ mod tests {
             };
             let def = &prog.defs[0];
             let body = infer_def_body(&mut ctx, def).unwrap();
-            let lam_count = effective_def_params(def).0.len();
+            let lam_count = def_scheme_arity(def);
             match def_scheme(&mut ctx, def, &body, lam_count).unwrap().0 {
                 ValueTy::Thunk(args, _) => args,
                 other => panic!("expected a function scheme, got {other:?}"),
@@ -9856,7 +9823,6 @@ mod tests {
         // arity, exactly as for a bare `C i => T` signature.
         let def = Def::Eval {
             name: "mk".into(),
-            params: vec![],
             body: Expr::Lambda {
                 params: vec![crate::ast::Param {
                     name: "p".into(),

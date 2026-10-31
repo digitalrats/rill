@@ -62,7 +62,6 @@ fn desugar_defs(defs: Vec<Def>) -> Result<Vec<Def>, CompileError> {
             }
             Def::Eval {
                 name,
-                params,
                 body,
                 where_defs,
                 sig,
@@ -85,7 +84,6 @@ fn desugar_defs(defs: Vec<Def>) -> Result<Vec<Def>, CompileError> {
                 };
                 out.push(Def::Eval {
                     name,
-                    params,
                     body,
                     where_defs,
                     sig,
@@ -355,7 +353,6 @@ fn equation_leaf(equation: &Equation, params: &[Param]) -> Result<Expr, CompileE
         body = Expr::Let {
             defs: vec![Def::Eval {
                 name: name.clone(),
-                params: Vec::new(),
                 body: Expr::Ref(param.name.clone(), span),
                 where_defs: Vec::new(),
                 sig: None,
@@ -459,8 +456,8 @@ fn attach_where(body: Expr, where_defs: &[Def]) -> Result<Expr, CompileError> {
     Ok(result)
 }
 
-/// `f = \x -> \y -> body` for two or more parameters, `f x = body` for one,
-/// and `f = body` for none — the curried core shape the parser produces.
+/// `f = \x -> \y -> body` — the curried core shape every definition has
+/// (Haskell 2010 §4.4.3.1: `f x y = e` IS `f = \x -> \y -> e`).
 fn curried_eval_def(
     name: &str,
     params: Vec<Param>,
@@ -468,17 +465,13 @@ fn curried_eval_def(
     sig: Option<TypeExpr>,
     span: Span,
 ) -> Def {
-    if params.len() > 1 {
-        let body = lambda_wrap(&params, body);
-        return eval_def(name, Vec::new(), body, sig, span);
-    }
-    eval_def(name, params, body, sig, span)
+    let body = lambda_wrap(&params, body);
+    eval_def(name, body, sig, span)
 }
 
-fn eval_def(name: &str, params: Vec<Param>, body: Expr, sig: Option<TypeExpr>, span: Span) -> Def {
+fn eval_def(name: &str, body: Expr, sig: Option<TypeExpr>, span: Span) -> Def {
     Def::Eval {
         name: name.to_string(),
-        params,
         body,
         where_defs: Vec::new(),
         sig,
@@ -488,15 +481,7 @@ fn eval_def(name: &str, params: Vec<Param>, body: Expr, sig: Option<TypeExpr>, s
 }
 
 fn lambda_wrap(params: &[Param], body: Expr) -> Expr {
-    let mut lam = body;
-    for p in params.iter().rev() {
-        lam = Expr::Lambda {
-            params: vec![p.clone()],
-            body: Box::new(lam),
-            span: p.span,
-        };
-    }
-    lam
+    Param::lambda_wrap(params, body)
 }
 
 fn all_variable_patterns(patterns: &[Pattern]) -> bool {
@@ -758,10 +743,14 @@ mod tests {
     fn guards_become_a_match_arm_with_one_alternative_per_guard() {
         let defs = desugared("f x | x > 0.0 = 1.0 | otherwise = 2.0;");
         let def = eval_def_of(&defs, "f");
-        // `f x = …` keeps its parameter; the body is the guarded match.
-        assert_eq!(def.params().len(), 1);
-        let Expr::Match { arms, .. } = def.body() else {
-            panic!("expected a match, got {:?}", def.body());
+        // `f x = …` IS `f = \x -> …` (Haskell 2010 §4.4.3.1), so the parameter
+        // is the body's leading λ and the guarded match sits under it.
+        assert_eq!(def.arity(), 1);
+        let Expr::Lambda { body, .. } = def.body() else {
+            panic!("expected `f = \\x -> …`, got {:?}", def.body());
+        };
+        let Expr::Match { arms, .. } = body.as_ref() else {
+            panic!("expected a match, got {body:?}");
         };
         assert_eq!(arms.len(), 1);
         assert_eq!(arms[0].guards.len(), 2);
@@ -777,8 +766,11 @@ mod tests {
     fn argument_patterns_become_a_match_chain_over_the_parameters() {
         let defs = desugared("f 0.0 = 1.0; f x = x;");
         let def = eval_def_of(&defs, "f");
-        let Expr::Match { arms, .. } = def.body() else {
-            panic!("expected a match, got {:?}", def.body());
+        let Expr::Lambda { body, .. } = def.body() else {
+            panic!("expected `f = \\x -> …`, got {:?}", def.body());
+        };
+        let Expr::Match { arms, .. } = body.as_ref() else {
+            panic!("expected a match, got {body:?}");
         };
         // One arm for the literal equation and one for the variable catch-all.
         // The catch-all is a wildcard: its body re-binds the equation's own name

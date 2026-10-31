@@ -453,6 +453,26 @@ pub struct Param {
     pub bang: bool,
 }
 
+impl Param {
+    /// Wrap `body` in one unary λ per parameter, curried left to right:
+    /// `[x, !y]` over `e` is `\x -> (\ !y -> e)`.
+    ///
+    /// This is Haskell 2010 §4.4.3.1's shortening read backwards — the ONE
+    /// place a parameter list becomes the body it denotes, so no caller can
+    /// invent a second place to keep parameters.
+    pub fn lambda_wrap(params: &[Param], body: Expr) -> Expr {
+        let mut lam = body;
+        for p in params.iter().rev() {
+            lam = Expr::Lambda {
+                params: vec![p.clone()],
+                body: Box::new(lam),
+                span: p.span,
+            };
+        }
+        lam
+    }
+}
+
 /// One equation of a function-definition group, as written in the source.
 ///
 /// This is the intermediate form the parser produces for the Haskell 2010
@@ -479,18 +499,21 @@ pub struct Equation {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Def {
-    /// `name p1 p2 = body` — one definition form (params optional; multi-param
-    /// is currying sugar). `sig` is an optional `::` type annotation
-    /// (inference-only hint/constraint). Named so it reads as «evaluable
-    /// definition» in contrast to the `is_decl()` declarations. Top-level,
-    /// `where`-block, and `let`-block bindings are all this one form (a bare
-    /// binding has no params).
+    /// `name p1 p2 = body` — one definition form. `sig` is an optional `::`
+    /// type annotation (inference-only hint/constraint). Named so it reads as
+    /// «evaluable definition» in contrast to the `is_decl()` declarations.
+    /// Top-level, `where`-block, and `let`-block bindings are all this one form.
+    ///
+    /// There is NO parameter list here. Haskell 2010 §4.4.3.1: `f x = e` is
+    /// SHORTENING for `f = \x -> e`, so a definition binds a NAME to an
+    /// EXPRESSION and the only carrier of parameters is the body's leading
+    /// [`Expr::Lambda`] nest (one argument each, curried). A constant is the
+    /// arity-0 case — its body builds no λ. [`Def::arity`] is that one arity.
     Eval {
         /// Definition name.
         name: String,
-        /// Formal parameters (curried).
-        params: Vec<Param>,
-        /// Right-hand side.
+        /// Right-hand side — the definition's whole value, parameters included
+        /// as its leading λ-nest.
         body: Expr,
         /// Optional where-block definitions.
         where_defs: Vec<Def>,
@@ -686,11 +709,19 @@ impl Def {
         }
     }
 
-    /// Returns the parameters of this definition (empty for a bare binding).
-    pub fn params(&self) -> &[Param] {
+    /// The definition's ARITY: how many arguments its body's leading λ-nest
+    /// binds (0 for a constant).
+    ///
+    /// This is the ONE arity of a definition. Haskell 2010 §4.4.3.1 makes
+    /// `f x = e` a shortening for `f = \x -> e`, so a definition binds a name
+    /// to an EXPRESSION and the only carrier of parameters is the λ — there is
+    /// no separate parameter list to keep in step with it. A caller that needs
+    /// the parameters themselves reads the λ-nest
+    /// ([`crate::types::ty::split_curried_params`]).
+    pub fn arity(&self) -> usize {
         match self {
-            Def::Eval { params, .. } => params,
-            _ => &[],
+            Def::Eval { body, .. } => crate::types::infer::leading_lambda_count(body),
+            _ => 0,
         }
     }
 

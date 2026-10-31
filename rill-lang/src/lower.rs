@@ -918,10 +918,11 @@ fn check_specialized_result(
     })
 }
 
-/// Whether a `let`/`where` binding denotes a FUNCTION: an explicit parameter
-/// list, or the λ-nest the parser's currying pass leaves for `g y = e`.
+/// Whether a `let`/`where` binding denotes a FUNCTION: a body whose leading
+/// λ-nest binds at least one parameter (`g y = e` IS `g = \y -> e`, Haskell
+/// 2010 §4.4.3.1, so arity is a property of the BODY).
 fn is_local_function(d: &Def) -> bool {
-    !d.params().is_empty() || matches!(d.body(), Expr::Lambda { .. })
+    d.arity() > 0
 }
 
 impl<'a> Lowerer<'a> {
@@ -5037,12 +5038,15 @@ impl<'a> Lowerer<'a> {
     /// something around a partial method (`h = f . fmap g`) is an ordinary
     /// closure and keeps the runtime path.
     fn under_applied_method_body(&self, name: &str) -> Option<(Vec<Expr>, usize)> {
-        let Def::Eval { params, body, .. } = self.defs.get(name)? else {
+        let def @ Def::Eval { .. } = self.defs.get(name)? else {
             return None;
         };
-        if !params.is_empty() {
+        // Arity 0 only: a binding with parameters (`h x = …`) is a function
+        // value, not a partial method application.
+        if def.arity() != 0 {
             return None;
         }
+        let body = def.body();
         let Expr::Apply {
             name: callee, args, ..
         } = body
@@ -5494,7 +5498,6 @@ impl<'a> Lowerer<'a> {
         }
         let def = self.defs.get(name)?.clone();
         let Def::Eval {
-            params,
             body,
             where_defs: _,
             sig,
@@ -5503,10 +5506,16 @@ impl<'a> Lowerer<'a> {
         else {
             return None;
         };
-        // "Signature-less curried def": the parser drained `at a i = …` into a
-        // bare binding whose body is a λ-nest, leaving `params` empty and no
-        // `::` annotation.
-        if !params.is_empty() || sig.is_some() || !matches!(body, Expr::Lambda { .. }) {
+        // "Signature-less multi-parameter def": `at a i = …` parses to
+        // `at = \a -> \i -> …` (Haskell 2010 §4.4.3.1), carries no `::`
+        // annotation, and has more than one parameter for a call site to
+        // specialize. A SINGLE-parameter definition is ordinary first-class
+        // code (`f = double` binds it), and a bang parameter's force must
+        // survive, so both keep the closure path.
+        if sig.is_some() || !matches!(body, Expr::Lambda { .. }) {
+            return None;
+        }
+        if def.arity() < 1 || crate::reduce::has_bang_param(&def) {
             return None;
         }
         let param_tys = self.fn_param_tys.get(name).cloned()?;
@@ -5668,23 +5677,25 @@ impl<'a> Lowerer<'a> {
     /// standalone value.
     ///
     /// The criterion is deliberately NARROWER than the specialization-site
-    /// trigger: besides not being class-constrained, an empty-parameter λ-nest
+    /// trigger: besides not being class-constrained, a MULTI-parameter λ-nest
     /// with no `::` annotation, and at least one recovered non-`Double`
     /// λ-parameter, the body must reference a call-site-dependent name — a class
     /// METHOD or a class-CONSTRAINED DEFINITION (`a ! i` lowers to `(!)`, which
     /// is constrained on `Ix i`). `nth xs k = head (tail xs)` references
     /// neither and stays a well-formed first-class value.
+    ///
+    /// A SINGLE-parameter definition is not deferred: `double x = x * 2.0` is
+    /// first class like any other value (`f = double` binds it), and only a
+    /// λ-nest the CURRYING pass produced — `f x y = …`, arity ≥ 2 — has
+    /// per-call-site parameter shapes to recover.
     fn is_deferred_sigless_def(&self, name: &str) -> bool {
         if self.env.constrained_defs.contains_key(name) {
             return false;
         }
-        let Some(Def::Eval {
-            params, body, sig, ..
-        }) = self.defs.get(name)
-        else {
+        let Some(Def::Eval { body, sig, .. }) = self.defs.get(name) else {
             return false;
         };
-        if !params.is_empty() || sig.is_some() || !matches!(body, Expr::Lambda { .. }) {
+        if sig.is_some() || !matches!(body, Expr::Lambda { .. }) || self.defs[name].arity() < 2 {
             return false;
         }
         let Some(param_tys) = self.fn_param_tys.get(name) else {
@@ -7135,7 +7146,7 @@ impl<'a> Lowerer<'a> {
                 span,
             })?;
         match def {
-            Def::Eval { body, bang, .. } if def.params().is_empty() => {
+            Def::Eval { body, bang, .. } if def.arity() == 0 => {
                 // Complete mode: a RECURSIVE local definition (`fibs = cons …
                 // fibs …`) is a self-referential THUNK in a shared cell (the
                 // STG model) — the same shared-cell mechanism as Anchor
@@ -7224,12 +7235,12 @@ impl<'a> Lowerer<'a> {
                     other => other,
                 }
             }
-            Def::Eval {
-                params: def_params,
-                body,
-                span: dspan,
-                ..
-            } => {
+            Def::Eval { span, .. } => {
+                let dspan = span;
+                // The head λ-nest of the body IS the parameter list (Haskell
+                // 2010 §4.4.3.1), so one split yields the parameters the
+                // fragment binds and the body it lowers.
+                let (def_params, body) = crate::types::infer::effective_def_params(&def);
                 // A bare reference to a user definition with λ-parameters in
                 // value position is a first-class function value: compile its
                 // body into a real FragmentIr and capture free variables by
@@ -7254,27 +7265,11 @@ impl<'a> Lowerer<'a> {
                         .unwrap_or(ValueTy::Double);
                     return Ok((reg, ty));
                 }
-                // The parameters are the explicit ones plus the leading λs of
-                // the body: the currying pass rewrites `g y = e` into
-                // `g = \y -> e` and clears `params`, so a λ parameter is just as
-                // bound as a listed one. Leaving it out would make it look like a
-                // free variable of its own fragment (`unknown \`y\``).
-                let mut param_names: HashSet<String> =
+                // A λ parameter is bound inside its own fragment; leaving it out
+                // would make it look like a free variable of that fragment
+                // (`unknown \`y\``).
+                let param_names: HashSet<String> =
                     def_params.iter().map(|p| p.name.clone()).collect();
-                {
-                    let mut nested = &body;
-                    while let Expr::Lambda {
-                        params: lam_params,
-                        body: inner,
-                        ..
-                    } = nested
-                    {
-                        for p in lam_params {
-                            param_names.insert(p.name.clone());
-                        }
-                        nested = inner;
-                    }
-                }
                 let free = self.free_vars(&body, &param_names);
                 // A definition carries its λ-parameter types in its scheme
                 // (rebuilt into `fn_param_tys`); the scalar default is only
@@ -7644,14 +7639,12 @@ impl<'a> Lowerer<'a> {
                     inner.insert(d.name().to_string());
                 }
                 for d in defs {
-                    // A binding's own body sees its own parameters, the λ-nest
-                    // the currying pass leaves for them, and its SIBLINGS (the
-                    // block is mutually recursive, and a `where`-bound function
-                    // routinely calls a sibling value binding).
+                    // A binding's own body sees its own parameters — the body's
+                    // leading λ-nest, which is where `g y = e` keeps `y`
+                    // (Haskell 2010 §4.4.3.1) — and its SIBLINGS (the block is
+                    // mutually recursive, and a `where`-bound function routinely
+                    // calls a sibling value binding).
                     let mut def_bound = inner.clone();
-                    for p in d.params() {
-                        def_bound.insert(p.name.clone());
-                    }
                     if let Expr::Lambda { params, .. } = d.body() {
                         for p in params {
                             def_bound.insert(p.name.clone());
@@ -7904,13 +7897,13 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Whether `name` is a top-level def that gets a SHARED cell in complete
-    /// mode: a named λ-parameter definition (Anchor) OR a self-recursive local
-    /// definition (`fibs = cons … fibs …`). Every reference — self or mutual —
-    /// goes through the cell.
+    /// mode: a definition with parameters (a name bound to a function value,
+    /// Haskell 2010 §4.4.3.1) OR a self-recursive local definition
+    /// (`fibs = cons … fibs …`). Every reference — self or mutual — goes through
+    /// the cell.
     fn is_shared_cell_def(&self, name: &str) -> bool {
         match self.defs.get(name) {
-            Some(Def::Eval { params, .. }) if !params.is_empty() => true,
-            Some(Def::Eval { .. }) => self.recursive_locals.contains(name),
+            Some(def @ Def::Eval { .. }) => def.arity() > 0 || self.recursive_locals.contains(name),
             _ => false,
         }
     }
@@ -8026,20 +8019,21 @@ impl<'a> Lowerer<'a> {
         // lowered body if inference did not pin it (the seeded value is the
         // forward-declared type; the fragment ret type refines it).
         let seeded_ty = self.shared_cell_result_tys.get(name).cloned();
-        let (def_params, body, dspan, is_anchor) = match &def {
-            Def::Eval {
-                params, body, span, ..
-            } if !params.is_empty() => (params.clone(), body.clone(), *span, true),
-            Def::Eval { body, span, .. } => (Vec::new(), body.clone(), *span, false),
-            _ => {
-                self.anchor_compiling.remove(name);
-                self.cur_value_block = saved_block;
-                return Err(CompileError::Type {
-                    msg: format!("`{name}` is not a value expression in v1"),
-                    span,
-                });
-            }
+        // The head λ-nest of the body is the definition's parameter list
+        // (Haskell 2010 §4.4.3.1: `f x y = e` IS `f = \x -> \y -> e`), so one
+        // split yields both the parameters to bind and the body to lower. A
+        // definition whose body builds no λ is a CAF and gets no parameters.
+        let Def::Eval { body, span, .. } = &def else {
+            self.anchor_compiling.remove(name);
+            self.cur_value_block = saved_block;
+            return Err(CompileError::Type {
+                msg: format!("`{name}` is not a value expression in v1"),
+                span,
+            });
         };
+        let head_arity = crate::types::infer::leading_lambda_count(body);
+        let (def_params, body) = crate::types::ty::split_curried_params(head_arity, &[], body);
+        let (body, dspan, is_anchor) = (body, *span, head_arity > 0);
         let param_names: HashSet<String> = def_params.iter().map(|p| p.name.clone()).collect();
         let free = self.free_vars(&body, &param_names);
         // The def's λ-parameter value types come from its scheme, rebuilt into
@@ -10078,21 +10072,9 @@ impl<'a> Lowerer<'a> {
                 span: crate::error::Span::new(0, 0),
             })?;
         match def {
-            Def::Eval {
-                params: def_params,
-                ref body,
-                ..
-            } if !def_params.is_empty() => {
-                let n = def_params.len();
-                let mut scope = HashMap::new();
-                for (idx, p) in def_params.iter().enumerate() {
-                    scope.insert(p.name.clone(), vec![args[idx]]);
-                }
-                self.locals.push(scope);
-                let out = self.lower(body, &args[n..])?;
-                self.locals.pop();
-                Ok(out)
-            }
+            // A definition's parameters ARE its body's leading λ-nest (Haskell
+            // 2010 §4.4.3.1: `f x = e` IS `f = \x -> e`), so there is no
+            // separate parameter list to bind here — the λ arm below binds them.
             Def::Eval { ref body, .. } => {
                 if let Expr::Lambda {
                     params: lp,
@@ -10388,30 +10370,22 @@ fn rename_bound_def(d: &Def, renames: &HashMap<String, String>) -> Def {
     match d {
         Def::Eval {
             name,
-            params,
             body,
             where_defs,
             sig,
             bang,
             span,
-        } => {
-            let mut inner = renames.clone();
-            for p in params {
-                inner.remove(&p.name);
-            }
-            Def::Eval {
-                name: name.clone(),
-                params: params.clone(),
-                body: rename_bound(body, &inner),
-                where_defs: where_defs
-                    .iter()
-                    .map(|w| rename_bound_def(w, &inner))
-                    .collect(),
-                sig: sig.clone(),
-                bang: *bang,
-                span: *span,
-            }
-        }
+        } => Def::Eval {
+            name: name.clone(),
+            body: rename_bound(body, renames),
+            where_defs: where_defs
+                .iter()
+                .map(|w| rename_bound_def(w, renames))
+                .collect(),
+            sig: sig.clone(),
+            bang: *bang,
+            span: *span,
+        },
         other => other.clone(),
     }
 }
