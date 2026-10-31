@@ -121,6 +121,26 @@ pub fn unify_value(
                     if v == w {
                         return Ok(());
                     }
+                    // Two DIFFERENT variables declared by a `::` signature are
+                    // different types (Haskell 2010 §4.4.1.2), so they may not be
+                    // identified: that is why GHC rejects
+                    // `f :: a -> b -> c; f x y = x`, whose body yields `a` where
+                    // `c` is declared. Provenance decides it — the same
+                    // (definition, letter) IS one variable, any other pair is not.
+                    // A variable with no provenance is an inference variable and
+                    // unifies freely.
+                    if let (Some(x), Some(y)) = (subst.rigid_name.get(v), subst.rigid_name.get(w)) {
+                        if x != y {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "cannot unify signature type variable `{}` with `{}`: the \
+                                     signature of `{}` declares them as different types",
+                                    x.1, y.1, x.0
+                                ),
+                                span,
+                            });
+                        }
+                    }
                     // Union-find: point the HIGHER variable id at the lower one
                     // so binding chains stay acyclic (a later reverse unification
                     // cannot create a cycle).

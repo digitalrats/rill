@@ -3333,7 +3333,6 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
             lambda_param_tys: Vec::new(),
         });
     }
-    let saved_subst = ctx.subst.clone();
     let saved_next = ctx.next;
     // Restore the defs/def_bodies too: a failed first attempt may leave stale
     // nested placeholder schemes in `ctx.defs`, so the retry's re-inference
@@ -3359,9 +3358,28 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
     // because the literal's representation comes from the declared result
     // (Haskell 2010 §6.4.1 `fromInteger`), and inferring the body with no
     // expected type made it an `Int` and rejected the declaration.
+    // The signature's variables are recorded with their PROVENANCE — this
+    // definition plus the letter written — so the unifier can tell "the same
+    // variable" from "two different variables of one signature" (Haskell 2010
+    // §4.4.1.2). `saved_rigid` restores the map after this body, so a prelude
+    // definition's letters never leak into a later definition's judgement.
+    // Snapshot the OUTER provenance, then mark this definition's own letters on
+    // top of it. The entries must survive into the value-track RETRY below
+    // (`ctx.subst = saved_subst.clone()`), which is why `saved_subst` is taken
+    // AFTER the signature conversion — taking it earlier gave the retry an empty
+    // `rigid_name`, so `f :: a -> b -> c; f x y = x` was rejected on the first
+    // attempt and then silently accepted by the retry.
+    let saved_rigid = ctx.subst.rigid_name.clone();
     let sig_tys: Option<(Vec<ValueTy>, ValueTy)> = match def.sig() {
         Some(sig) => {
-            let (param_tys, ret_ty, _) = def_sig_tys(ctx, sig)?;
+            let (param_tys, ret_ty, vars) = def_sig_tys(ctx, sig)?;
+            for (letter, t) in vars.iter() {
+                if let ValueTy::Var(v) | ValueTy::TyConVar(v) = t {
+                    ctx.subst
+                        .rigid_name
+                        .insert(*v, (def.name().to_string(), letter.clone()));
+                }
+            }
             (param_tys.len() == params.len()).then_some((param_tys, ret_ty))
         }
         None => None,
@@ -3385,15 +3403,41 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
         ctx.locals
             .insert(p.name.clone(), ArrowTy::uniform(0, 1, ty));
     }
+    // Taken AFTER the signature conversion so the value-track retry restores a
+    // substitution that still carries this definition's rigid provenance.
+    let saved_subst = ctx.subst.clone();
     let (result, lambda_param_tys) = match infer_expr_expected(ctx, &body, sig_ret.clone()) {
-        Ok(t) => (
-            Ok(t),
-            // The parameter types the body was checked against, resolved
-            // through the substitution: an unconstrained parameter stays a
-            // structural `Var` (polymorphic), a constrained one is concrete.
-            // `def_scheme` lifts these into the definition's scheme.
-            resolved_param_tys(ctx, &params),
-        ),
+        Ok(t) => {
+            // The body's result must BE the declared result (Haskell 2010
+            // §4.4.1.2). This check CANNOT live in the `expected` type the body
+            // is typed against: a mismatch there is swallowed by the retry
+            // below (a failed first attempt is normal — the retry re-binds the
+            // parameters as value channels), so `f :: a -> b -> c; f x y = x`
+            // was rejected on the first attempt and then quietly accepted.
+            //
+            // Signature variables are RIGID while this body is checked, so
+            // unifying the body's result with the declared one is exactly the
+            // judgement GHC 9.10.3 makes: `c := a` is refused because `a` and
+            // `c` are different declared types, while `a -> a -> a` and
+            // `a -> b -> a` (body `x`) pass because the result IS the declared
+            // variable.
+            {
+                if let Some(declared) = sig_ret.as_ref() {
+                    if let Err(e) = unify_value(&t.vty, declared, &mut ctx.subst, body.span()) {
+                        ctx.subst.rigid_name = saved_rigid.clone();
+                        return Err(e);
+                    }
+                }
+            }
+            (
+                Ok(t),
+                // The parameter types the body was checked against, resolved
+                // through the substitution: an unconstrained parameter stays a
+                // structural `Var` (polymorphic), a constrained one is concrete.
+                // `def_scheme` lifts these into the definition's scheme.
+                resolved_param_tys(ctx, &params),
+            )
+        }
         Err(_) => {
             ctx.subst = saved_subst.clone();
             ctx.next = saved_next;
@@ -3466,6 +3510,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
         }
     };
     ctx.locals = saved_locals;
+    ctx.subst.rigid_name = saved_rigid;
     result.map(|ty| DefBodyTy {
         ty,
         sig_params: sig_param_tys.cloned().unwrap_or_default(),

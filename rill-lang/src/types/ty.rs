@@ -236,6 +236,21 @@ pub struct Subst {
     /// projection needs the Data type, a function parameter needs its Func
     /// signature).
     pub value_map: HashMap<TypeVarId, ValueTy>,
+    /// Provenance of a SIGNATURE-declared type variable: the definition whose
+    /// `::` introduced it, plus the letter it was written as.
+    ///
+    /// Haskell 2010 §4.4.1.2: in `f :: a -> b -> c` the three letters are three
+    /// DISTINCT universally quantified variables, and only a REPEATED letter
+    /// relates two positions. Union-find unification treats every `Var ~ Var`
+    /// pair as an equation, so it binds `c := a` and ACCEPTS
+    /// `f :: a -> b -> c; f x y = x`, which GHC 9.10.3 rejects.
+    ///
+    /// Two variables may be identified only when they are the SAME variable;
+    /// `(definition, letter)` is what makes "the same" decidable after
+    /// freshening, when the numeric ids no longer relate. A signature variable
+    /// may still be BOUND to a concrete type — that is instantiation, which is
+    /// what a use site does.
+    pub rigid_name: HashMap<TypeVarId, (String, String)>,
 }
 
 /// A predefined (compiler-known) scalar type: the value type its NAME denotes,
