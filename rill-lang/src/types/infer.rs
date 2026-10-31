@@ -2215,6 +2215,20 @@ pub(crate) fn prepend_instance_head_args(
     }
 }
 
+/// The `(class, variable)` context an instance DECLARES: the `Monad m` of
+/// `instance (Monad m) => Arrow (Kleisli m)`.
+///
+/// Haskell 2010 §4.3.2: an instance's bodies are typed in the instance's own
+/// context, so each declared constraint is a GIVEN inside them. Empty for an
+/// ordinary monomorphic instance.
+fn instance_constraints(env: &TypeEnv, class: &str, ctor: &str) -> Vec<(String, String)> {
+    env.instances
+        .get(class)
+        .and_then(|by_ty| by_ty.get(ctor))
+        .map(|i| i.constraints.clone())
+        .unwrap_or_default()
+}
+
 /// Restore an instance's bound head args at every occurrence of the container
 /// INSIDE `t` — not only at the top level.
 ///
@@ -5862,7 +5876,23 @@ fn infer_ref_expected(
                         });
                     }
                 };
-                let key = (class_name, ty_name.clone(), name.to_string());
+                // A CONSTRAINT instance (`instance (Monad m) => Arrow (Kleisli m)`)
+                // keeps its head argument ABSTRACT in both the head and the
+                // bodies, so a result-directed method inside the body (`return
+                // (f x)`, whose `m b` is `TyConApp(m, [b])`) has no concrete
+                // container to resolve against. The APPLY path already handles
+                // this: `bind_constraint_instance` takes the head arguments from
+                // the expected container (`Kleisli Maybe …` → `m := Maybe`) and
+                // `prepend_instance_head_args` puts them back into the
+                // signature-converted parameter and result types. The REF path
+                // inlined the body without either step, so every method VALUE
+                // reached from a constraint instance failed with "the expected
+                // type is not concrete".
+                //
+                // Both helpers no-op when the instance has no head arguments, so
+                // an ordinary monomorphic instance is unaffected.
+                bind_constraint_instance(ctx, &class_name, &ty_name, &exp, span)?;
+                let key = (class_name.clone(), ty_name.clone(), name.to_string());
                 if ctx.method_lifting.contains(&key) {
                     return Err(CompileError::Type {
                         msg: format!("recursive typeclass method `{name}` for type `{ty_name}`"),
@@ -5871,10 +5901,16 @@ fn infer_ref_expected(
                 }
                 ctx.method_lifting.insert(key.clone());
                 let saved = ctx.locals.clone();
-                for (p, pt) in params
-                    .iter()
-                    .zip(signature_param_tys(ctx, &class_var, &cv_subst, sig))
-                {
+                let mut method_params = signature_param_tys(ctx, &class_var, &cv_subst, sig);
+                prepend_instance_head_args(
+                    &ctx.env.clone(),
+                    &class_name,
+                    &mut method_params,
+                    &ty_name,
+                    &ctx.type_var_bindings.clone(),
+                    || ctx.fresh_vty(),
+                );
+                for (p, pt) in params.iter().zip(method_params) {
                     ctx.locals.insert(p.clone(), ArrowTy::value_channel(pt));
                 }
                 // Nested result-directed methods in the body (`pure x = return x`)
@@ -7784,7 +7820,7 @@ fn infer_apply_impl(
                         }
                     },
                 };
-                let key = (class_name, ty_name.clone(), name.to_string());
+                let key = (class_name.clone(), ty_name.clone(), name.to_string());
                 if ctx.method_lifting.contains(&key) {
                     return Err(CompileError::Type {
                         msg: format!("recursive typeclass method `{name}` for type `{ty_name}`"),
@@ -7836,8 +7872,32 @@ fn infer_apply_impl(
                         .unwrap_or(ValueTy::Double);
                     unify_value(av, &pt, &mut ctx.subst, a.span())?;
                 }
+                // A CONSTRAINT instance (`instance (Monad m) => Arrow (Kleisli m)`)
+                // types its body under ITS OWN context (Haskell 2010 §4.3.2):
+                // inside `arr f = Kleisli (\x -> return (f x))` the `Monad m`
+                // constraint is a GIVEN, so `return`'s `m b` resolves against
+                // that dictionary instead of demanding a concrete container.
+                // Without it every result-directed method inside a constraint
+                // instance died with "the expected type is not concrete", so the
+                // generic Kleisli Arrow could not be used at all.
+                let saved_given = ctx.given.clone();
+                for (cclass, cvar) in instance_constraints(&ctx.env.clone(), &class_name, &ty_name)
+                {
+                    if let Some(bound) = ctx.type_var_bindings.get(&cvar).cloned() {
+                        if let ValueTy::Var(v) | ValueTy::TyConVar(v) | ValueTy::TyConApp(v, _) =
+                            ctx.subst.resolve_value(&bound)
+                        {
+                            ctx.given.push(GivenVar {
+                                class: cclass,
+                                name: cvar,
+                                id: Some(v),
+                            });
+                        }
+                    }
+                }
                 let body_vty =
                     infer_method_value_vty_expected(ctx, &body, "body", Some(exp.clone()));
+                ctx.given = saved_given;
                 ctx.locals = saved;
                 ctx.method_lifting.remove(&key);
                 let body_vty = body_vty?;
@@ -8532,7 +8592,34 @@ fn infer_apply_impl(
                 ctx.locals
                     .insert(p.clone(), ArrowTy::value_channel(av.clone()));
             }
+            // A CONSTRAINT instance (`instance (Monad m) => Arrow (Kleisli m)`)
+            // types its body under ITS OWN context, exactly as Haskell 2010
+            // §4.3.2 does: inside `arr f = Kleisli (\x -> return (f x))` the
+            // `Monad m` constraint is a GIVEN, so `return`'s `m b` resolves
+            // against that dictionary. Without the given, `m` stayed an open
+            // variable and every result-directed method inside a constraint
+            // instance died with "the expected type is not concrete" — the
+            // Kleisli Arrow could not be used at all.
+            //
+            // The witness id is the id the head binding gave the head variable
+            // (`m := Var(14)` before a call site makes it `Maybe`), which is
+            // what makes `m b` = `TyConApp(14, [b])` mention it.
+            let saved_given = ctx.given.clone();
+            for (cclass, cvar) in instance_constraints(&ctx.env.clone(), &class_name, &ctor) {
+                if let Some(bound) = ctx.type_var_bindings.get(&cvar).cloned() {
+                    if let ValueTy::Var(v) | ValueTy::TyConVar(v) | ValueTy::TyConApp(v, _) =
+                        ctx.subst.resolve_value(&bound)
+                    {
+                        ctx.given.push(GivenVar {
+                            class: cclass,
+                            name: cvar,
+                            id: Some(v),
+                        });
+                    }
+                }
+            }
             let body_vty = infer_method_value_vty_expected(ctx, &body, "body", body_expected);
+            ctx.given = saved_given;
             ctx.locals = saved;
             ctx.method_lifting.remove(&key);
             let body_vty = body_vty?;
