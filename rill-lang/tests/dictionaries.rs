@@ -122,18 +122,17 @@ fn infix_ordering_records_ord_with_its_eq_superclass() {
 
 #[test]
 fn infix_arithmetic_records_num_and_fractional() {
-    // `Num` declares `(Eq a, Ord a)`, so all three arrive; `/` also needs
-    // `Fractional`, which holds `Num`.
+    // `Num` has NO superclasses (Report §9 declares `(Eq a, Show a) => Num a`,
+    // GHC declares none at all — measured: `f :: Num a => a == x` is rejected
+    // with `Could not deduce Eq a`). rill takes the intersection, so arithmetic
+    // alone yields `Num` and nothing else. `Ord` enters only through `Real`,
+    // and a COMPARISON is what asks for it.
     for expr in ["1.0 + 2.0", "1.0 - 2.0", "1.0 * 2.0"] {
         let ir = ir_of(&format!("main = {expr};"));
         assert_eq!(
             table(&ir),
-            vec![
-                ("Eq".to_string(), "Double".to_string()),
-                ("Ord".to_string(), "Double".to_string()),
-                ("Num".to_string(), "Double".to_string())
-            ],
-            "`{expr}` must select `Num Double` plus its superclass closure; table = {:?}",
+            vec![("Num".to_string(), "Double".to_string())],
+            "`{expr}` must select `Num Double` and NO superclasses; table = {:?}",
             table(&ir)
         );
     }
@@ -142,7 +141,7 @@ fn infix_arithmetic_records_num_and_fractional() {
     classes.sort_unstable();
     assert_eq!(
         classes,
-        vec!["Eq", "Fractional", "Num", "Ord"],
+        vec!["Fractional", "Num"],
         "`1.0 / 2.0` must select `Fractional Double` through `Num`; table = {:?}",
         table(&ir)
     );
@@ -181,17 +180,19 @@ fn the_infix_and_prefix_spellings_select_the_same_dictionary() {
 
 #[test]
 fn a_dictionary_is_still_built_once_per_pair_not_per_operator() {
-    // Six operator call sites at `Double` still produce the three numeric
-    // dictionaries, one slot each (design §3.2).
+    // Six operator call sites at `Double` still produce one dictionary per
+    // (class, type) PAIR (design §3.2). `Num` has no superclasses, and the
+    // comparison asks for `Ord` (which holds `Eq`), so the pairs are
+    // Num, Ord and Eq — three, not four: `Fractional` is not mentioned.
     let ir = ir_of("main = (1.0 + 2.0) * 3.0 - 4.0 / 2.0 == 7.0;");
     assert_eq!(
         ir.dicts.len(),
-        4,
-        "Eq, Ord, Num and Fractional — one dictionary per PAIR; table = {:?}",
+        3,
+        "Eq, Ord and Num — one dictionary per PAIR; table = {:?}",
         table(&ir)
     );
     let world = eval("", "(1.0 + 2.0) * 3.0 - 4.0 / 2.0 == 7.0").expect("runs");
-    assert_eq!(world.dicts_len(), 4);
+    assert_eq!(world.dicts_len(), 3);
     assert_eq!(out_value(&world), Value::bool(true));
 }
 
@@ -256,20 +257,29 @@ fn a_mixed_int_and_double_operand_is_a_type_error_not_a_wrong_answer() {
             .err()
             .unwrap_or_else(|| panic!("`{src}` must be a type error ({why})"));
         let msg = err.to_string();
+        // Either diagnostic is a rejection of the same program: operand
+        // unification says "cannot unify", and a class constraint that reaches
+        // an instance-less type says "no instance of `Fractional` for type
+        // `Int`" — the latter is what GHC reports, so it is at least as good.
         assert!(
-            msg.contains("cannot unify"),
-            "`{src}` must fail on operand unification ({why}), got: {msg}"
+            msg.contains("cannot unify") || msg.contains("no instance of"),
+            "`{src}` must be a type error ({why}), got: {msg}"
         );
     }
     // The same-kind programs are unaffected: `Int` stays `Int`, `Double` stays
     // `Double`, and both compute.
+    // `1 + 2` at no stated type defaults to `Integer` (Haskell 2010 §4.3.4's
+    // list, first entry) — MEASURED in GHC: `$fNumInteger (IS 1#) (IS 2#)`.
     let int = ir_of("main = 1 + 2;");
     assert!(
-        has(&int, "Num", "Int"),
-        "`1 + 2` is `Num Int`; table = {:?}",
+        has(&int, "Num", "Integer"),
+        "`1 + 2` is `Num Integer`; table = {:?}",
         table(&int)
     );
-    assert_eq!(out_value(&eval("", "1 + 2").unwrap()), Value::Int(3));
+    assert_eq!(
+        out_value(&eval("", "1 + 2").unwrap()),
+        Value::Integer(3.into())
+    );
     let dbl = ir_of("main = 1.0 + 2.0;");
     assert!(
         has(&dbl, "Num", "Double"),
@@ -373,7 +383,7 @@ main = add 1.0 2.0;
         classes,
         vec!["Eq".to_string(), "Num".to_string(), "Ord".to_string()],
         "the table must hold exactly the mentioned classes plus their \
-         superclasses; table = {:?}",
+         superclasses (`Ord` holds `Eq`; `Num` holds nothing); table = {:?}",
         table(&ir)
     );
     for desc in &ir.dicts {
@@ -386,14 +396,18 @@ main = add 1.0 2.0;
         );
     }
 
-    // The SAME closure from a program that mentions only `Num`: `Eq` and `Ord`
-    // arrive because `Num` declares them, not because a call site named them.
+    // A program that mentions only `Num` gets ONLY `Num`: `Num` has no
+    // superclasses (Report §9 + GHC, measured), so nothing else is entailed.
     let num_only = ir_of("add a b :: Double -> Double -> Double = (+) a b;\nmain = add 1.0 2.0;");
-    for class in ["Num", "Ord", "Eq"] {
+    assert!(
+        has(&num_only, "Num", "Double"),
+        "a `Num Double` program must have `Num Double`; table = {:?}",
+        table(&num_only)
+    );
+    for other in ["Ord", "Eq"] {
         assert!(
-            has(&num_only, class, "Double"),
-            "a `Num Double` program must also get `{class} Double` from the declared \
-             superclass closure; table = {:?}",
+            !has(&num_only, other, "Double"),
+            "`Num` must NOT entail `{other}`; table = {:?}",
             table(&num_only)
         );
     }
@@ -403,7 +417,7 @@ main = add 1.0 2.0;
         "add 1.0 2.0",
     )
     .expect("the program must run");
-    assert_eq!(world.dicts_len(), 3, "Eq, Ord, Num");
+    assert_eq!(world.dicts_len(), 1, "`Num` only — it has no superclasses");
     assert_eq!(world.dict_consistency(), Vec::<String>::new());
 }
 
@@ -445,7 +459,7 @@ fn arithmetic_operators_alone_build_the_numeric_dictionaries() {
     classes.sort_unstable();
     assert_eq!(
         classes,
-        vec!["Eq", "Num", "Ord"],
+        vec!["Num"],
         "infix arithmetic must mention `Num` and its superclass closure; table = {:?}",
         table(&ir)
     );
@@ -551,25 +565,28 @@ main = pick 2.0;
 
 #[test]
 fn a_superclass_dictionary_precedes_its_referrer() {
-    // Topological order is what lets seat build in one forward pass. `Num`
-    // declares `(Eq a, Ord a)`, so `Eq Double` and `Ord Double` must both come
-    // BEFORE `Num Double` in the table, and every `supers` index must point
-    // backwards.
-    let ir = ir_of("add a b :: Double -> Double -> Double = (+) a b;\nmain = add 1.0 2.0;");
+    // Topological order is what lets seat build in one forward pass. `Ord`
+    // holds `Eq` (Report §9), so `Eq Double` must come BEFORE `Ord Double`, and
+    // every `supers` index must point backwards. `Num` has no superclasses, so
+    // it constrains nothing here.
+    let ir = ir_of("lt a b :: Double -> Double -> Bool = (<) a b;\nmain = lt 1.0 2.0;");
     let pos = |class: &str| {
         ir.dicts
             .iter()
             .position(|d| d.class == class && d.ty_key == "Double")
             .unwrap_or_else(|| panic!("`{class} Double` missing from {:?}", table(&ir)))
     };
+    // `Num` has no superclasses, so a comparison-only program's table holds
+    // exactly `Ord` and its `Eq`.
     assert!(
         pos("Eq") < pos("Ord"),
         "`Ord` holds `Eq`, so `Eq` comes first; table = {:?}",
         table(&ir)
     );
-    assert!(
-        pos("Eq") < pos("Num") && pos("Ord") < pos("Num"),
-        "`Num` holds both `Eq` and `Ord`, so both precede it; table = {:?}",
+    assert_eq!(
+        sup_classes(&ir, pos("Ord")),
+        vec!["Eq"],
+        "`Ord`'s only superclass is `Eq`; table = {:?}",
         table(&ir)
     );
     for (idx, desc) in ir.dicts.iter().enumerate() {
@@ -584,11 +601,18 @@ fn a_superclass_dictionary_precedes_its_referrer() {
             );
         }
     }
-    // `Num`'s declared superclasses are `Eq` then `Ord`, in that order.
-    assert_eq!(
-        sup_classes(&ir, pos("Num")),
-        vec!["Eq", "Ord"],
-        "superclass refs follow the class declaration's order"
+    // A program that ALSO names `Num` shows what it declares: nothing.
+    let with_num = ir_of("f a b :: Double -> Double -> Double = (+) a b;\nmain = f 1.0 2.0;");
+    let num_pos = with_num
+        .dicts
+        .iter()
+        .position(|d| d.class == "Num" && d.ty_key == "Double")
+        .unwrap_or_else(|| panic!("`Num Double` missing from {:?}", table(&with_num)));
+    assert!(
+        sup_classes(&with_num, num_pos).is_empty(),
+        "`Num` must have no superclasses (Report §9 gives `(Eq a, Show a)`, GHC \
+         gives none, rill takes the intersection); table = {:?}",
+        table(&with_num)
     );
     // And the seated table carries the same order, one ref per declared super.
     let world = eval(
@@ -679,7 +703,8 @@ main = 1.0;
 fn seat_builds_one_dictionary_per_descriptor_in_order() {
     let src = "add a b :: Double -> Double -> Double = (+) a b;\nmain = add 1.0 2.0;";
     let ir = ir_of(src);
-    assert!(ir.dicts.len() >= 3, "table = {:?}", table(&ir));
+    // A `Num`-only program: `Num` has no superclasses, so one descriptor.
+    assert!(ir.dicts.len() >= 1, "table = {:?}", table(&ir));
     let world = eval(
         "add a b :: Double -> Double -> Double = (+) a b;",
         "add 1.0 2.0",
@@ -862,7 +887,13 @@ fn the_section_3_9_gap_list_is_empty_because_every_kernel_executes() {
     // `Num.signum`, `Num.fromInteger`, `Fractional.recip`) now all have IR
     // instructions, so nothing is reported. The dictionary slots are still
     // BUILT — they are the same `DictSlot::Kernel` entries, they just execute.
-    let ir = ir_of("div a b :: Double -> Double -> Double = (/) a b;\nmain = div 1.0 2.0;");
+    // The program names `Ord` too (through a comparison), because `Ord` no
+    // longer arrives as a superclass of `Num`.
+    let ir = ir_of(
+        "div a b :: Double -> Double -> Double = (/) a b;\n\
+         lt a b :: Double -> Double -> Bool = (<) a b;\n\
+         main = div 1.0 2.0;",
+    );
     let missing = missing_kernels(&ir);
     assert_eq!(
         missing,
@@ -945,7 +976,11 @@ fn the_recip_and_compare_kernels_are_attributed_to_their_own_classes() {
     // Dividing once yields the whole numeric chain, so the exposed world table
     // reports no holes either.
     let world = eval("", "(/) 1.0 2.0").expect("runs");
-    assert_eq!(world.dicts_len(), 4, "Eq, Ord, Num, Fractional");
+    assert_eq!(
+        world.dicts_len(),
+        2,
+        "`Fractional` and its `Num` superclass; `Ord` is not entailed by `Num`"
+    );
     assert_eq!(
         world.missing_kernels(),
         Vec::<MissingKernel>::new(),
@@ -1023,24 +1058,26 @@ main = 1.0;
 
 #[test]
 fn a_fractional_dictionary_brings_its_whole_numeric_superclass_chain() {
-    // `Fractional` -> `Num` -> (`Eq`, `Ord`): dividing once yields four
-    // dictionaries, ordered so each one's supers are already built.
+    // `Fractional` -> `Num`: dividing once yields two dictionaries, ordered so
+    // each one's supers are already built. `Num` itself has no superclasses.
     let ir = ir_of("f a b :: Double -> Double -> Double = (/) a b;\nmain = f 1.0 2.0;");
     let mut classes: Vec<&str> = ir.dicts.iter().map(|d| d.class.as_str()).collect();
     classes.sort_unstable();
     assert_eq!(
         classes,
-        vec!["Eq", "Fractional", "Num", "Ord"],
+        vec!["Fractional", "Num"],
         "the whole superclass closure must be materialised; table = {:?}",
         table(&ir)
     );
     let pos = |class: &str| ir.dicts.iter().position(|d| d.class == class).unwrap();
-    assert!(pos("Eq") < pos("Num"));
-    assert!(pos("Ord") < pos("Num"));
-    assert!(pos("Num") < pos("Fractional"));
+    assert!(
+        pos("Num") < pos("Fractional"),
+        "`Fractional` holds `Num`, so `Num` comes first; table = {:?}",
+        table(&ir)
+    );
     assert_eq!(sup_classes(&ir, pos("Fractional")), vec!["Num"]);
     let world = eval("", "(/) 1.0 2.0").expect("runs");
-    assert_eq!(world.dicts_len(), 4);
+    assert_eq!(world.dicts_len(), 2);
     assert_eq!(world.dict_consistency(), Vec::<String>::new());
 }
 

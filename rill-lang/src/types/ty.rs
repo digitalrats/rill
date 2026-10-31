@@ -841,11 +841,16 @@ typeclass (Eq a) => Ord a where {
 data Ratio a = { num: a, den: a };
 type Rational = Ratio Integer;
 
---  Numeric tower. `Num` carries the operators; `Fractional` adds `/`.
---  `Num` is Eq- and Ord-bounded: Haskell's numeric tower requires comparison
---  (`Real a => Ord a`), and rill keeps one flat tower so the numeric operators
---  and the ordering operators can never disagree about a receiver's class.
-typeclass (Eq a, Ord a) => Num a where {
+--  Numeric tower (Report §9, verbatim).
+--
+--  `Num` carries ARITHMETIC ONLY: §9 declares `class (Eq a, Show a) => Num a`,
+--  and GHC goes further — its `Num` has NO superclasses at all (measured:
+--  `f :: Num a => a -> Bool; f x = x == x` and `g :: Num a => a -> String;
+--  g x = show x` are BOTH rejected with `Could not deduce`). rill takes the
+--  INTERSECTION of the two sources, because that is the only choice with no
+--  "compiles in rill, rejected by GHC" direction: `Num` declares no
+--  superclasses. Ordering lives on `Real`, one level UP, exactly as §9 has it.
+typeclass Num a where {
     (+) : a -> a -> a;
     (-) : a -> a -> a;
     (*) : a -> a -> a;
@@ -856,6 +861,13 @@ typeclass (Eq a, Ord a) => Num a where {
     --  Integer)`, so the method's ARGUMENT is the literal's exact `Integer`
     --  and its RESULT is the `Num` type the context demands.
     fromInteger : Integer -> a;
+}
+--  `Real a` (Report §9): `class (Num a, Ord a) => Real a where toRational`.
+--  This is the ONLY place `Ord` enters the numeric tower. `toRational` gives
+--  the exact rational value of its argument, which is what `realToFrac` and
+--  `Ratio`'s arithmetic are built on.
+typeclass (Num a, Ord a) => Real a where {
+    toRational : a -> Rational;
 }
 typeclass (Num a) => Fractional a where {
     (/) : a -> a -> a;
@@ -957,6 +969,13 @@ instance Fractional Double where { }
 --  be reachable — which is why `primitive` must stay false here.
 instance Enum Int where { }
 instance Enum Integer where { }
+
+--  `Real` instances (Report §9 lists `Int`, `Integer`, `Float`, `Double`).
+--  `toRational` is the exact `n/1` for the integer tracks; the `Double` body is
+--  a SOURCE equation because an exact f64 -> Ratio conversion needs the
+--  significand, which no kernel exposes yet (recorded, not silently rounded).
+instance Real Int where { }
+instance Real Integer where { }
 
 --  The instances have a POLYMORPHIC head (`Ratio a`), and they are EXPLICIT.
 --  `derive_eq_ord` also derives a structural `Eq`/`Ord` marker for every
@@ -1753,6 +1772,17 @@ fn register_prelude(env: &mut TypeEnv, src: &str) {
     // their kind contract is enforced: a `* -> *` constructor in a `*` position
     // in the prelude is a compiler bug, reported at load rather than silently
     // accepted by the converters that later consume these signatures.
+    // A fragment's OWN synonyms must be visible to its own name validation:
+    // the prelude declares `data Ratio a` and `type Rational = Ratio Integer`
+    // and then names `Rational` in `Real`'s signature, so validating BEFORE
+    // registering reports "unknown type name `Rational`" against a type the
+    // same fragment declares. Register the aliases first — that is also the
+    // order `register_decls` itself uses for instance heads.
+    for def in &defs {
+        if let Def::TypeAlias { name, target, .. } = def {
+            env.type_aliases.insert(name.clone(), target.clone());
+        }
+    }
     if let Err(e) = env.validate_type_names(&defs).and_then(|()| {
         for def in &defs {
             if let Def::Instance {

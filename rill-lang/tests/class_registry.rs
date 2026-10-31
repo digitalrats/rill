@@ -92,13 +92,13 @@ fn buffer_is_a_numeric_subclass_and_reuses_the_operators() {
         vec![("Num".to_string(), "b".to_string())],
         "class Num b => Buffer b"
     );
-    assert_eq!(
-        e.typeclasses["Num"].superclasses,
-        vec![
-            ("Eq".to_string(), "a".to_string()),
-            ("Ord".to_string(), "a".to_string())
-        ],
-        "Num is Eq- and Ord-bounded"
+    // `Num` declares NO superclasses: Report §9 gives `(Eq a, Show a)`, GHC
+    // gives none, and rill takes the intersection (measured:
+    // `f :: Num a => a == x` is rejected by GHC with `Could not deduce Eq a`).
+    assert!(
+        e.typeclasses["Num"].superclasses.is_empty(),
+        "Num must have no superclasses; got {:?}",
+        e.typeclasses["Num"].superclasses
     );
     for op in ["+", "-", "*", "min", "max", "abs"] {
         assert!(
