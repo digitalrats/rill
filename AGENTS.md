@@ -244,6 +244,37 @@ correctness requirement, not an aspiration.
   functions. When the two disagree, follow the Report for syntax/semantics and
   the Prelude for library surface.
 
+### Measuring is part of the method — a claim about behaviour needs a measurement
+
+Every rule above is a claim about what rill DOES. Such a claim is only worth what
+its measurement is worth, and four ways of measuring have already produced wrong
+conclusions on this codebase:
+
+- **Silence in a log is not absence of a code path.** `eprintln!` output from a
+  PASSING test is swallowed by the harness. A reachability count taken without
+  `-- --nocapture` reads "never fires" for code that runs on every suite. Use
+  `cargo test … -- --nocapture` (and, for a plain counter, `grep -c` on that
+  output) before concluding anything is dead.
+- **One example is not a rule.** `Monoid Double` has `head_args == []`; that says
+  nothing about `Monoid (List a)`, which has `head_args == ["a"]` under the SAME
+  class arity of 0. Before writing "always", "never", or "cannot" in a comment,
+  find the case that would refute it — and if you cannot, say so in the comment
+  instead of asserting the invariant.
+- **A pass/fail COUNT is not a regression check.** `1242 / 31` is compatible with
+  having traded one failure for another. Compare the SET of failing test names
+  against the baseline commit (`… | grep ' FAILED' | sort > after.txt; diff
+  before.txt after.txt`). Every step of a refactor is only safe when that diff
+  shows no additions.
+- **A fix that changes no test is unproven.** The project rule already says a
+  test that passes under both readings is not evidence; the same applies to the
+  FIX. Revert the fix, confirm the new test fails, restore it. `git stash` /
+  `cp` to `/tmp/opencode` first — `git checkout <file>` destroys uncommitted
+  work, and has done so twice on this branch.
+
+Corollary for the type checker: an "expected type" that is still a type VARIABLE
+is the ordinary mid-inference state (Haskell 2010 §4.3.4), not an error. A site
+that rejects it is a defect regardless of how long it has done so.
+
 ### Backward compatibility is not a requirement
 
 At this stage **exact Haskell 2010 conformance takes priority over backward
