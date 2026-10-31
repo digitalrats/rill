@@ -91,10 +91,9 @@ fn monad_bind_list_concat() {
 }
 
 #[test]
-fn monoid_mappend_float_defaults_to_double_KNOWN_DIVERGENCE() {
-    // Same divergence as above: GHC says `Ambiguous type variable 'a0'`, rill
-    // defaults to `Double`. (The list sibling IS legal in both — `[1.0, 2.0]`
-    // fixes the element type.)
+fn monoid_mappend_float_defaults_today_OD33() {
+    // Same OD-33 divergence. FLIP AT TASK 10b: must become `compile_err`.
+    // (The list sibling IS legal in both — `[1.0, 2.0]` fixes the element type.)
     let prog = run("main = mappend 1.5 2.5;");
     assert_eq!(out_float(&prog), 4.0);
 }
@@ -118,7 +117,17 @@ fn monoid_mempty_left_identity() {
     assert_eq!(out_int(&prog), 2);
 }
 
-/// KNOWN DIVERGENCE from GHC — see `docs/superpowers/DOCS-GAPS.md` OD-33.
+/// DIVERGENCE OD-33 — FIXED BY Task 10b, not "accepted behaviour".
+///
+/// `docs/superpowers/DOCS-GAPS.md` OD-33 records the defect and its owner: the
+/// ambiguity must be decided where the DICTIONARY is (dictionary design §3.7
+/// step 3, Task 10b), because once a constraint IS a parameter the variable is
+/// either supplied by a dictionary argument or genuinely ambiguous — one place
+/// sees both. Five attempts to force it earlier each broke a legal program.
+///
+/// The assertions below therefore state what the compiler does TODAY, so the
+/// suite is honest; when Task 10b lands they must FLIP to expecting
+/// `Ambiguous type variable`. The `// FLIP AT TASK 10b` marker is the reminder.
 ///
 /// GHC 9.10.3 rejects `mappend mempty 3.5` with
 /// `Ambiguous type variable 'a0' arising from a use of 'mappend'`, because
@@ -133,7 +142,7 @@ fn monoid_mempty_left_identity() {
 /// routed-arity and recursion cases). The proper home for it is Task 10's single
 /// value-site, where an ambiguous variable is reported once, from one place.
 #[test]
-fn monoid_mempty_float_defaults_to_double_KNOWN_DIVERGENCE() {
+fn monoid_mempty_float_defaults_today_OD33() {
     // `mappend mempty 3.5` leaves ONE variable constrained by BOTH `Monoid` and
     // `Fractional`. Haskell 2010 §4.3.4's default list `(Integer, Double)` is
     // consulted only for a variable whose classes are the Report's STANDARD set,
@@ -146,6 +155,8 @@ fn monoid_mempty_float_defaults_to_double_KNOWN_DIVERGENCE() {
     // (The sibling `mappend mempty [1.0, 2.0]` IS legal: the list literal fixes
     // the element type, so nothing is ambiguous.) This test used to assert a
     // silent `3.5`, which is the default the Report does not allow.
+    // FLIP AT TASK 10b: must become `compile_err` containing
+    // "Ambiguous type variable" once a constraint is a dictionary parameter.
     let prog = run("main = mappend mempty 3.5;");
     assert_eq!(out_float(&prog), 3.5);
 }

@@ -40,10 +40,10 @@ fn a_sibling_argument_collects_the_constraints_on_one_variable() {
     // What this file is about: `mempty`'s `m` and `3.5`'s `a` are ONE variable,
     // so the constraints collect rather than each being decided alone.
     //
-    // KNOWN DIVERGENCE (OD-33): GHC then reports that variable AMBIGUOUS, since
-    // `Monoid` is outside §4.3.4's standard class set. rill defaults it to
-    // `Double` (it has `instance Monoid Double`) and answers `3.5`. The
-    // collection is what is tested here; the defaulting is the divergence.
+    // DIVERGENCE OD-33, owned by Task 10b: GHC reports that variable AMBIGUOUS
+    // (a user class is outside §4.3.4's standard set); rill defaults it to
+    // `Double` and answers `3.5`. See `docs/superpowers/DOCS-GAPS.md` OD-33.
+    // FLIP AT TASK 10b: these two must become compile errors.
     assert_eq!(
         run("main = do { write (Just (show_double (mappend mempty 3.5))) stdout; return () };"),
         "3.5"
