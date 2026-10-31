@@ -2380,9 +2380,15 @@ fn inline_instance_body(ctx: &mut Ctx, call: InlineCall<'_>) -> Result<ValueTy, 
         };
         ctx.locals.insert(p.clone(), ArrowTy::value_channel(ty));
     }
-    // The ARGUMENT's own value type refines the parameter binding: `return ()`
-    // supplies a `Void` payload to a parameter the signature left abstract, and
-    // the body's result (`m a`) must see `a := Void`, not a free variable.
+    // The ARGUMENT's own value type refines the parameter binding.
+    //
+    // NOT redundant with the caller's `apply_args_curried`, which was measured
+    // (removing this loop breaks 8 tests, all `ST`/`IO`): that path unifies the
+    // argument against the SIGNATURE's parameter while leaving it abstract, and
+    // `infer_method_value_vty_expected` returns the argument's OWN type. For
+    // `return ()` the signature says `a` and the argument says `Void`; the body's
+    // result is `m a`, so without this unification `IO (Var)` is produced where
+    // the program means `IO ()`.
     if param_bindings == ParamBindings::Signature {
         for (i, av) in arg_vtys.iter().enumerate() {
             if let Some(p) = params.get(i) {
