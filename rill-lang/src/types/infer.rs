@@ -8281,6 +8281,21 @@ fn infer_apply_impl(
                 // operand naming an instance (`f x = x == 0`, `x` unconstrained)
                 // the literal's default is still the only evidence there is.
                 let selector_is_literal = matches!(args[selector_idx], Expr::IntegerLit(_, _));
+                // The selector's OWN static type, measured with the probe's
+                // effects rolled back. It is the "container" an arity-0 instance
+                // may still have: `instance Mono (List a)` is a NULLARY class
+                // variable whose head is `List a`, so `a` must be bound even
+                // though the class has no applied variable.
+                let selector_ty = {
+                    let subst_mark = ctx.subst.clone();
+                    let next_mark = ctx.next;
+                    let residual_mark = ctx.residual.len();
+                    let t = infer_method_value_vty(ctx, &args[selector_idx], "argument")?;
+                    ctx.subst = subst_mark;
+                    ctx.next = next_mark;
+                    ctx.residual.truncate(residual_mark);
+                    ctx.subst.resolve_value(&t)
+                };
                 let selector_dispatch = try_dispatch(ctx, &args[selector_idx])?;
                 // The literal's dispatch is a FALLBACK, kept for the case where
                 // no other operand names an instance.
@@ -8521,9 +8536,13 @@ fn infer_apply_impl(
                     InlineCall {
                         class_name: &class_name,
                         ty_name: &ty_name,
-                        // An arity-0 instance is selected by its type NAME, so
-                        // there is no container to take head arguments from.
-                        container: None,
+                        // An arity-0 instance is keyed by the FULL selector
+                        // type, but its head may still be APPLIED
+                        // (`instance Mono (List a)`: nullary class variable, head
+                        // `List a`, `head_args = ["a"]`). Passing the selector
+                        // type lets the shared inline bind those arguments — a
+                        // `None` here lost them.
+                        container: Some(&selector_ty),
                         method: name,
                         class_var: &class_var,
                         sig,
@@ -8793,50 +8812,35 @@ fn infer_apply_impl(
             // default reaches `compose` again through `second`'s default body
             // while the outer `compose`'s second argument is inferred); genuine
             // recursion (a body calling its own method name) is still caught.
-            let key = (class_name.clone(), ctor.clone(), name.to_string());
-            if ctx.method_lifting.contains(&key) {
-                return Err(CompileError::Type {
-                    msg: format!("recursive typeclass method `{name}` for type `{ctor}`"),
+            // Mirror of the lowering guard (lower.rs, constructor-class branch):
+            // the key arms ONLY around the inlined BODY, not the arguments.
+            // Arguments may legally inline other methods' defaults that
+            // reference this method (the method-lifting composition — `both`'s
+            // default reaches `compose` again through `second`'s default body
+            // while the outer `compose`'s second argument is inferred); genuine
+            // recursion (a body calling its own method name) is still caught.
+            // The inline is the SAME act as every other dispatch site — see
+            // `inline_instance_body`, which now owns the guard the old comment
+            // here described. What stays branch-specific is the container/param
+            // unification ABOVE: an arity>=1 class has a container that binds
+            // the payload variable (`a` in `m a`).
+            let body_vty = inline_instance_body(
+                ctx,
+                InlineCall {
+                    class_name: &class_name,
+                    ty_name: &ctor,
+                    container: Some(&container_vty),
+                    method: name,
+                    class_var: &class_var,
+                    sig,
+                    body: &body,
+                    params: &params,
+                    arg_vtys: &arg_vtys,
+                    param_bindings: ParamBindings::Arguments,
+                    body_expected,
                     span,
-                });
-            }
-            ctx.method_lifting.insert(key.clone());
-            let saved = ctx.locals.clone();
-            for (p, av) in params.iter().zip(arg_vtys.iter()) {
-                ctx.locals
-                    .insert(p.clone(), ArrowTy::value_channel(av.clone()));
-            }
-            // A CONSTRAINT instance (`instance (Monad m) => Arrow (Kleisli m)`)
-            // types its body under ITS OWN context, exactly as Haskell 2010
-            // §4.3.2 does: inside `arr f = Kleisli (\x -> return (f x))` the
-            // `Monad m` constraint is a GIVEN, so `return`'s `m b` resolves
-            // against that dictionary. Without the given, `m` stayed an open
-            // variable and every result-directed method inside a constraint
-            // instance died with "the expected type is not concrete" — the
-            // Kleisli Arrow could not be used at all.
-            //
-            // The witness id is the id the head binding gave the head variable
-            // (`m := Var(14)` before a call site makes it `Maybe`), which is
-            // what makes `m b` = `TyConApp(14, [b])` mention it.
-            let saved_given = ctx.given.clone();
-            for (cclass, cvar) in instance_constraints(&ctx.env.clone(), &class_name, &ctor) {
-                if let Some(bound) = ctx.type_var_bindings.get(&cvar).cloned() {
-                    if let ValueTy::Var(v) | ValueTy::TyConVar(v) | ValueTy::TyConApp(v, _) =
-                        ctx.subst.resolve_value(&bound)
-                    {
-                        ctx.given.push(GivenVar {
-                            class: cclass,
-                            name: cvar,
-                            id: Some(v),
-                        });
-                    }
-                }
-            }
-            let body_vty = infer_method_value_vty_expected(ctx, &body, "body", body_expected);
-            ctx.given = saved_given;
-            ctx.locals = saved;
-            ctx.method_lifting.remove(&key);
-            let body_vty = body_vty?;
+                },
+            )?;
             return Ok(ArrowTy::value_channel(body_vty));
         }
     }
