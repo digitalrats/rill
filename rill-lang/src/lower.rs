@@ -1692,12 +1692,7 @@ impl<'a> Lowerer<'a> {
                     .env
                     .data_types
                     .iter()
-                    .filter_map(|(n, info)| match info {
-                        DataInfo::Record(fields) if fields.iter().any(|(f, _, _)| f == field) => {
-                            Some(n.clone())
-                        }
-                        _ => None,
-                    })
+                    .filter_map(|(n, info)| info.field_named(field).map(|_| n.clone()))
                     .collect();
                 let rec_expected: Option<ValueTy> = if rec_candidates.len() == 1 {
                     // `type_ctor_arity` is the ONE arity answer: it covers a
@@ -1727,13 +1722,12 @@ impl<'a> Lowerer<'a> {
                 // args (the record's own lowering stays as before).
                 let rec_expected = match (&rec_expected, expected) {
                     (Some(ValueTy::Con(rname, rargs)), Some(exp)) => {
-                        let fty = match self.env.data_types.get(rname) {
-                            Some(DataInfo::Record(fields)) => fields
-                                .iter()
-                                .find(|(f, _, _)| f == field)
-                                .map(|(_, t, _)| t.clone()),
-                            _ => None,
-                        };
+                        let fty = self
+                            .env
+                            .data_types
+                            .get(rname)
+                            .and_then(|info| info.field_named(field))
+                            .map(|(_, f)| f.ty.clone());
                         let bound = fty.and_then(|ft| {
                             let mut bindings: Vec<(u32, ValueTy)> = Vec::new();
                             let pat = crate::types::infer::substitute_field_params(&ft, rargs);
@@ -1792,8 +1786,10 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                 };
-                let fields = match self.env.data_types.get(&rec_name) {
-                    Some(DataInfo::Record(fields)) => fields.clone(),
+                // A record field belongs to the type's single constructor; a
+                // sum type has no selectors, so it has no field to project.
+                let ctors = match self.env.data_types.get(&rec_name) {
+                    Some(DataInfo::Data(ctors)) => ctors.clone(),
                     _ => {
                         return Err(CompileError::Type {
                             msg: format!("`{rec_name}` is not a record type"),
@@ -1801,14 +1797,17 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                 };
-                let field_index =
-                    fields
-                        .iter()
-                        .position(|(f, _, _)| f == field)
-                        .ok_or_else(|| CompileError::Type {
-                            msg: format!("no field `{field}` in `{rec_name}`"),
-                            span: *span,
-                        })?;
+                let field_index = ctors
+                    .first()
+                    .and_then(|c| {
+                        c.fields
+                            .iter()
+                            .position(|f| f.name.as_deref() == Some(field.as_str()))
+                    })
+                    .ok_or_else(|| CompileError::Type {
+                        msg: format!("no field `{field}` in `{rec_name}`"),
+                        span: *span,
+                    })?;
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueProject {
                     dst,
@@ -1819,7 +1818,7 @@ impl<'a> Lowerer<'a> {
                 // record's type args substituted (a parameterized record), so a
                 // downstream method call (`bind (k1.unKleisli x)`) sees the
                 // concrete monad, not placeholder ids.
-                let field_ty = &fields[field_index].1;
+                let field_ty = &ctors[0].fields[field_index].ty;
                 let rec_args: Option<Vec<ValueTy>> = match &rec_vty {
                     ValueTy::Con(_, args) if !args.is_empty() => Some(args.clone()),
                     ValueTy::Var(_) => match &rec_expected {
@@ -1853,8 +1852,10 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                 };
-                let fields = match self.env.data_types.get(&rec_name) {
-                    Some(DataInfo::Record(fields)) => fields.clone(),
+                // A record field belongs to the type's single constructor; a
+                // sum type has no selectors, so it has no field to project.
+                let ctors = match self.env.data_types.get(&rec_name) {
+                    Some(DataInfo::Data(ctors)) => ctors.clone(),
                     _ => {
                         return Err(CompileError::Type {
                             msg: format!("`{rec_name}` is not a record type"),
@@ -1862,14 +1863,17 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                 };
-                let field_index =
-                    fields
-                        .iter()
-                        .position(|(f, _, _)| f == field)
-                        .ok_or_else(|| CompileError::Type {
-                            msg: format!("no field `{field}` in `{rec_name}`"),
-                            span: *span,
-                        })?;
+                let field_index = ctors
+                    .first()
+                    .and_then(|c| {
+                        c.fields
+                            .iter()
+                            .position(|f| f.name.as_deref() == Some(field.as_str()))
+                    })
+                    .ok_or_else(|| CompileError::Type {
+                        msg: format!("no field `{field}` in `{rec_name}`"),
+                        span: *span,
+                    })?;
                 let (src, _) = self.lower_value(value)?;
                 self.emit_value(ValueInstr::ValueUpdateField {
                     slot: rec_reg,
@@ -1927,9 +1931,15 @@ impl<'a> Lowerer<'a> {
                 };
                 let ctors: Vec<(String, Vec<ValueTy>)> = match &sum_name {
                     Some(n) => match self.env.data_types.get(n) {
-                        Some(DataInfo::Sum(ctors)) => ctors
+                        Some(info) => info
+                            .constructors()
                             .iter()
-                            .map(|(c, p)| (c.clone(), p.iter().map(|(t, _)| t.clone()).collect()))
+                            .map(|c| {
+                                (
+                                    c.name.clone(),
+                                    c.fields.iter().map(|f| f.ty.clone()).collect(),
+                                )
+                            })
                             .collect(),
                         _ => {
                             return Err(CompileError::Type {
@@ -2802,7 +2812,22 @@ impl<'a> Lowerer<'a> {
                 // Record constructor: `Point { x: 1.0 }`.
                 if let Some(info) = self.env.data_types.get(name).cloned() {
                     match info {
-                        DataInfo::Record(fields) => {
+                        DataInfo::Data(ctors) => {
+                            let fields: Vec<(String, ValueTy, bool)> = ctors
+                                .first()
+                                .map(|c| {
+                                    c.fields
+                                        .iter()
+                                        .map(|f| {
+                                            (
+                                                f.name.clone().unwrap_or_default(),
+                                                f.ty.clone(),
+                                                f.strict,
+                                            )
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
                             if call_args.len() != 1 {
                                 return Err(CompileError::Type {
                                     msg: format!(
@@ -2911,12 +2936,9 @@ impl<'a> Lowerer<'a> {
                             };
                             return Ok((dst, ret));
                         }
-                        DataInfo::Sum(_) => {
-                            return Err(CompileError::Type {
-                                msg: format!("`{name}` is a sum type; use one of its constructors"),
-                                span: *span,
-                            });
-                        }
+                        // Applying an OPAQUE type's name is not a constructor
+                        // call: it has none. A product's or sum's name reaching
+                        // here means no constructor matched above.
                         DataInfo::Opaque => {
                             return Err(CompileError::Type {
                                 msg: format!("opaque type `{name}` has no constructors"),
@@ -8626,9 +8648,7 @@ impl<'a> Lowerer<'a> {
                 .data_types
                 .iter()
                 .filter_map(|(tname, info)| match info {
-                    DataInfo::Sum(ctors) if ctors.iter().any(|(c, _)| c == ctor) => {
-                        Some(tname.clone())
-                    }
+                    info if info.constructor(ctor).is_some() => Some(tname.clone()),
                     _ => None,
                 })
                 .collect();
@@ -9048,18 +9068,16 @@ impl<'a> Lowerer<'a> {
     fn sum_ctor(&self, name: &str) -> Option<(String, usize, Vec<ValueTy>)> {
         let mut found: Option<(String, usize, Vec<ValueTy>)> = None;
         for (tname, info) in &self.env.data_types {
-            if let DataInfo::Sum(ctors) = info {
-                for (idx, (c, payload)) in ctors.iter().enumerate() {
-                    if c == name {
-                        if found.is_some() {
-                            return None;
-                        }
-                        found = Some((
-                            tname.clone(),
-                            idx,
-                            payload.iter().map(|(t, _)| t.clone()).collect(),
-                        ));
+            for (idx, c) in info.constructors().iter().enumerate() {
+                if c.name == name {
+                    if found.is_some() {
+                        return None;
                     }
+                    found = Some((
+                        tname.clone(),
+                        idx,
+                        c.fields.iter().map(|f| f.ty.clone()).collect(),
+                    ));
                 }
             }
         }
@@ -9072,9 +9090,10 @@ impl<'a> Lowerer<'a> {
     /// construction. Empty for non-sum or out-of-range lookups.
     fn ctor_payload_bangs(&self, sum_name: &str, ctor_idx: usize) -> Vec<bool> {
         match self.env.data_types.get(sum_name) {
-            Some(DataInfo::Sum(ctors)) => ctors
+            Some(info) => info
+                .constructors()
                 .get(ctor_idx)
-                .map(|(_, payload)| payload.iter().map(|(_, b)| *b).collect())
+                .map(|c| c.fields.iter().map(|f| f.strict).collect())
                 .unwrap_or_default(),
             _ => Vec::new(),
         }
@@ -9191,22 +9210,17 @@ impl<'a> Lowerer<'a> {
                         return 1;
                     }
                     let s = match self.env.data_types.get(name) {
-                        Some(DataInfo::Record(fields)) => {
-                            1 + fields
-                                .iter()
-                                .map(|(_, t, _)| self.subtree_size_impl(t, visiting))
-                                .sum::<usize>()
-                        }
-                        Some(DataInfo::Sum(ctors)) => {
-                            // The constructed ctor is a runtime choice; the
-                            // static bound is the largest ctor's full payload
-                            // subtree.
+                        // One rule for every declared type: the bound is 1 plus
+                        // the LARGEST constructor's full field subtree, because
+                        // which constructor runs is a runtime choice. A product
+                        // has one constructor, so the maximum is that one.
+                        Some(DataInfo::Data(ctors)) => {
                             1 + ctors
                                 .iter()
-                                .map(|(_, payload)| {
-                                    payload
+                                .map(|c| {
+                                    c.fields
                                         .iter()
-                                        .map(|(t, _)| self.subtree_size_impl(t, visiting))
+                                        .map(|f| self.subtree_size_impl(&f.ty, visiting))
                                         .sum::<usize>()
                                 })
                                 .max()

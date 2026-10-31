@@ -544,10 +544,11 @@ fn builtin_catalog_registers_record_data_types() {
     // `EqConfig = { bands: List EqBand }` — the `List EqBand` field must survive
     // the phase-2 value-type conversion as an App of the nested record name.
     match env.data_types.get("EqConfig") {
-        Some(rill_lang::types::ty::DataInfo::Record(fields)) => {
-            assert_eq!(fields.len(), 1);
+        Some(rill_lang::types::ty::DataInfo::Data(ctors)) => {
+            let ctor = ctors.first().expect("a product declares one constructor");
+            assert_eq!(ctor.fields.len(), 1);
             assert!(matches!(
-                &fields[0].1,
+                &ctor.fields[0].ty,
                 rill_lang::types::ty::ValueTy::Con(head, args)
                     if head == "List" && args.len() == 1
             ));

@@ -952,7 +952,7 @@ fn sum_types_with_ctor(ctx: &Ctx, ctor: &str) -> Vec<String> {
         .data_types
         .iter()
         .filter_map(|(tname, info)| match info {
-            DataInfo::Sum(ctors) if ctors.iter().any(|(c, _)| c == ctor) => Some(tname.clone()),
+            info if info.constructor(ctor).is_some() => Some(tname.clone()),
             _ => None,
         })
         .collect()
@@ -960,13 +960,11 @@ fn sum_types_with_ctor(ctx: &Ctx, ctor: &str) -> Vec<String> {
 
 /// The payload value types of `ctor` within the sum type `sum_name`.
 fn sum_ctor_payload(ctx: &Ctx, sum_name: &str, ctor: &str) -> Option<Vec<ValueTy>> {
-    match ctx.env.data_types.get(sum_name) {
-        Some(DataInfo::Sum(ctors)) => ctors
-            .iter()
-            .find(|(c, _)| c == ctor)
-            .map(|(_, payload)| payload.iter().map(|(t, _)| t.clone()).collect()),
-        _ => None,
-    }
+    ctx.env
+        .data_types
+        .get(sum_name)?
+        .fields_of(ctor)
+        .map(|fields| fields.iter().map(|f| f.ty.clone()).collect())
 }
 
 /// A sum constructor's CURRIED TYPE, the way Haskell 2010 §4.2.1 gives it:
@@ -3000,15 +2998,21 @@ pub fn infer_program_with_entry(
                 ..
             } => {
                 let mut free: Vec<String> = Vec::new();
-                let fields_ty = fields
+                let fields_ty: Vec<crate::types::ty::ConstructorField> = fields
                     .iter()
-                    .map(|(f, t, strict)| {
-                        let ft = data_field_vty_with_free(&env, tyvars, t, &mut free);
-                        (f.clone(), ft, *strict)
+                    .map(|(f, t, strict)| crate::types::ty::ConstructorField {
+                        name: Some(f.clone()),
+                        ty: data_field_vty_with_free(&env, tyvars, t, &mut free),
+                        strict: *strict,
                     })
                     .collect();
-                env.data_types
-                    .insert(name.clone(), DataInfo::Record(fields_ty));
+                env.data_types.insert(
+                    name.clone(),
+                    DataInfo::Data(vec![crate::types::ty::ConstructorInfo {
+                        name: name.clone(),
+                        fields: fields_ty,
+                    }]),
+                );
                 if !tyvars.is_empty() {
                     env.data_arities.insert(name.clone(), tyvars.len());
                 }
@@ -3030,23 +3034,22 @@ pub fn infer_program_with_entry(
                 ..
             } => {
                 let mut free: Vec<String> = Vec::new();
-                let ctors_ty = ctors
+                let ctors_ty: Vec<crate::types::ty::ConstructorInfo> = ctors
                     .iter()
-                    .map(|(c, ts)| {
-                        (
-                            c.clone(),
-                            ts.iter()
-                                .map(|(t, strict)| {
-                                    (
-                                        data_field_vty_with_free(&env, tyvars, t, &mut free),
-                                        *strict,
-                                    )
-                                })
-                                .collect(),
-                        )
+                    .map(|(c, ts)| crate::types::ty::ConstructorInfo {
+                        name: c.clone(),
+                        fields: ts
+                            .iter()
+                            .map(|(t, strict)| crate::types::ty::ConstructorField {
+                                name: None,
+                                ty: data_field_vty_with_free(&env, tyvars, t, &mut free),
+                                strict: *strict,
+                            })
+                            .collect(),
                     })
                     .collect();
-                env.data_types.insert(name.clone(), DataInfo::Sum(ctors_ty));
+                env.data_types
+                    .insert(name.clone(), DataInfo::Data(ctors_ty));
                 // A parameterized SUM records its arity exactly like a record:
                 // `data Opt a = …` has kind `* -> *`, which is what the kind
                 // projection must answer (Haskell 2010 §4.1.1 gives a data
@@ -4790,8 +4793,17 @@ fn bind_pattern(
             // scrutinees whose type is still a fresh var).
             let resolved = ctx.subst.resolve_value(vty);
             let sum_name = match &resolved {
+                // ANY declared type can be pattern-matched, including a
+                // product: its single constructor is a constructor like any
+                // other (`Void`'s field, `Pair`'s `first`/`second`). Requiring
+                // more than one constructor made a product's constructor
+                // unknown to the matcher.
                 ValueTy::Con(n, _)
-                    if matches!(ctx.env.data_types.get(n.as_str()), Some(DataInfo::Sum(_))) =>
+                    if ctx
+                        .env
+                        .data_types
+                        .get(n.as_str())
+                        .is_some_and(|i| !i.constructors().is_empty()) =>
                 {
                     n.clone()
                 }
@@ -4948,7 +4960,7 @@ fn check_exhaustive_sum(
     span: Span,
 ) -> Result<(), CompileError> {
     let ctors: Vec<String> = match ctx.env.data_types.get(sum_name) {
-        Some(DataInfo::Sum(cs)) => cs.iter().map(|(n, _)| n.clone()).collect(),
+        Some(info) => info.constructors().iter().map(|c| c.name.clone()).collect(),
         _ => return Ok(()),
     };
     let mut covered: HashSet<&str> = HashSet::new();
@@ -5207,12 +5219,7 @@ fn infer_expr_expected_inner(
                 .env
                 .data_types
                 .iter()
-                .filter_map(|(n, info)| match info {
-                    DataInfo::Record(fields) if fields.iter().any(|(f, _, _)| f == field) => {
-                        Some(n.clone())
-                    }
-                    _ => None,
-                })
+                .filter_map(|(n, info)| info.field_named(field).map(|_| n.clone()))
                 .collect();
             let rec_expected = if rec_candidates.len() == 1 {
                 let rec_name = &rec_candidates[0];
@@ -5242,11 +5249,14 @@ fn infer_expr_expected_inner(
             }
             match &t.vty {
                 ValueTy::Con(name, args) => match ctx.env.data_types.get(name.as_str()) {
-                    Some(DataInfo::Record(fields)) => {
-                        let fty = fields
-                            .iter()
-                            .find(|(f, _, _)| f == field)
-                            .map(|(_, t, _)| t.clone());
+                    // An OPAQUE type is a handle: it has no fields, and saying so
+                    // is a different answer from "no field `x` here".
+                    Some(DataInfo::Opaque) => Err(CompileError::Type {
+                        msg: format!("opaque type `{name}` has no fields"),
+                        span: *span,
+                    }),
+                    Some(info) => {
+                        let fty = info.field_named(field).map(|(_, f)| f.ty.clone());
                         match fty {
                             // Parameterized user data (`data Box a = { value: a }`,
                             // `data Kleisli m a b = { unKleisli: a -> m b }`):
@@ -5262,11 +5272,7 @@ fn infer_expr_expected_inner(
                             }),
                         }
                     }
-                    Some(DataInfo::Opaque) => Err(CompileError::Type {
-                        msg: format!("opaque type `{name}` has no fields"),
-                        span: *span,
-                    }),
-                    _ => Err(CompileError::Type {
+                    None => Err(CompileError::Type {
                         msg: format!("`{name}` is not a record type"),
                         span: *span,
                     }),
@@ -5282,21 +5288,18 @@ fn infer_expr_expected_inner(
                     // record defers to a fresh var, resolved when the function
                     // is called with a concrete argument (`reduce` β-reduces).
                     let field_ty = match &rec_expected {
-                        Some(ValueTy::Con(name, args)) => {
-                            match ctx.env.data_types.get(name.as_str()) {
-                                Some(DataInfo::Record(fields)) => fields
-                                    .iter()
-                                    .find(|(f, _, _)| f == field)
-                                    .map(|(_, ft, _)| {
-                                        if args.is_empty() {
-                                            ft.clone()
-                                        } else {
-                                            substitute_field_params(ft, args)
-                                        }
-                                    }),
-                                _ => None,
-                            }
-                        }
+                        Some(ValueTy::Con(name, args)) => ctx
+                            .env
+                            .data_types
+                            .get(name.as_str())
+                            .and_then(|info| info.field_named(field))
+                            .map(|(_, ft)| {
+                                if args.is_empty() {
+                                    ft.ty.clone()
+                                } else {
+                                    substitute_field_params(&ft.ty, args)
+                                }
+                            }),
                         _ => None,
                     };
                     match field_ty {
@@ -5342,13 +5345,8 @@ fn infer_expr_expected_inner(
                         .env
                         .data_types
                         .get(name.as_str())
-                        .and_then(|info| match info {
-                            DataInfo::Record(fields) => fields
-                                .iter()
-                                .find(|(f, _, _)| f == field)
-                                .map(|(_, t, _)| substitute_field_params(t, args)),
-                            _ => None,
-                        });
+                        .and_then(|info| info.field_named(field))
+                        .map(|(_, f)| substitute_field_params(&f.ty, args));
                     let fty = match fty {
                         Some(t) => t,
                         None => {
@@ -6073,10 +6071,13 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
     // `Circle` must be applied to its payload.
     if let Some(info) = ctx.env.data_types.get(name) {
         match info {
-            DataInfo::Record(_) => {
+            // A PRODUCT's type name doubles as its constructor, so it is a
+            // value. A SUM's name is not a constructor: the program must apply
+            // one of them.
+            DataInfo::Data(ctors) if ctors.len() == 1 => {
                 return Ok(ArrowTy::value_channel(ValueTy::Con(name.into(), vec![])))
             }
-            DataInfo::Sum(_) => {
+            DataInfo::Data(_) => {
                 return Err(CompileError::Type {
                     msg: format!("`{name}` is a sum type; use one of its constructors"),
                     span,
@@ -7269,7 +7270,19 @@ fn infer_apply_impl(
     // ctor names (`Circle`, `Point`) are never builtins.
     if let Some(info) = ctx.env.data_types.get(name).cloned() {
         match info {
-            DataInfo::Record(fields) => {
+            DataInfo::Data(fields) => {
+                // A product constructor's fields, in declaration order. The
+                // record literal path below matches them by NAME; a positional
+                // call path takes them by POSITION.
+                let fields: Vec<(String, ValueTy, bool)> = fields
+                    .first()
+                    .map(|c| {
+                        c.fields
+                            .iter()
+                            .map(|f| (f.name.clone().unwrap_or_default(), f.ty.clone(), f.strict))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 // Record constructor: `Point { x: 1.0, y: 2.0 }`. The single
                 // argument must be a record literal matched by field name.
                 if args.len() != 1 {
@@ -7484,13 +7497,6 @@ fn infer_apply_impl(
                         return Ok(ArrowTy::value_channel(ValueTy::Con(name.into(), vec![])));
                     }
                 }
-            }
-            DataInfo::Sum(_) => {
-                // Applying the sum type name itself is not a constructor call.
-                return Err(CompileError::Type {
-                    msg: format!("`{name}` is a sum type; use one of its constructors"),
-                    span,
-                });
             }
             DataInfo::Opaque => {
                 // An opaque type is nameable but has no constructor to apply.
@@ -9823,25 +9829,30 @@ mod tests {
             "data T = C !Double; data P = { x: !Double, y: Double }; foo = P { x: 1.0, y: 2.0 }",
         )
         .unwrap();
+        // Both declarations are the ONE data shape; only one has named fields.
         match t.type_env.data_types.get("T") {
-            Some(DataInfo::Sum(ctors)) => {
+            Some(DataInfo::Data(ctors)) => {
                 assert_eq!(ctors.len(), 1);
-                assert_eq!(ctors[0].0, "C");
-                assert_eq!(ctors[0].1, vec![(ValueTy::Double, true)]);
+                assert_eq!(ctors[0].name, "C");
+                assert_eq!(ctors[0].fields.len(), 1);
+                assert_eq!(ctors[0].fields[0].ty, ValueTy::Double);
+                assert!(ctors[0].fields[0].strict);
+                assert!(ctors[0].fields[0].name.is_none());
             }
-            other => panic!("expected Sum for T, got {other:?}"),
+            other => panic!("expected one constructor for T, got {other:?}"),
         }
         match t.type_env.data_types.get("P") {
-            Some(DataInfo::Record(fields)) => {
-                assert_eq!(
-                    fields,
-                    &vec![
-                        ("x".to_string(), ValueTy::Double, true),
-                        ("y".to_string(), ValueTy::Double, false),
-                    ]
-                );
+            Some(DataInfo::Data(ctors)) => {
+                assert_eq!(ctors.len(), 1);
+                let f = &ctors[0].fields;
+                assert_eq!(f.len(), 2);
+                assert_eq!(f[0].name.as_deref(), Some("x"));
+                assert_eq!(f[0].ty, ValueTy::Double);
+                assert!(f[0].strict);
+                assert_eq!(f[1].name.as_deref(), Some("y"));
+                assert!(!f[1].strict);
             }
-            other => panic!("expected Record for P, got {other:?}"),
+            other => panic!("expected one constructor for P, got {other:?}"),
         }
     }
 

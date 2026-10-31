@@ -407,20 +407,98 @@ pub enum BufferRole {
     Resource,
 }
 
+/// One field of a constructor: its optional record NAME, declared type and
+/// strictness.
+///
+/// `name` is `Some` for a record field (Haskell 2010 §4.2.1 selector syntax) and
+/// `None` for a positional payload slot — the same field either way, which is
+/// the point of [`ConstructorInfo`].
+#[derive(Debug, Clone)]
+pub struct ConstructorField {
+    /// The record field's name, or `None` for a positional payload slot.
+    pub name: Option<String>,
+    /// The field's declared value type.
+    pub ty: ValueTy,
+    /// A strict field (`!t`): forced to WHNF at construction.
+    pub strict: bool,
+}
+
+/// One constructor of a declared data type.
+///
+/// Haskell 2010 §4.2.1 gives every constructor ONE shape — a list of field
+/// types — and record syntax is SUGAR over it that additionally declares
+/// selectors. GHC measures the two as the same constructor type:
+///
+/// ```haskell
+/// data A = A { unA :: Int }   -- A :: Int -> A
+/// data B = B Int              -- B :: Int -> B
+/// ```
+///
+/// So there is no "record constructor" and no "sum constructor": there is one
+/// constructor whose fields may carry names. Keeping them apart made the build
+/// paths diverge — one pinned a container from the expected type, the other did
+/// not — so a program that worked as `A { unA = e }` failed as `A e`.
+#[derive(Debug, Clone)]
+pub struct ConstructorInfo {
+    /// The constructor's name (`Just`, `A`, `Mk`).
+    pub name: String,
+    /// Fields in POSITIONAL order.
+    pub fields: Vec<ConstructorField>,
+}
+
 /// Shape of a declared data type.
 #[derive(Debug, Clone)]
 pub enum DataInfo {
-    /// A product type: field name → value type, plus the strictness flag
-    /// (a strict field's argument is forced to WHNF at construction).
-    Record(Vec<(String, ValueTy, bool)>),
-    /// A sum type: constructor name → payload value types, each carrying its
-    /// strictness flag (a strict payload is forced to WHNF at construction).
-    Sum(Vec<(String, Vec<(ValueTy, bool)>)>),
+    /// An algebraic data type: one entry per constructor, in declaration order.
+    ///
+    /// A product type is the single-constructor case and a sum type the
+    /// multi-constructor one — the SAME variant, because Haskell draws no
+    /// distinction (see [`ConstructorInfo`]).
+    Data(Vec<ConstructorInfo>),
     /// An ABSTRACT (opaque) type: nameable in signatures, but with no
     /// constructors and no fields. Source programs cannot build, project, or
     /// pattern-match one — only compiler-provided primitives produce values of
     /// these types (`World`, `STState`, `STRef s a`).
     Opaque,
+}
+
+impl DataInfo {
+    /// Every constructor, in declaration order. Empty for an opaque type.
+    pub(crate) fn constructors(&self) -> &[ConstructorInfo] {
+        match self {
+            DataInfo::Data(ctors) => ctors,
+            DataInfo::Opaque => &[],
+        }
+    }
+
+    /// The single constructor of a PRODUCT type; `None` for a sum type with more
+    /// than one constructor and for an opaque type.
+    pub(crate) fn sole_constructor(&self) -> Option<&ConstructorInfo> {
+        match self {
+            DataInfo::Data(ctors) if ctors.len() == 1 => ctors.first(),
+            _ => None,
+        }
+    }
+
+    /// The constructor named `name`, if the type declares one.
+    pub(crate) fn constructor(&self, name: &str) -> Option<&ConstructorInfo> {
+        self.constructors().iter().find(|c| c.name == name)
+    }
+
+    /// The fields of the constructor named `name`.
+    pub(crate) fn fields_of(&self, name: &str) -> Option<&[ConstructorField]> {
+        self.constructor(name).map(|c| c.fields.as_slice())
+    }
+
+    /// The field named `field`, with its constructor.
+    pub(crate) fn field_named(&self, field: &str) -> Option<(&ConstructorInfo, &ConstructorField)> {
+        self.constructors().iter().find_map(|c| {
+            c.fields
+                .iter()
+                .find(|f| f.name.as_deref() == Some(field))
+                .map(|f| (c, f))
+        })
+    }
 }
 
 /// A `typeclass` declaration: its type variable and method dictionary.
@@ -1571,16 +1649,21 @@ fn register_prelude(env: &mut TypeEnv, src: &str) {
         } = def
         {
             let mut free: Vec<String> = Vec::new();
-            let fields_ty = fields
+            let fields_ty: Vec<ConstructorField> = fields
                 .iter()
-                .map(|(f, t, strict)| {
-                    let ft =
-                        crate::types::infer::data_field_vty_with_free(env, tyvars, t, &mut free);
-                    (f.clone(), ft, *strict)
+                .map(|(f, t, strict)| ConstructorField {
+                    name: Some(f.clone()),
+                    ty: crate::types::infer::data_field_vty_with_free(env, tyvars, t, &mut free),
+                    strict: *strict,
                 })
                 .collect();
-            env.data_types
-                .insert(name.clone(), DataInfo::Record(fields_ty));
+            env.data_types.insert(
+                name.clone(),
+                DataInfo::Data(vec![ConstructorInfo {
+                    name: name.clone(),
+                    fields: fields_ty,
+                }]),
+            );
             if !tyvars.is_empty() {
                 env.data_arities.insert(name.clone(), tyvars.len());
             }
@@ -1593,25 +1676,24 @@ fn register_prelude(env: &mut TypeEnv, src: &str) {
         } = def
         {
             let mut free: Vec<String> = Vec::new();
-            let ctors_ty = ctors
+            let ctors_ty: Vec<ConstructorInfo> = ctors
                 .iter()
-                .map(|(c, ts)| {
-                    (
-                        c.clone(),
-                        ts.iter()
-                            .map(|(t, strict)| {
-                                (
-                                    crate::types::infer::data_field_vty_with_free(
-                                        env, tyvars, t, &mut free,
-                                    ),
-                                    *strict,
-                                )
-                            })
-                            .collect(),
-                    )
+                .map(|(c, ts)| ConstructorInfo {
+                    name: c.clone(),
+                    fields: ts
+                        .iter()
+                        .map(|(t, strict)| ConstructorField {
+                            name: None,
+                            ty: crate::types::infer::data_field_vty_with_free(
+                                env, tyvars, t, &mut free,
+                            ),
+                            strict: *strict,
+                        })
+                        .collect(),
                 })
                 .collect();
-            env.data_types.insert(name.clone(), DataInfo::Sum(ctors_ty));
+            env.data_types
+                .insert(name.clone(), DataInfo::Data(ctors_ty));
             if !tyvars.is_empty() {
                 env.data_arities.insert(name.clone(), tyvars.len());
             }
@@ -1738,23 +1820,58 @@ impl TypeEnv {
         let data_types = HashMap::from([
             (
                 "Maybe".to_string(),
-                DataInfo::Sum(vec![
-                    ("Just".to_string(), vec![(ValueTy::Var(1), false)]),
-                    ("Nothing".to_string(), vec![]),
+                DataInfo::Data(vec![
+                    ConstructorInfo {
+                        name: "Just".to_string(),
+                        fields: vec![ConstructorField {
+                            name: None,
+                            ty: ValueTy::Var(1),
+                            strict: false,
+                        }],
+                    },
+                    ConstructorInfo {
+                        name: "Nothing".to_string(),
+                        fields: vec![],
+                    },
                 ]),
             ),
             (
                 "Pair".to_string(),
-                DataInfo::Record(vec![
-                    ("first".to_string(), ValueTy::Var(1), false),
-                    ("second".to_string(), ValueTy::Var(2), false),
-                ]),
+                DataInfo::Data(vec![ConstructorInfo {
+                    name: "Pair".to_string(),
+                    fields: vec![
+                        ConstructorField {
+                            name: Some("first".to_string()),
+                            ty: ValueTy::Var(1),
+                            strict: false,
+                        },
+                        ConstructorField {
+                            name: Some("second".to_string()),
+                            ty: ValueTy::Var(2),
+                            strict: false,
+                        },
+                    ],
+                }]),
             ),
             (
                 "Either".to_string(),
-                DataInfo::Sum(vec![
-                    ("Left".to_string(), vec![(ValueTy::Var(1), false)]),
-                    ("Right".to_string(), vec![(ValueTy::Var(2), false)]),
+                DataInfo::Data(vec![
+                    ConstructorInfo {
+                        name: "Left".to_string(),
+                        fields: vec![ConstructorField {
+                            name: None,
+                            ty: ValueTy::Var(1),
+                            strict: false,
+                        }],
+                    },
+                    ConstructorInfo {
+                        name: "Right".to_string(),
+                        fields: vec![ConstructorField {
+                            name: None,
+                            ty: ValueTy::Var(2),
+                            strict: false,
+                        }],
+                    },
                 ]),
             ),
         ]);
@@ -2699,13 +2816,17 @@ impl TypeEnv {
     /// `Kleisli`), not an ordinary value. Deriving `Eq`/`Ord` for such a type
     /// would promise a comparison the runtime cannot honour.
     fn is_comparable_declaration(&self, info: &DataInfo) -> bool {
-        match info {
-            DataInfo::Opaque => false,
-            DataInfo::Sum(ctors) => ctors
-                .iter()
-                .all(|(_, payload)| payload.iter().all(|(t, _)| is_comparable_vty(t))),
-            DataInfo::Record(fields) => fields.iter().all(|(_, t, _)| is_comparable_vty(t)),
+        // An OPAQUE type is a handle (`World`, `STRef s a`): deriving `Eq`/`Ord`
+        // for it would promise a comparison the runtime cannot honour. It has no
+        // constructors, so a field walk alone would vacuously answer "yes".
+        if matches!(info, DataInfo::Opaque) {
+            return false;
         }
+        // Otherwise one walk over every constructor's every field: a product and
+        // a sum differ only in how many constructors they have.
+        info.constructors()
+            .iter()
+            .all(|c| c.fields.iter().all(|f| is_comparable_vty(&f.ty)))
     }
 
     /// Give every COMPARABLE declared type a structural `Eq`/`Ord` marker.
@@ -4264,32 +4385,14 @@ impl TypeEnv {
                 span: Span::new(0, 0),
             });
         }
-        match self.data_types.get(name) {
-            Some(DataInfo::Record(fields)) => {
-                for (_, t, _) in fields {
-                    match t {
-                        ValueTy::Con(inner, _) => self.check_acyclic_name(inner, visiting)?,
-                        ValueTy::Newtype(inner, _) => {
-                            self.check_acyclic_newtype(inner, visiting)?
-                        }
-                        _ => {}
-                    }
+        if let Some(info) = self.data_types.get(name) {
+            for field in info.constructors().iter().flat_map(|c| c.fields.iter()) {
+                match &field.ty {
+                    ValueTy::Con(inner, _) => self.check_acyclic_name(inner, visiting)?,
+                    ValueTy::Newtype(inner, _) => self.check_acyclic_newtype(inner, visiting)?,
+                    _ => {}
                 }
             }
-            Some(DataInfo::Sum(ctors)) => {
-                for (_, payload) in ctors {
-                    for (t, _) in payload {
-                        match t {
-                            ValueTy::Con(inner, _) => self.check_acyclic_name(inner, visiting)?,
-                            ValueTy::Newtype(inner, _) => {
-                                self.check_acyclic_newtype(inner, visiting)?
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            Some(DataInfo::Opaque) | None => {}
         }
         visiting.remove(name);
         Ok(())
@@ -5104,16 +5207,37 @@ mod eq_ord_tests {
         let mut env = TypeEnv::with_builtins();
         env.data_types.insert(
             "Point".to_string(),
-            DataInfo::Record(vec![("x".to_string(), ValueTy::Double, false)]),
+            DataInfo::Data(vec![ConstructorInfo {
+                name: "Point".to_string(),
+                fields: vec![ConstructorField {
+                    name: Some("x".to_string()),
+                    ty: ValueTy::Double,
+                    strict: false,
+                }],
+            }]),
         );
         env.data_types.insert(
             "List".to_string(),
-            DataInfo::Sum(vec![
-                (
-                    "Cons".to_string(),
-                    vec![(ValueTy::Var(1), false), (ValueTy::Var(2), false)],
-                ),
-                ("Nil".to_string(), vec![]),
+            DataInfo::Data(vec![
+                ConstructorInfo {
+                    name: "Cons".to_string(),
+                    fields: vec![
+                        ConstructorField {
+                            name: None,
+                            ty: ValueTy::Var(1),
+                            strict: false,
+                        },
+                        ConstructorField {
+                            name: None,
+                            ty: ValueTy::Var(2),
+                            strict: false,
+                        },
+                    ],
+                },
+                ConstructorInfo {
+                    name: "Nil".to_string(),
+                    fields: vec![],
+                },
             ]),
         );
         env.derive_eq_ord();
@@ -5162,9 +5286,12 @@ mod eq_ord_tests {
         // the declaration's shape and not about dropping data types wholesale.
         assert!(matches!(
             env.data_types.get("EqBand"),
-            Some(DataInfo::Record(_))
+            Some(DataInfo::Data(_))
         ));
-        assert!(matches!(env.data_types.get("Bool"), Some(DataInfo::Sum(_))));
+        assert!(matches!(
+            env.data_types.get("Bool"),
+            Some(DataInfo::Data(_))
+        ));
         assert!(env.instances["Eq"].contains_key("EqBand"));
         assert!(env.instances["Ord"].contains_key("Bool"));
     }

@@ -6,7 +6,7 @@
 //! compile-time params; `Tape a` is a shared-buffer resource handle.
 
 use crate::ast::TypeExpr;
-use crate::types::ty::{BufferRole, DataInfo, TypeEnv, ValueTy};
+use crate::types::ty::{BufferRole, TypeEnv, ValueTy};
 
 /// One parameter of a foreign function signature.
 #[derive(Debug, Clone, PartialEq)]
@@ -152,12 +152,13 @@ pub fn foreign_param_names(name: &str) -> Vec<String> {
 /// `RecordField::default` values). Returns `None` when the type is not a
 /// declared record.
 pub fn ffi_record_schema(env: &TypeEnv, type_name: &str) -> Option<FfiRecordSchema> {
-    let fields = match env.data_types.get(type_name)? {
-        DataInfo::Record(fields) => fields,
-        DataInfo::Sum(_) | DataInfo::Opaque => return None,
-    };
+    // A record is the single-constructor case of the ONE data shape; a sum type
+    // has no selectors, so it has no record schema.
+    let ctor = env.data_types.get(type_name)?.sole_constructor()?;
     let mut out = Vec::new();
-    for (name, vty, _) in fields {
+    for field in &ctor.fields {
+        let name = field.name.as_ref()?;
+        let vty = &field.ty;
         let default = foreign_record_defaults(type_name, name.as_str());
         match vty {
             ValueTy::Double => out.push((name.clone(), FfiScalar::Double, default)),
